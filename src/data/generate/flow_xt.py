@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import re
-from typing import Tuple
+from typing import Dict
 
 
 def generate_flow_xt_stim(
@@ -146,13 +146,15 @@ def generate_flow_xt_dataset(
     return output_folder
 
 
-def parse_motion_from_filename(filename: str) -> Tuple[float, float, float]:
+def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
     """
-    Extract dx, dz, rot_deg (in physical units) from filename using micro-units.
+    Extract dx, dz, and rot_deg (in physical units) from filename using micro-units.
+
     Example:
         flow_udx=1234_udz=0_udeg=-1800000_id=42.pt
+
     Returns:
-        dx, dz, rot_deg (floats, in meters and degrees)
+        Dictionary with keys: 'dx', 'dz', 'rot_deg' (values in meters and degrees)
     """
     pattern = r"udx=(-?\d+)_udz=(-?\d+)_udeg=(-?\d+)"
     match = re.search(pattern, filename)
@@ -160,10 +162,11 @@ def parse_motion_from_filename(filename: str) -> Tuple[float, float, float]:
         raise ValueError(f"Filename '{filename}' does not match expected pattern.")
 
     udx, udz, udeg = map(int, match.groups())
-    dx = udx / 1e6
-    dz = udz / 1e6
-    rot_deg = udeg / 1e6
-    return dx, dz, rot_deg
+    return {
+        'dx': udx / 1e6,
+        'dz': udz / 1e6,
+        'rot_deg': udeg / 1e6
+    }
 
 
 def visualize_xt_sample(folder: str, id):
