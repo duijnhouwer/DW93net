@@ -81,16 +81,17 @@ def generate_flow_xt_dataset(
     dx_range=(0.0, 0.0),
     dz_range=(0.0, 0.0),
     rot_deg_range=(-0.5, 0.5),
-    seed: int = 42,
+    split=(0.8, 0.1, 0.1),
+    seed: int = None,
     stim_wid_px: int = 1028,
     n_time_steps: int = 128,
     fov_deg: float = 90,
     near_clip: float = 0.05
 ) -> str:
     """
-    Generates a dataset of XT flow tensors and saves them in a subfolder whose name encodes
-    the parameter ranges using micro-units (udx, udz, udeg). Filenames also contain per-sample values.
-    Returns the path to the output folder.
+    Generates a dataset of XT flow tensors and saves them into train/validate/test subfolders.
+    Folder name encodes parameter ranges using micro-units (udx, udz). Filenames include dx, dz
+    in micro-units and rot in float degrees. Returns the path to the root output folder.
     """
 
     def validate_range(name, r):
@@ -98,22 +99,51 @@ def generate_flow_xt_dataset(
         if r.shape != (2,) or r[0] > r[1]:
             raise ValueError(f"{name} must be a tuple/list with two values where r[0] <= r[1]. Got: {r}")
 
+    def validate_split(split):
+        if not np.isclose(sum(split), 1.0):
+            raise ValueError(f"split must sum to 1. Got: {split}")
+
     validate_range('dx_range', dx_range)
     validate_range('dz_range', dz_range)
     validate_range('rot_deg_range', rot_deg_range)
+    validate_split(split)
 
+    if seed is None:
+        import time
+        seed = int(time.time() * 1000) % (2**32)
+
+    # Generate folder name using µ-units for dx and dz only
     udx_min = int(round(dx_range[0] * 1e6))
     udx_max = int(round(dx_range[1] * 1e6))
     udz_min = int(round(dz_range[0] * 1e6))
     udz_max = int(round(dz_range[1] * 1e6))
-    udeg_min = int(round(rot_deg_range[0] * 1e6))
-    udeg_max = int(round(rot_deg_range[1] * 1e6))
+    rot_min = round(rot_deg_range[0], 3)
+    rot_max = round(rot_deg_range[1], 3)
 
-    folder_name = f"udx={udx_min},{udx_max}_udz={udz_min},{udz_max}_udeg={udeg_min},{udeg_max}"
+    folder_name = f"udx={udx_min},{udx_max}_udz={udz_min},{udz_max}_rot={rot_min},{rot_max}"
     output_folder = os.path.join(output_root, folder_name)
-    os.makedirs(output_folder, exist_ok=True)
+
+    # Create subfolders
+    subfolders = ["train", "validate", "test"]
+    for sub in subfolders:
+        os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
 
     rng = np.random.default_rng(seed)
+
+    # Compute number of samples per split
+    n_train = int(n_samples * split[0])
+    n_validate = int(n_samples * split[1])
+    n_test = n_samples - n_train - n_validate
+    split_counts = [n_train, n_validate, n_test]
+    split_names = ["train", "validate", "test"]
+
+    # Prepare shuffled list of indices and assign split
+    indices = rng.permutation(n_samples)
+    split_map = np.empty(n_samples, dtype=object)
+    current = 0
+    for name, count in zip(split_names, split_counts):
+        split_map[indices[current:current + count]] = name
+        current += count
 
     for i in range(n_samples):
         dx = rng.uniform(*dx_range)
@@ -132,15 +162,15 @@ def generate_flow_xt_dataset(
 
         udx = int(round(dx * 1e6))
         udz = int(round(dz * 1e6))
-        udeg = int(round(rot_deg * 1e6))
+        filename = f"flow_udx={udx}_udz={udz}_rot={rot_deg:.6f}_id={i}.pt"
 
-        filename = f"flow_udx={udx}_udz={udz}_udeg={udeg}_id={i}.pt"
-        filepath = os.path.join(output_folder, filename)
+        split_name = split_map[i]
+        filepath = os.path.join(output_folder, split_name, filename)
 
         torch.save((xt_tensor.to(torch.uint8), [dx, dz, rot_deg]), filepath)
 
         if i % 100 == 0:
-            print(f"Saved {filename}")
+            print(f"Saved {split_name}/{filename}")
 
     print(f"\n✅ Done: {n_samples} samples saved to {output_folder}")
     return output_folder
@@ -148,24 +178,24 @@ def generate_flow_xt_dataset(
 
 def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
     """
-    Extract dx, dz, and rot_deg (in physical units) from filename using micro-units.
+    Extract dx, dz, and rot_deg (in physical units) from filename.
 
     Example:
-        flow_udx=1234_udz=0_udeg=-1800000_id=42.pt
+        flow_udx=1234_udz=0_rot=-1.2345_id=42.pt
 
     Returns:
         Dictionary with keys: 'dx', 'dz', 'rot_deg' (values in meters and degrees)
     """
-    pattern = r"udx=(-?\d+)_udz=(-?\d+)_udeg=(-?\d+)"
+    pattern = r"udx=(-?\d+)_udz=(-?\d+)_rot=(-?\d+(?:\.\d+)?)"
     match = re.search(pattern, filename)
     if not match:
         raise ValueError(f"Filename '{filename}' does not match expected pattern.")
 
-    udx, udz, udeg = map(int, match.groups())
+    udx, udz, rot = match.groups()
     return {
-        'dx': udx / 1e6,
-        'dz': udz / 1e6,
-        'rot_deg': udeg / 1e6
+        'dx': int(udx) / 1e6,
+        'dz': int(udz) / 1e6,
+        'rot_deg': float(rot)
     }
 
 
