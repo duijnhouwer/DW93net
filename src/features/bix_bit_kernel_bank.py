@@ -26,15 +26,15 @@ Output:
 
 import torch
 import torch.nn as nn
-import itertools
 import numpy as np
+import itertools
+
 
 class BixBitKernelBank(nn.Module):
     def __init__(self, x_gap_range=range(0, 10), t_gap_range=range(0, 2)):
         super().__init__()
 
         self.base_kernels = self._generate_all_base_kernels()
-        self.n_base_kernels = len(self.base_kernels)
         self.x_gaps = list(x_gap_range)
         self.t_gaps = list(t_gap_range)
 
@@ -43,26 +43,35 @@ class BixBitKernelBank(nn.Module):
         for kernel in self.base_kernels:
             for x_gap in self.x_gaps:
                 for t_gap in self.t_gaps:
-                    dilation = (t_gap + 1, x_gap + 1)  # dilation = gap + 1
+                    dilation = (t_gap + 1, x_gap + 1)
                     conv = nn.Conv2d(
                         in_channels=1,
                         out_channels=1,
                         kernel_size=(2, 2),
                         dilation=dilation,
-                        padding=0,
+                        stride=1,
+                        padding=dilation,
                         bias=False
                     )
                     conv.weight.data[:] = torch.tensor(kernel, dtype=torch.float32).view(1, 1, 2, 2)
                     conv.requires_grad_(False)
                     self.detectors.append(conv)
 
+        self._n_output_channels = len(self.detectors)
+
+    @torch.no_grad()
     def forward(self, x):  # x shape: [B, 1, T, X]
         responses = [detector(x) for detector in self.detectors]
-        return torch.cat(responses, dim=1)  # [B, N_kernels, T_out, X_out]
+
+        min_T = min(r.shape[2] for r in responses)
+        min_X = min(r.shape[3] for r in responses)
+        responses = [r[:, :, :min_T, :min_X] for r in responses]
+
+        return torch.cat(responses, dim=1)
 
     @property
     def n_output_channels(self):
-        return self.n_base_kernels * len(self.x_gaps) * len(self.t_gaps)
+        return self._n_output_channels
 
     @staticmethod
     def _generate_all_base_kernels():

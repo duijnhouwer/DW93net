@@ -61,5 +61,5 @@ class FlowXTNet(nn.Module):
         )
 
     def forward(self, x):  # x: [B, 1, T, X]
-        x = self.pre(x)    # [B, N_kernels, T_out, X_out]
-        return self.net(x) # [B, 3]
+        x = self.pre(x)     # [B, N_kernels, T_out, X_out]
+        return self.net(x)  # [B, 3]
