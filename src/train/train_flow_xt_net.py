@@ -11,7 +11,6 @@ from data.load_flow_xt_data import FlowXtDataset, extract_range_from_foldername,
 class Settings:
     root_folder: str = "F:/dw93net/data/udx=-10000,10000_udz=-10000,10000_rot=0,0"
     checkpoints_dir: str = "F:/dw93net/checkpoints"
-    model_name: str = "flow_xt_net"
     batch_size: int = 12
     num_epochs: int = 1_000_000
     lr: float = 1e-3
@@ -34,7 +33,7 @@ dz_range = ranges['dz']
 rot_range = ranges['rot_deg']
 
 # --- Checkpoint paths
-checkpoint_subdir = os.path.join(cfg.checkpoints_dir, cfg.model_name, data_folder_name)
+checkpoint_subdir = os.path.join(cfg.checkpoints_dir, data_folder_name)
 os.makedirs(checkpoint_subdir, exist_ok=True)
 latest_ckpt_path = os.path.join(checkpoint_subdir, "_latest.pt")
 best_ckpt_path = os.path.join(checkpoint_subdir, "_best.pt")

@@ -6,23 +6,25 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from models.flow_xt_net import FlowXTNet
 from data.load_flow_xt_data import FlowXtDataset
-from data.load_flow_xt_data import extract_range_from_foldername, subset_dataset
-from data.utils import choose_or_create_subfolder  # <-- new import
+from data.load_flow_xt_data import extract_ranges_from_foldername, subset_dataset
+from data.utils import select_subfolder
 import sys
 
-# --- Folder selection
+# --- Data selection
 data_root = "F:/dw93net/data"
-data_folder = choose_or_create_subfolder(data_root)
+data_folder = select_subfolder(data_root,header_str="\nSelect a data folder")
 if data_folder is None:
-    print("No folder selected. Exiting.")
+    print("No data folder selected. Exiting.")
     sys.exit()
-
 data_folder_name = os.path.basename(data_folder)
 
-# --- Load checkpoint
-checkpoints_dir = "F:/dw93net/checkpoints"
-model_name = "flow_xt_net"
-checkpoint_path = os.path.join(checkpoints_dir, model_name, data_folder_name, "_best.pt")
+# --- Model selection
+checkpoints_root = "F:/dw93net/checkpoints"
+checkpoints_folder = select_subfolder(checkpoints_root,header_str="\nSelect a checkpoints folder")
+if checkpoints_folder is None:
+    print("No checpoints folder selected. Exiting.")
+    sys.exit()
+checkpoint_path = os.path.join(checkpoints_root, checkpoints_folder, "_best.pt")
 
 checkpoint = torch.load(checkpoint_path, map_location="cpu")
 settings = checkpoint.get("settings", {})  # a plain dict
@@ -30,7 +32,7 @@ root_folder = settings.get("root_folder", data_folder)
 batch_size = settings.get("batch_size", 64)
 
 # --- Parameter ranges
-ranges = extract_range_from_foldername(os.path.basename(root_folder))
+ranges = extract_ranges_from_foldername(os.path.basename(root_folder))
 dx_range = ranges['dx']
 dz_range = ranges['dz']
 rot_range = ranges['rot_deg']

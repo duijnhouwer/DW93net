@@ -40,12 +40,17 @@ class FlowXtDataset(Dataset):
 def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
     """
     Extract dx, dz, and rot_deg (in physical units) from filename.
+    Also detect if the filename contains '_superimposed'.
 
     Example:
-        flow_udx=1234_udz=0_rot=-1.2345_id=42.pt
+        flow_udx=1234_udz=0_rot=-1.2345_superimposed_id=42.pt
 
     Returns:
-        Dictionary with keys: 'dx', 'dz', 'rot_deg' (values in meters and degrees)
+        Dictionary with keys:
+            - 'dx': translation in x (meters)
+            - 'dz': translation in z (meters)
+            - 'rot_deg': rotation in degrees
+            - 'superimposed': True if '_superimposed' is in the filename, else False
     """
     pattern = r"udx=(-?\d+)_udz=(-?\d+)_rot=(-?\d+(?:\.\d+)?)"
     match = re.search(pattern, filename)
@@ -56,11 +61,13 @@ def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
     return {
         'dx': int(udx) / 1e6,
         'dz': int(udz) / 1e6,
-        'rot_deg': float(rot)
+        'rot_deg': float(rot),
+        'superimposed': '_superimposed' in filename
     }
 
 
-def extract_range_from_foldername(foldername: str) -> Dict[str, float]:
+
+def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
     """
     Extract dx, dz, and rot ranges from folder name in physical units.
     Example foldername: 'udx=0,200000_udz=0,0_rot=-0.5,0.5'

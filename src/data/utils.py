@@ -1,27 +1,38 @@
 import os
 
-def choose_or_create_subfolder(folder: str) -> str | None:
+def select_subfolder(folder: str, header_str: str = "\nChoose a subfolder:", allow_create_new: bool = False) -> str | None:
     """
-    Lists subfolders and lets user select one by number,
-    create a new one with 'N', or cancel with 'C'.
+    Lists subfolders and lets user select one by number.
+    Optionally allows creating a new one with 'N', or canceling with 'C'.
+
+    Args:
+        folder: Path to the parent folder.
+        header_str: Header to display before the subfolder list.
+        allow_create_new: If True, shows the 'N' option to create a new folder.
+
+    Returns:
+        Full path to the selected (or newly created) subfolder, or None if canceled.
     """
     while True:
         entries = os.listdir(folder)
         subfolders = sorted([f for f in entries if os.path.isdir(os.path.join(folder, f))])
 
-        print("\nChoose a subfolder:")
+        print(header_str)
         for i, sub in enumerate(subfolders, start=1):
             print(f"{i}: {sub}")
-        print("N: Create a new folder")
+        if allow_create_new:
+            print("N: Create a new folder")
         print("C: Cancel")
 
-        selection = input("Enter a number, 'N' for new folder, or 'C' to cancel: ").strip()
+        selection = input("Enter a number" +
+                          (", 'N' for new folder" if allow_create_new else "") +
+                          ", or 'C' to cancel: ").strip()
 
         if selection.lower() == 'c':
             print("Selection canceled.")
             return None
 
-        elif selection.lower() == 'n':
+        elif allow_create_new and selection.lower() == 'n':
             new_name = input("Enter name for new folder: ").strip()
             new_path = os.path.join(folder, new_name)
             if os.path.exists(new_path):
@@ -37,4 +48,5 @@ def choose_or_create_subfolder(folder: str) -> str | None:
             else:
                 print("Invalid number. Try again.")
         except ValueError:
-            print("Invalid input. Please enter a number, 'N', or 'C'.")
+            print("Invalid input. Please enter a number" +
+                  (", 'N'" if allow_create_new else "") + ", or 'C'.")

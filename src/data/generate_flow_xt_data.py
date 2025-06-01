@@ -1,28 +1,28 @@
-# -*- coding: utf-8 -*-
-
-import torch
+import os
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-
+import torch
 
 def generate_flow_xt_dataset(
     output_root: str,
-    n_samples: int = 100_000,
+    n_samples: int = 100_000, # 100_000
     dx_range=(-0.01, 0.01),
     dz_range=(-0.01, 0.01),
-    rot_deg_range=(0, 0), #(-0.5, 0.5)
+    rot_deg_range=(0.5, 0.5),
     split=(0.8, 0.1, 0.1),
     seed: int = None,
     stim_wid_px: int = 1028,
     n_time_steps: int = 128,
     fov_deg: float = 90,
-    near_clip: float = 0.05
+    near_clip: float = 0.05,
+    superimpose: bool = False,
+    n_world_dots: int = 1000
 ) -> str:
     """
     Generates a dataset of XT flow tensors and saves them into train/validate/test subfolders.
     Folder name encodes parameter ranges using micro-units (udx, udz). Filenames include dx, dz
-    in micro-units and rot in float degrees. Returns the path to the root output folder.
+    in micro-units and rot in float degrees. If `superimpose` is True, generates separate
+    rotational and translational flows and combines them by summing, then binarizing the result.
     """
 
     def validate_range(name, r):
@@ -52,11 +52,12 @@ def generate_flow_xt_dataset(
     rot_max = round(rot_deg_range[1], 3)
 
     folder_name = f"udx={udx_min},{udx_max}_udz={udz_min},{udz_max}_rot={rot_min},{rot_max}"
+    if superimpose:
+        folder_name += "_superimposed"
     output_folder = os.path.join(output_root, folder_name)
 
     # Create subfolders
-    subfolders = ["train", "validate", "test"]
-    for sub in subfolders:
+    for sub in ["train", "validate", "test"]:
         os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
 
     rng = np.random.default_rng(seed)
@@ -81,26 +82,49 @@ def generate_flow_xt_dataset(
         dz = rng.uniform(*dz_range)
         rot_deg = rng.uniform(*rot_deg_range)
 
-        xt_tensor = generate_flow_xt_stim(
-            cam_trans_xz=[dx, dz],
-            cam_rot_deg=rot_deg,
-            stim_wid_px=stim_wid_px,
-            n_time_steps=n_time_steps,
-            fov_deg=fov_deg,
-            near_clip=near_clip,
-            filename=''
-        )
+        # Generate one or two tensors depending on `superimpose`
+        xt_tensor_list = []
 
-        xt_tensor = xt_tensor.unsqueeze(0)  # [1, T, X]
+        for layer in range(2 if superimpose else 1):
+            n_layer_dots = n_world_dots
+            cam_trans = [dx, dz]
+            cam_rot = rot_deg
+            if superimpose:
+                n_layer_dots = n_layer_dots//2
+                if layer == 0:
+                    cam_trans = [0, 0]
+                else:
+                    cam_rot = 0
+
+
+            xt = generate_flow_xt_stim(
+                cam_trans_xz=cam_trans,
+                cam_rot_deg=cam_rot,
+                stim_wid_px=stim_wid_px,
+                n_time_steps=n_time_steps,
+                fov_deg=fov_deg,
+                n_world_dots = n_layer_dots,
+                near_clip=near_clip,
+                filename=''
+            )
+            xt_tensor_list.append(xt)
+
+        # Sum tensors and binarize
+        xt_tensor = sum(xt_tensor_list)
+        xt_tensor = (xt_tensor > 0).float()
+        xt_tensor = xt_tensor.unsqueeze(0)  # shape [1, T, X]
 
         udx = int(round(dx * 1e6))
         udz = int(round(dz * 1e6))
-        filename = f"flow_udx={udx}_udz={udz}_rot={rot_deg:.6f}_id={i}.pt"
+        filename = f"flow_udx={udx}_udz={udz}_rot={rot_deg:.6f}_id={i}"
+        if superimpose:
+            filename += "_superimposed"
+        filename += ".pt"
 
         split_name = split_map[i]
         filepath = os.path.join(output_folder, split_name, filename)
 
-        torch.save(xt_tensor, filepath)  # store as float32
+        torch.save(xt_tensor, filepath)
 
         if i % 100 == 0:
             print(f"Saved {split_name}/{filename}")
@@ -109,10 +133,11 @@ def generate_flow_xt_dataset(
     return output_folder
 
 
+
 def generate_flow_xt_stim(
     cam_trans_xz=[0, 1e-3],
     cam_rot_deg=0,
-    n_dots=1000,
+    n_world_dots=1000,
     stim_wid_px=1028,
     n_time_steps=128,
     fov_deg=90,
@@ -129,7 +154,7 @@ def generate_flow_xt_stim(
     tan_half_fov = np.tan(half_fov_rad)
     far_clip = np.cos(half_fov_rad)
 
-    dot_positions = np.random.uniform(-1, 1, size=(n_dots, 2))
+    dot_positions = np.random.uniform(-1, 1, size=(n_world_dots, 2))
     image = np.zeros((n_time_steps, stim_wid_px), dtype=np.float32)
 
     for t in range(n_time_steps):
@@ -178,4 +203,7 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_flow_xt_dataset(output_root="F:/dw93net/data");  # ← update path as needed)
+    generate_flow_xt_dataset(
+        output_root="F:/dw93net/data", # ← update path as needed)
+        superimpose= True
+        );
