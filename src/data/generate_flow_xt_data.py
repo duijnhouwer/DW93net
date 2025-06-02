@@ -8,7 +8,7 @@ def generate_flow_xt_dataset(
     n_samples: int = 100_000, # 100_000
     dx_range=(-0.01, 0.01),
     dz_range=(-0.01, 0.01),
-    rot_deg_range=(0.5, 0.5),
+    rot_deg_range=(-0.5, 0.5),
     split=(0.8, 0.1, 0.1),
     seed: int = None,
     stim_wid_px: int = 1028,

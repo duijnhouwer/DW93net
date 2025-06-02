@@ -24,9 +24,7 @@ def select_subfolder(folder: str, header_str: str = "\nChoose a subfolder:", all
             print("N: Create a new folder")
         print("C: Cancel")
 
-        selection = input("Enter a number" +
-                          (", 'N' for new folder" if allow_create_new else "") +
-                          ", or 'C' to cancel: ").strip()
+        selection = input("Enter selection: ").strip()
 
         if selection.lower() == 'c':
             print("Selection canceled.")
@@ -48,5 +46,4 @@ def select_subfolder(folder: str, header_str: str = "\nChoose a subfolder:", all
             else:
                 print("Invalid number. Try again.")
         except ValueError:
-            print("Invalid input. Please enter a number" +
-                  (", 'N'" if allow_create_new else "") + ", or 'C'.")
+            print("Invalid input.")
