@@ -1,0 +1,4 @@
+{
+  "python.defaultInterpreterPath": "/home/jacob/venvs/nvidia/bin/python",
+  "python.terminal.activateEnvironment": true
+}
