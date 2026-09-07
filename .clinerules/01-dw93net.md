@@ -5,6 +5,7 @@ Jacob owns the scientific question, architecture, priorities, and success criter
 ## Begin with discovery
 
 - Read `CLINE_START_HERE.md`, the full Git history, and all source files before recommending a direction.
+- The local Qwen deployment is text-only. Do not open or send PNGs or other binary artifacts to it. Do not infer visual plot contents from filenames.
 - Treat the current repository as a research record. Do not delete, rewrite, or broadly refactor it during discovery.
 - Separate observed facts from inference. Cite file paths and relevant symbols or commits.
 - Identify the intended experiment, data flow, tensor shapes, training objective, evaluation method, dependencies, hard-coded assumptions, reproducibility gaps, and likely defects.

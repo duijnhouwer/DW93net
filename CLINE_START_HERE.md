@@ -15,7 +15,7 @@ During development, hardware responsibilities are fixed: the Radeon AI PRO R9700
 
 Use Plan mode and paste:
 
-> Perform a read-only forensic review of this repository. Read `CLINE_START_HERE.md`, `.clinerules/01-dw93net.md`, every source file, and the Git history. Analyze the two subsystems separately: (1) forward generation of XT-flow stimuli from translation (`dx`, `dz`) and rotation (`rot_deg`), and (2) inverse recovery of `dx`, `dz`, and `rot_deg` by the learned model. Then analyze the saved-data/label interface between them. Trace one sample end to end, including tensor shapes, physical units, coordinate and sign conventions, normalization, and device placement. Explain what is demonstrated versus merely intended; identify current blockers, likely correctness or reproducibility risks, and questions only I can answer. Respect the GPU boundary: Qwen uses the R9700 and dw93net development uses the RTX 3080 Ti with `~/venvs/nvidia`. Compare continuing as-is, incremental refactoring, and a clean restart, and recommend the smallest experiments needed before choosing. Cite the file, symbol, or commit supporting every major conclusion. Do not edit files, install packages, run training, or commit anything.
+> Perform a read-only forensic review of this repository. Read `CLINE_START_HERE.md`, `.clinerules/01-dw93net.md`, every tracked text/source file, and the Git history. Do not open or send PNG files or other binary artifacts to the model; this local model is configured for text input only. Use plot filenames and Git history as evidence of their existence, but do not infer their visual contents. Analyze the two subsystems separately: (1) forward generation of XT-flow stimuli from translation (`dx`, `dz`) and rotation (`rot_deg`), and (2) inverse recovery of `dx`, `dz`, and `rot_deg` by the learned model. Then analyze the saved-data/label interface between them. Trace one sample end to end, including tensor shapes, physical units, coordinate and sign conventions, normalization, and device placement. Explain what is demonstrated versus merely intended; identify current blockers, likely correctness or reproducibility risks, and questions only I can answer. Respect the GPU boundary: Qwen uses the R9700 and dw93net development uses the RTX 3080 Ti with `~/venvs/nvidia`. Compare continuing as-is, incremental refactoring, and a clean restart, and recommend the smallest experiments needed before choosing. Cite the file, symbol, or commit supporting every major conclusion. Do not edit files, install packages, run training, or commit anything.
 
 ## Known observations to verify independently
 
@@ -40,6 +40,7 @@ In Cline select **OpenAI Compatible** and set:
 - Maximum output: `16384`
 
 Use the same model for Plan and Act. Keep broad auto-approval disabled during discovery.
+Configure `qwen-local` as text-only in Cline: leave **Supports Images** disabled. The current llama.cpp deployment has no multimodal projector (`mmproj`).
 
 ## dw93net development interpreter
 
