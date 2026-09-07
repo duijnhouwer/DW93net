@@ -1,6 +1,11 @@
 # Cline: start here
 
-This repository is an early PyTorch research prototype from May 2025. It generates binary XT optic-flow stimuli, applies a frozen bank of bilocal/bitemporal 2×2 kernels, and trains a convolutional regressor to estimate camera `dx`, `dz`, and rotation.
+This repository is an early PyTorch research prototype from May 2025 with two distinct subsystems:
+
+1. **Forward stimulus generation:** camera translation in the x-z plane and rotation phi are used to generate binary XT-flow plots.
+2. **Inverse motion estimation:** a frozen bank of bilocal/bitemporal 2×2 kernels and a convolutional regressor are trained to recover translation (`dx`, `dz`) and rotation (`rot_deg`, representing phi) from those XT stimuli.
+
+The saved XT tensors and motion labels encoded in their filenames form the interface between the two subsystems. Treat stimulus-generation correctness and learning/evaluation correctness as separate questions.
 
 The immediate goal is understanding and decision support. Jacob has not decided whether to preserve and refactor this implementation or restart from validated ideas.
 
@@ -10,7 +15,7 @@ During development, hardware responsibilities are fixed: the Radeon AI PRO R9700
 
 Use Plan mode and paste:
 
-> Perform a read-only forensic review of this repository. Read `CLINE_START_HERE.md`, `.clinerules/01-dw93net.md`, every source file, and the Git history. Explain what experiment the code appears to implement and trace data from generation through evaluation, including tensor shapes and units. Identify what is demonstrated versus merely intended, current blockers on this Linux system, likely correctness or reproducibility risks, and questions only I can answer. Respect the GPU boundary: Qwen uses the R9700 and dw93net development uses the RTX 3080 Ti with `~/venvs/nvidia`. Then compare continuing as-is, incremental refactoring, and a clean restart. Recommend the smallest experiments needed before choosing. Do not edit files, install packages, run training, or commit anything.
+> Perform a read-only forensic review of this repository. Read `CLINE_START_HERE.md`, `.clinerules/01-dw93net.md`, every source file, and the Git history. Analyze the two subsystems separately: (1) forward generation of XT-flow stimuli from x-z translation and rotation phi, and (2) inverse recovery of that translation and rotation by the learned model. Then analyze the saved-data/label interface between them. Trace one sample end to end, including tensor shapes, physical units, coordinate and sign conventions, normalization, and device placement. Explain what is demonstrated versus merely intended; identify current blockers, likely correctness or reproducibility risks, and questions only I can answer. Respect the GPU boundary: Qwen uses the R9700 and dw93net development uses the RTX 3080 Ti with `~/venvs/nvidia`. Compare continuing as-is, incremental refactoring, and a clean restart, and recommend the smallest experiments needed before choosing. Cite the file, symbol, or commit supporting every major conclusion. Do not edit files, install packages, run training, or commit anything.
 
 ## Known observations to verify independently
 
@@ -32,7 +37,7 @@ In Cline select **OpenAI Compatible** and set:
 - Model ID: `qwen-local`
 - API key, if the UI requires one: `local`
 - Context window: `65536`
-- Maximum output: `4096` initially
+- Maximum output: `16384`
 
 Use the same model for Plan and Act. Keep broad auto-approval disabled during discovery.
 

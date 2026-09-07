@@ -8,6 +8,7 @@ Jacob owns the scientific question, architecture, priorities, and success criter
 - Treat the current repository as a research record. Do not delete, rewrite, or broadly refactor it during discovery.
 - Separate observed facts from inference. Cite file paths and relevant symbols or commits.
 - Identify the intended experiment, data flow, tensor shapes, training objective, evaluation method, dependencies, hard-coded assumptions, reproducibility gaps, and likely defects.
+- Preserve the architectural distinction between the forward stimulus generator (x-z translation and rotation phi to XT-flow plots) and the inverse estimator (XT stimuli to `dx`, `dz`, and `rot_deg`). Review each separately, then review the saved tensor/filename-label contract connecting them.
 - Compare three paths: continue as-is, refactor incrementally, or restart while preserving validated ideas. Give evidence, risks, and the smallest experiment that would distinguish them.
 
 ## Working agreement
