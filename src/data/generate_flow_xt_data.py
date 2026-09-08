@@ -105,7 +105,8 @@ def generate_flow_xt_dataset(
                 fov_deg=fov_deg,
                 n_world_dots = n_layer_dots,
                 near_clip=near_clip,
-                filename=''
+                filename='',
+                rng=rng
             )
             xt_tensor_list.append(xt)
 
@@ -142,19 +143,26 @@ def generate_flow_xt_stim(
     n_time_steps=128,
     fov_deg=90,
     near_clip=0.05,
-    filename=''
+    filename='',
+    rng=None
 ) -> torch.Tensor:
     """
     Simulates optic flow and returns a space-time plot as a PyTorch tensor of shape (n_time_steps, stim_wid_px).
     The projection uses a 2D trapezoidal frustum defined by fov_deg and near_clip.
+
+    rng: optional numpy Generator (or legacy RandomState) used for dot placement.
+    Defaults to the global np.random for backward compatibility. Pass the dataset's
+    seeded rng from generate_flow_xt_dataset for reproducible generation.
     """
+    if rng is None:
+        rng = np.random
     cam_trans_xz = np.array(cam_trans_xz, dtype=np.float64)
     half_fov_rad = np.deg2rad(fov_deg / 2)
     cam_rot_rad = np.deg2rad(cam_rot_deg)
     tan_half_fov = np.tan(half_fov_rad)
     far_clip = np.cos(half_fov_rad)
 
-    dot_positions = np.random.uniform(-1, 1, size=(n_world_dots, 2))
+    dot_positions = rng.uniform(-1, 1, size=(n_world_dots, 2))
     image = np.zeros((n_time_steps, stim_wid_px), dtype=np.float32)
 
     for t in range(n_time_steps):
@@ -168,7 +176,7 @@ def generate_flow_xt_stim(
 
             dot_positions[out_of_bounds, axis] += 2 if cam_trans_xz[axis] > 0 else -2
             other_axis = 1 - axis
-            dot_positions[out_of_bounds, other_axis] = np.random.uniform(-1, 1, size=out_of_bounds.sum())
+            dot_positions[out_of_bounds, other_axis] = rng.uniform(-1, 1, size=out_of_bounds.sum())
 
         radius_squared = np.sum(dot_positions**2, axis=1)
         in_unit_circle = radius_squared < 1
