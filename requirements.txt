@@ -2,4 +2,5 @@
 torch==2.2.2
 numpy>=1.25
 matplotlib
+scikit-learn
 spyder
