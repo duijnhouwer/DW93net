@@ -1,6 +1,4 @@
-# torch 2.11.0+cu128 is not on PyPI; a fresh install needs the PyTorch CUDA index:
-#   pip install torch==2.11.0+cu128 --extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.11.0+cu128
+torch>=2.11
 numpy>=1.25
 matplotlib
 scikit-learn
