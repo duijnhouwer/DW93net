@@ -3,8 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
+# Repo root is two levels up from this file (src/data/ -> repo root), so the
+# data folder tracks wherever the dw93net repo is checked out.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "data")
+
 def generate_flow_xt_dataset(
-    output_root: str,
+    output_root: str = None,
     n_samples: int = 100_000, # 100_000
     dx_range=(-0.01, 0.01),
     dz_range=(-0.01, 0.01),
@@ -20,10 +25,16 @@ def generate_flow_xt_dataset(
 ) -> str:
     """
     Generates a dataset of XT flow tensors and saves them into train/validate/test subfolders.
-    Folder name encodes parameter ranges using micro-units (udx, udz). Filenames include dx, dz
-    in micro-units and rot in float degrees. If `superimpose` is True, generates separate
-    rotational and translational flows and combines them by summing, then binarizing the result.
+    Folder name encodes parameter ranges in nano-units (nux, nuz) and nano-degrees (nrot).
+    Each sample's dx, dz and rot_deg are rounded to nano-units/nano-degrees FIRST, and those
+    exact values are used to render the stimulus and written to the filename (nux, nuz, nrot),
+    so the label always matches the stimulus that was generated. If `superimpose` is True,
+    generates separate rotational and translational flows and combines them by summing, then
+    binarizing the result.
     """
+
+    if output_root is None:
+        output_root = DEFAULT_DATA_ROOT
 
     def validate_range(name, r):
         r = np.asarray(r)
@@ -43,15 +54,15 @@ def generate_flow_xt_dataset(
         import time
         seed = int(time.time() * 1000) % (2**32)
 
-    # Generate folder name using µ-units for dx and dz only
-    udx_min = int(round(dx_range[0] * 1e6))
-    udx_max = int(round(dx_range[1] * 1e6))
-    udz_min = int(round(dz_range[0] * 1e6))
-    udz_max = int(round(dz_range[1] * 1e6))
-    rot_min = round(rot_deg_range[0], 3)
-    rot_max = round(rot_deg_range[1], 3)
+    # Generate folder name using nano-units for dx and dz and nano-degrees for rotation
+    nux_min = int(round(dx_range[0] * 1e9))
+    nux_max = int(round(dx_range[1] * 1e9))
+    nuz_min = int(round(dz_range[0] * 1e9))
+    nuz_max = int(round(dz_range[1] * 1e9))
+    nrot_min = int(round(rot_deg_range[0] * 1e9))
+    nrot_max = int(round(rot_deg_range[1] * 1e9))
 
-    folder_name = f"udx={udx_min},{udx_max}_udz={udz_min},{udz_max}_rot={rot_min},{rot_max}"
+    folder_name = f"nux={nux_min},{nux_max}_nuz={nuz_min},{nuz_max}_nrot={nrot_min},{nrot_max}"
     if superimpose:
         folder_name += "_superimposed"
     output_folder = os.path.join(output_root, folder_name)
@@ -81,6 +92,13 @@ def generate_flow_xt_dataset(
         dx = rng.uniform(*dx_range)
         dz = rng.uniform(*dz_range)
         rot_deg = rng.uniform(*rot_deg_range)
+
+        # Round to nano-units/nano-degrees FIRST, then use those exact values for BOTH
+        # stimulus generation and the filename, so the label always matches the stimulus.
+        nux = int(round(dx * 1e9))
+        nuz = int(round(dz * 1e9))
+        nrot = int(round(rot_deg * 1e9))
+        dx, dz, rot_deg = nux / 1e9, nuz / 1e9, nrot / 1e9
 
         # Generate one or two tensors depending on `superimpose`
         xt_tensor_list = []
@@ -115,9 +133,7 @@ def generate_flow_xt_dataset(
         xt_tensor = (xt_tensor > 0).float()
         xt_tensor = xt_tensor.unsqueeze(0)  # shape [1, T, X]
 
-        udx = int(round(dx * 1e6))
-        udz = int(round(dz * 1e6))
-        filename = f"flow_udx={udx}_udz={udz}_rot={rot_deg:.6f}_id={i}"
+        filename = f"flow_nux={nux}_nuz={nuz}_nrot={nrot}_id={i}"
         if superimpose:
             filename += "_superimposed"
         filename += ".pt"
@@ -211,7 +227,4 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_flow_xt_dataset(
-        output_root="F:/dw93net/data", # ← update path as needed)
-        superimpose= True
-        );
+    generate_flow_xt_dataset(superimpose=True)
