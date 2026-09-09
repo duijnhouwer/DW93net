@@ -17,6 +17,10 @@
 
 # Execution environment
 
+- Run terminal commands non-interactively. Disable pagers:
+  use `git --no-pager` for Git commands and set `PAGER=cat`
+  and `GIT_PAGER=cat` when needed. Do not launch `less` or `more`.
+  I added this because the terminal would get stuck (displaying : at bottom)) and you would not observe command completion before i pressed "q".
 - Use /home/jacob/venvs/nvidia/bin/python.
 - Reserve the AMD R9700 for Qwen. Do not use it for stimulus generation
   or change Python environments or GPU visibility settings.

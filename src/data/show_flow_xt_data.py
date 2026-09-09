@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 from load_flow_xt_data import parse_camera_motion_from_filename  # adjust if needed
 
-def show_xt_sample(folder: str, id):
+def show_xt_sample(folder: str, id, save_dir: str = None):
     """
     Visualize a saved XT flow sample.
 
@@ -14,6 +14,7 @@ def show_xt_sample(folder: str, id):
         - an integer (e.g., 17 → finds file containing _id=17.pt)
         - a full filename (must end in '.pt')
         - the string 'random' → picks a random .pt file from folder
+    - save_dir: if provided, save the figure as PNG here instead of showing
     """
     if id == 'random':
         pt_files = [f for f in os.listdir(folder) if f.endswith('.pt')]
@@ -55,7 +56,15 @@ def show_xt_sample(folder: str, id):
     plt.xlabel('X position (pixels)')
     plt.ylabel('Time (frames)')
     plt.tight_layout()
-    plt.show()
+
+    if save_dir:
+        stem = os.path.splitext(filename)[0]
+        out_path = os.path.join(save_dir, f"sample_{stem}.png")
+        plt.savefig(out_path, dpi=100)
+        plt.close()
+        print(f"Saved: {out_path}")
+    else:
+        plt.show()
 
 if __name__ == "__main__":
     import argparse
@@ -63,6 +72,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Display a saved XT flow stimulus.")
     parser.add_argument("folder", type=str, help="Path to folder with .pt files")
     parser.add_argument("id", help="Sample ID: integer (e.g., 42), 'random', or full .pt filename")
+    parser.add_argument("--save", action="store_true", help="Save figure to ~/Pictures/dw93net_sample_stimuli instead of showing")
 
     args = parser.parse_args()
 
@@ -71,4 +81,9 @@ if __name__ == "__main__":
     except ValueError:
         id_val = args.id
 
-    show_xt_sample(args.folder, id_val)
+    if args.save:
+        save_dir = os.path.expanduser("~/Pictures/dw93net_sample_stimuli")
+        os.makedirs(save_dir, exist_ok=True)
+        show_xt_sample(args.folder, id_val, save_dir=save_dir)
+    else:
+        show_xt_sample(args.folder, id_val)
