@@ -17,6 +17,7 @@ class StimConfig:
     fov_deg: float = 90
     near_clip: float = 0.05
     n_world_dots: int = 1000
+    superimpose: bool = False
 
 
 def generate_flow_xt_dataset(
@@ -27,7 +28,6 @@ def generate_flow_xt_dataset(
     rot_deg_range=(-0.5, 0.5),
     split=(0.8, 0.1, 0.1),
     seed: int = None,
-    superimpose: bool = False,
     config: StimConfig = StimConfig()
 ) -> str:
     """
@@ -70,7 +70,7 @@ def generate_flow_xt_dataset(
     nrot_max = int(round(rot_deg_range[1] * 1e9))
 
     folder_name = f"nux={nux_min},{nux_max}_nuz={nuz_min},{nuz_max}_nrot={nrot_min},{nrot_max}"
-    if superimpose:
+    if config.superimpose:
         folder_name += "_superimposed"
     output_folder = os.path.join(output_root, folder_name)
 
@@ -110,11 +110,11 @@ def generate_flow_xt_dataset(
         # Generate one or two tensors depending on `superimpose`
         xt_tensor_list = []
 
-        for layer in range(2 if superimpose else 1):
+        for layer in range(2 if config.superimpose else 1):
             layer_config = config
             cam_trans = [dx, dz]
             cam_rot = rot_deg
-            if superimpose:
+            if config.superimpose:
                 layer_config = replace(config, n_world_dots=config.n_world_dots // 2)
                 if layer == 0:
                     cam_trans = [0, 0]
@@ -136,7 +136,7 @@ def generate_flow_xt_dataset(
         xt_tensor = xt_tensor.unsqueeze(0)  # shape [1, T, X]
 
         filename = f"flow_nux={nux}_nuz={nuz}_nrot={nrot}_id={i}"
-        if superimpose:
+        if config.superimpose:
             filename += "_superimposed"
         filename += ".pt"
 
@@ -225,4 +225,4 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_flow_xt_dataset(superimpose=True)
+    generate_flow_xt_dataset(config=StimConfig(superimpose=True))
