@@ -9,6 +9,8 @@
 - Preserve unrelated work. Do not commit, push, or delete files unless asked.
 - Preserve intended stimulus values, units, coordinate conventions,
   and output labels. Verify numerical scaling when changing units.
+- Run `git diff` before starting any task to pick up Jacob's
+  manual edits since the last commit.
 - Run a small generation check before producing the requested batch.
   Report what was generated and where it was saved, then stop.
 - Keep responses concise. Qwen is text-only; do not send it images.
