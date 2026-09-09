@@ -38,8 +38,8 @@ def generate_flow_xt_dataset(
     Each sample's dx, dz and rot_deg are rounded to nano-units/nano-degrees FIRST, and those
     exact values are used to render the stimulus and written to the filename (nux, nuz, nrot),
     so the label always matches the stimulus that was generated. If `superimpose` is True,
-    generates separate rotational and translational flows and combines them by summing, then
-    binarizing the result.
+    generates separate rotational and translational flows and combines them by summing and
+    clipping to [0, 1], preserving fractional antialiased intensities.
     """
 
     if output_root is None:
@@ -132,9 +132,8 @@ def generate_flow_xt_dataset(
             )
             xt_tensor_list.append(xt)
 
-        # Sum tensors and binarize
-        xt_tensor = sum(xt_tensor_list)
-        xt_tensor = (xt_tensor > 0).float()
+        # Preserve antialiased intensities; saturate overlapping flow layers.
+        xt_tensor = sum(xt_tensor_list).clamp(0, 1)
         xt_tensor = xt_tensor.unsqueeze(0)  # shape [1, T, X]
 
         filename = f"flow_nux={nux}_nuz={nuz}_nrot={nrot}_id={i}"

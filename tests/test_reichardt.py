@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -14,6 +15,20 @@ from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
 class ReichardtTests(unittest.TestCase):
+    def test_dataset_preserves_fractional_intensities(self):
+        from data.generate_flow_xt_data import generate_flow_xt_dataset, StimConfig
+        intensities = torch.tensor([[0., .1, .4, .8, 1.]])
+        for superimpose in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                with patch('data.generate_flow_xt_data.generate_flow_xt_stim', return_value=intensities):
+                    folder = generate_flow_xt_dataset(
+                        output_root=directory, n_samples=1, split=(1, 0, 0), seed=42,
+                        config=StimConfig(superimpose=superimpose))
+                saved = torch.load(next((Path(folder) / 'train').glob('*.pt')), weights_only=True)
+                expected = (intensities * (2 if superimpose else 1)).clamp(0, 1)[None]
+                torch.testing.assert_close(saved, expected)
+                self.assertEqual(saved.dtype, torch.float32)
+
     def test_scalar_reference_and_alignment(self):
         xt = torch.arange(2 * 6 * 11, dtype=torch.float32).reshape(2, 1, 6, 11) / 100
         bank = ReichardtBank([2, -3, 0], [2, 1])
