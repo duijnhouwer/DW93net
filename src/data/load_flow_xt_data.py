@@ -41,9 +41,12 @@ def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
     """
     Extract dx, dz, and rot_deg (in physical units) from filename.
     Also detect if the filename contains '_superimposed'.
+    Expects the format: flow_nux=<int>_nuz=<int>_nrot=<int>[_superimposed]_id=<int>.pt
+    where nux/nuz are nano-unit translations (meters * 1e9) and nrot is the
+    rotation in nano-degrees (degrees * 1e9).
 
     Example:
-        flow_udx=1234_udz=0_rot=-1.2345_superimposed_id=42.pt
+        flow_nux=1234000000_nuz=0_nrot=-1234500000000_superimposed_id=42.pt
 
     Returns:
         Dictionary with keys:
@@ -52,16 +55,16 @@ def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
             - 'rot_deg': rotation in degrees
             - 'superimposed': True if '_superimposed' is in the filename, else False
     """
-    pattern = r"udx=(-?\d+)_udz=(-?\d+)_rot=(-?\d+(?:\.\d+)?)"
+    pattern = r"nux=(-?\d+)_nuz=(-?\d+)_nrot=(-?\d+)"
     match = re.search(pattern, filename)
     if not match:
         raise ValueError(f"Filename '{filename}' does not match expected pattern.")
 
-    udx, udz, rot = match.groups()
+    nux, nuz, nrot = match.groups()
     return {
-        'dx': int(udx) / 1e6,
-        'dz': int(udz) / 1e6,
-        'rot_deg': float(rot),
+        'dx': int(nux) / 1e9,
+        'dz': int(nuz) / 1e9,
+        'rot_deg': int(nrot) / 1e9,
         'superimposed': '_superimposed' in filename
     }
 
@@ -70,7 +73,10 @@ def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
 def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
     """
     Extract dx, dz, and rot ranges from folder name in physical units.
-    Example foldername: 'udx=0,200000_udz=0,0_rot=-0.5,0.5'
+    Expects the format: nux=<min>,<max>_nuz=<min>,<max>_nrot=<min>,<max>
+    where the values are nano-units (meters * 1e9) for dx/dz and
+    nano-degrees (degrees * 1e9) for rotation.
+    Example foldername: 'nux=0,20000000_nuz=0,0_nrot=-500000000,500000000'
 
     Returns:
         Dictionary with keys: 'dx', 'dz', 'rot_deg' (in meters and degrees)
@@ -83,9 +89,9 @@ def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
         return abs(high - low)
 
     return {
-        'dx': get_range('udx') / 1e6,
-        'dz': get_range('udz') / 1e6,
-        'rot_deg': get_range('rot')
+        'dx': get_range('nux') / 1e9,
+        'dz': get_range('nuz') / 1e9,
+        'rot_deg': get_range('nrot') / 1e9
     }
 
 
