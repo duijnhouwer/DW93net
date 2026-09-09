@@ -11,12 +11,15 @@ from torch.utils.data import Dataset, Subset
 from typing import Dict
 import re
 import random
+import json
+from pathlib import Path
+from features.reichardt import ReichardtBank
 
 
 class FlowXtDataset(Dataset):
     def __init__(self, folder):
         self.folder = folder
-        self.files = [f for f in os.listdir(folder) if f.endswith('.pt')]
+        self.files = sorted(f for f in os.listdir(folder) if f.endswith('.pt'))
 
     def __len__(self):
         return len(self.files)
@@ -25,7 +28,7 @@ class FlowXtDataset(Dataset):
         filename = self.files[idx]
         filepath = os.path.join(self.folder, filename)
 
-        input_tensor = torch.load(filepath)
+        input_tensor = torch.load(filepath, map_location="cpu", weights_only=True)
 
         cammot = parse_camera_motion_from_filename(filename)
         label_tensor = torch.tensor([
@@ -35,6 +38,30 @@ class FlowXtDataset(Dataset):
         ], dtype=torch.float32)
 
         return input_tensor, label_tensor
+
+
+class ReichardtDataset(FlowXtDataset):
+    """Load saved maps, requiring identical detector semantics across datasets."""
+
+    def __init__(self, folder, expected_metadata=None):
+        super().__init__(folder)
+        metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
+        bank = ReichardtBank(metadata["dx_values"], metadata["dt_values"])
+        self.metadata = bank.metadata
+        if any(metadata.get(key) != value for key, value in self.metadata.items()):
+            raise ValueError("Unsupported Reichardt cache format")
+        if expected_metadata is not None and self.metadata != expected_metadata:
+            raise ValueError("Reichardt detector configuration does not match")
+        self.n_channels = bank.n_output_channels
+
+    def __getitem__(self, idx):
+        responses, label = super().__getitem__(idx)
+        if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
+                or responses.shape[0] != self.n_channels
+                or min(responses.shape[1:]) < 1 or not responses.is_floating_point()
+                or not torch.isfinite(responses).all()):
+            raise ValueError(f"Invalid Reichardt response tensor: {self.files[idx]}")
+        return responses.float(), label
 
 
 def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
@@ -82,7 +109,7 @@ def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
         Dictionary with keys: 'dx', 'dz', 'rot_deg' (in meters and degrees)
     """
     def get_range(key):
-        match = re.search(f"{key}=(-?\d*\.?\d*),(-?\d*\.?\d*)", foldername)
+        match = re.search(rf"{key}=(-?\d*\.?\d*),(-?\d*\.?\d*)", foldername)
         if not match:
             return 0.0
         low, high = float(match.group(1)), float(match.group(2))

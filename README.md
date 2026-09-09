@@ -89,3 +89,64 @@ The scientific quantities above are represented in the code as follows:
   fields. *Vision Research*, 33(11), 1481–1490.
   https://doi.org/10.1016/0042-6989(93)90141-I
 
+
+
+
+## Reichardt product preprocessing
+
+The deterministic detector stage is computed once before training. Each channel
+is the product `R(t,x) = I(t-dT,x-dX) * I(t,x)`, using tensor slices only.
+If either leg is zero, the response is zero; fractional antialiased intensities
+produce graded products. Opposite directions are separate channels, with no
+opponent subtraction or convolution in this stage.
+
+`ReichardtBank(dx_values, dt_values)` uses signed integer pixel displacements
+and positive integer frame delays. Positive dX means motion toward increasing X;
+zero dX is supported for stationary correlations. Values are actual offsets,
+not gaps. Channels follow the supplied order, with dT outermost and dX innermost.
+The nominal speed is dX/dT pixels per frame; equal speeds at different scales
+remain separate channels.
+
+All channels share the same present-time coordinates. For input `[B,1,T,X]`,
+let `t0=max(dT)`, `left=max(0,max(dX))`, and `right=max(0,-min(dX))`.
+Output is `[B,C,T-t0,X-left-right]`, where `C=len(dX)*len(dT)`.
+This common-valid crop introduces no padding, wrapping, masks, or NaNs.
+Inputs too small for the crop and nonfinite inputs are rejected.
+Single stimuli `[T,X]` or `[1,T,X]` return `[C,T',X']`.
+
+Generate raw stimuli as before, then preprocess to a separate, new directory.
+Keep the motion-range folder name so training can read label normalization:
+
+```bash
+export PYTHONPATH=src
+python -m data.precompute_reichardt \
+  data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
+  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
+  --dx -2 -1 1 2 --dt 1 2 --dtype float32
+python -m train.train_flow_xt_net \
+  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
+  --epochs 10 --from-scratch
+```
+
+Preprocessing preserves train/validate/test splits and filenames, and writes
+`reichardt.json` with the channel configuration and crop convention only after
+completion. Existing destinations are refused to prevent overwriting or mixing
+caches. Float32 is the default; optional float16 reduces storage with rounding.
+Products are computed in float32 and checked for overflow after storage conversion.
+Maps can require roughly C times the raw storage, reduced by cropping.
+Regenerate the cache whenever the raw stimuli or detector configuration changes.
+
+`ReichardtDataset` reads cached maps as float32 for training. `FlowXTNet` takes
+`n_input_channels` and accepts only response maps; its convolutions are learned
+processing downstream of detection. Training saves detector metadata in each
+checkpoint, and validation/evaluation reject mismatched configurations even when
+the channel counts match. Use the cached dataset root for evaluation too.
+Old convolution-detector checkpoints are incompatible; start fresh in a separate
+checkpoint directory. The existing X-only supersampling and asynchronous dot
+lifetime changes in the stimulus generator are preserved.
+
+Run the correctness and pipeline tests with the project's Python environment:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```

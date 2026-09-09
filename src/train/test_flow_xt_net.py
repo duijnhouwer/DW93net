@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from models.flow_xt_net import FlowXTNet
-from data.load_flow_xt_data import FlowXtDataset
+from data.load_flow_xt_data import ReichardtDataset
 from data.load_flow_xt_data import subset_dataset
 from data.utils import select_subfolder
 import sys
@@ -33,12 +33,14 @@ def run_flow_xt_model_on_test_data(
     batch_size = checkpoint.get("settings", {}).get("batch_size", 64)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = FlowXTNet().to(device)
+    if "reichardt" not in checkpoint or "n_input_channels" not in checkpoint:
+        raise ValueError("Expected a checkpoint trained on Reichardt response maps")
+    model = FlowXTNet(checkpoint["n_input_channels"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
     test_folder = os.path.join(data_folder, "test")
-    test_dataset = FlowXtDataset(folder=test_folder)
+    test_dataset = ReichardtDataset(folder=test_folder, expected_metadata=checkpoint["reichardt"])
     test_dataset = subset_dataset(test_dataset, {"n": subset_size, "method": "random"})
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 

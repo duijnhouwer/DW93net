@@ -19,6 +19,7 @@ class StimConfig:
     n_world_dots: int = 1000
     superimpose: bool = False
     max_dot_lifetime: int = 10 # max lifetime of a dot in frames; if <=0, dots never die
+    x_supersampling: int = 10
 
 
 def generate_flow_xt_dataset(
@@ -161,25 +162,23 @@ def generate_flow_xt_stim(
     filename='',
     rng=None
 ) -> torch.Tensor:
-    """
-    Simulates optic flow and returns a space-time plot as a PyTorch tensor
-    of shape (n_time_bins, stim_wid_px).
 
-    Dot lifetime:
-        If config.max_dot_lifetime > 0, each dot is rendered exactly
-        max_dot_lifetime times before being replaced by a new dot at a
-        random position in the [-1, 1] x [-1, 1] XZ plane.
-
-        Thus, a dot with lifetime L undergoes exactly L-1 motion
-        displacements between its L rendered appearances.
-
-        If max_dot_lifetime <= 0, dots never expire.
-
-    rng: optional numpy Generator (or legacy RandomState) used for dot placement.
-    Defaults to the global np.random for backward compatibility.
-    """
     if rng is None:
-        rng = np.random
+        rng = np.random.default_rng()
+
+    # Validate X supersampling.
+    if (
+        isinstance(config.x_supersampling, bool)
+        or not isinstance(config.x_supersampling, (int, np.integer))
+        or config.x_supersampling < 1
+    ):
+        raise ValueError(
+            f"x_supersampling must be a positive integer. "
+            f"Got: {config.x_supersampling}"
+        )
+
+    x_supersampling = int(config.x_supersampling)
+    render_wid_px = config.stim_wid_px * x_supersampling
 
     cam_trans_xz = np.array(cam_trans_xz, dtype=np.float64)
 
@@ -195,10 +194,23 @@ def generate_flow_xt_stim(
     )
 
     # Number of times the current incarnation of each dot has been rendered.
-    dot_ages = np.zeros(config.n_world_dots, dtype=np.int32)
+    # Start dots at random ages so their deaths/rebirths are asynchronous.
+    if config.max_dot_lifetime > 0:
+        dot_ages = rng.integers(
+            0,
+            config.max_dot_lifetime,
+            size=config.n_world_dots,
+            dtype=np.int32,
+        )
+    else:
+        dot_ages = np.zeros(
+            config.n_world_dots,
+            dtype=np.int32
+        )
 
+    # Render at supersampled X resolution.
     image = np.zeros(
-        (config.n_time_bins, config.stim_wid_px),
+        (config.n_time_bins, render_wid_px),
         dtype=np.float32
     )
 
@@ -238,23 +250,30 @@ def generate_flow_xt_stim(
             theta = np.arctan2(x_visible, z_visible)
             x_proj = theta / half_fov_rad
 
+            # Continuous projected position in supersampled X coordinates.
             x_scaled = (
                 (x_proj + 1) / 2 *
-                (config.stim_wid_px - 1)
-            ).astype(int)
-
-            x_scaled = np.clip(
-                x_scaled,
-                0,
-                config.stim_wid_px - 1
+                (render_wid_px - 1)
             )
 
-            image[t, x_scaled] = 1.0
+            # A dot should remain one output pixel wide.
+            # Therefore at supersampled resolution it occupies
+            # x_supersampling pixels.
+            dot_width = x_supersampling
+
+            for xc in x_scaled:
+                left = int(np.floor(xc - dot_width / 2))
+                right = left + dot_width
+
+                left = max(left, 0)
+                right = min(right, render_wid_px)
+
+                if left < right:
+                    image[t, left:right] = 1.0
 
         # Current positions have now been rendered once more.
         dot_ages += 1
 
-        # There is no need to update positions after the final frame.
         if t == config.n_time_bins - 1:
             continue
 
@@ -269,7 +288,6 @@ def generate_flow_xt_stim(
                 dtype=bool
             )
 
-        # Expired dots are reborn at completely new random XZ positions.
         if np.any(expired):
             dot_positions[expired] = rng.uniform(
                 -1, 1,
@@ -279,10 +297,6 @@ def generate_flow_xt_stim(
 
         # --------------------------------------------------------------
         # 3. MOVE ONLY THE DOTS THAT DID NOT EXPIRE
-        #
-        # This is what guarantees:
-        #
-        #   lifetime L -> L renders and L-1 displacements
         # --------------------------------------------------------------
         alive = ~expired
 
@@ -291,7 +305,6 @@ def generate_flow_xt_stim(
             # Camera translation.
             dot_positions[alive] -= cam_trans_xz
 
-            # Preserve the existing boundary/recycling behavior.
             for axis in [0, 1]:
 
                 if cam_trans_xz[axis] > 0:
@@ -329,6 +342,16 @@ def generate_flow_xt_stim(
                 dot_positions[rotate_dots] = (
                     dot_positions[rotate_dots] @ rot.T
                 )
+
+    # --------------------------------------------------------------
+    # 4. DOWNSAMPLE X ONLY
+    # --------------------------------------------------------------
+    if x_supersampling > 1:
+        image = image.reshape(
+            config.n_time_bins,
+            config.stim_wid_px,
+            x_supersampling
+        ).mean(axis=2, dtype=np.float32)
 
     tensor_image = torch.from_numpy(image)
 
