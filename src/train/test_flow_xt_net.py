@@ -145,7 +145,7 @@ def analyze_heading_error_vs_heading(results: dict):
     plt.figure(figsize=(8, 5))
     plt.scatter(heading_true, signed_error, alpha=0.3)
     plt.axhline(0, color='gray', linestyle='--')
-    plt.xlabel("True Heading (deg)\n0 = forward (+Z), 90 = +X, 180 = backward, -90 = -X")
+    plt.xlabel("True Heading (deg)\n0 = forward (+Z), +90 = right (+X), -90 = left (-X)")
     plt.ylabel("Heading Estimate Error (deg)\n(+ = toward increasing heading)")
     plt.title("Signed Heading Error vs. True Heading")
     plt.grid(True)

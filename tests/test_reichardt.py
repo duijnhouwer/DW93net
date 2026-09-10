@@ -69,6 +69,8 @@ class ReichardtTests(unittest.TestCase):
             root = Path(directory)
             source = root / 'raw'
             (source / 'train').mkdir(parents=True)
+            generation = {"format": "polar-translation-stimuli-v1", "seed": 7}
+            (source / 'generation.json').write_text(json.dumps(generation))
             filename = 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
             levels = torch.tensor([[[0, 1, 128, 255], [255, 1, 64, 128]]], dtype=torch.uint8).repeat(1, 1, 10)
             torch.save(levels, source / 'train' / filename)
@@ -80,6 +82,7 @@ class ReichardtTests(unittest.TestCase):
             saved = torch.load(cache / 'train' / filename, weights_only=True)
             self.assertEqual(saved.dtype, torch.float16)
             self.assertEqual(metadata['storage_dtype'], 'torch.float16')
+            self.assertEqual(metadata['stimulus_generation'], generation)
             torch.testing.assert_close(saved, reference.half())
             self.assertGreater(saved.max().item(), 0)
             decoded, _ = ReichardtDataset(cache / 'train')[0]

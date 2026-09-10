@@ -109,6 +109,21 @@ quantization to the same byte grid at save time. The renderer itself still
 returns float32 intensities in [0, 1]. Each file has newly sampled motion
 parameters and dot positions.
 
+Translation is sampled in polar coordinates. The defaults draw speed uniformly
+from the half-open interval `[0.001, 0.015)` scene units per frame step and
+heading uniformly from `[-180, 180)` degrees. Heading 0 is forward (+Z), -90 is
+left (-X), and +90 is right (+X). Cartesian motion is then calculated as
+`dx = speed*sin(heading)` and `dz = speed*cos(heading)`. The strictly positive
+minimum avoids samples whose translation is zero or too close to zero to define
+a useful heading. Derived `dx` and `dz` are rounded to nano-units before both
+rendering and filename labeling.
+
+The generated folder name records speed, heading, conservative Cartesian
+component bounds, and rotation bounds. Its `generation.json` records the exact
+half-open interval semantics, seed, split, coordinate conversion, and stimulus
+configuration. When present, this document is copied into the preprocessed
+cache's `reichardt.json` as `stimulus_generation`.
+
 `FlowXtDataset`, preprocessing, and the sample viewer decode uint8 by dividing
 by 255 before using the intensities. Raw files must contain uint8 tensors;
 product files must contain float16 tensors.
@@ -147,11 +162,11 @@ motion-range folder name so training can read label normalization:
 ```bash
 export PYTHONPATH=src
 python -m data.precompute_reichardt \
-  data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0
+  <raw-dataset-folder> \
+  <new-product-dataset-folder>
 
 python -m train.train_flow_xt_net \
-  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
+  <new-product-dataset-folder> \
   --epochs 10 --from-scratch
 ```
 

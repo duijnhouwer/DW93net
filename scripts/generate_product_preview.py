@@ -20,7 +20,8 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(2)
     config = StimConfig()
-    settings = dict(n_samples=10, seed=42, dx_range=[-.01, .01], dz_range=[-.01, .01],
+    settings = dict(n_samples=10, seed=42, speed_range=[.001, .015],
+                    heading_deg_range=[-180, 180],
                     rot_deg_range=[0, 0], split=[.8, .1, .1], config=asdict(config))
     (root / 'generation.json').write_text(json.dumps(settings, indent=2) + '\n')
     source = Path(generate_flow_xt_dataset(output_root=str(root / 'raw'),
@@ -67,7 +68,8 @@ def main():
     (root / 'files.json').write_text(json.dumps(records, indent=2) + '\n')
     (root / 'README.md').write_text(
         '# Ten translation stimuli and their product maps\n\n'
-        'Seed 42; dx,dz sampled from [-0.01,0.01]; yaw=0. Default 120-degree, '
+        'Seed 42; speed sampled from [0.001,0.015) scene units per step and heading '
+        'from [-180,180) degrees; yaw=0. Default 120-degree, '
         '7200-pixel stimuli, 1000 world dots, X supersampling 255. Splits: 8 train, '
         '1 validate, 1 test. See `generation.json` for exact settings.\n\n'
         'Each raw `.pt`: uint8 [1,2,7200]. Each product `.pt`: float16 [484,1,7062]. '

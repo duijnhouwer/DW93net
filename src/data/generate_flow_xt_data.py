@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -27,8 +28,8 @@ class StimConfig:
 def generate_flow_xt_dataset(
     output_root: str = None,
     n_samples: int = 100, # 100_000
-    dx_range=(-0.01, 0.01),
-    dz_range=(-0.01, 0.01),
+    speed_range=(0.001, 0.015),
+    heading_deg_range=(-180, 180),
     rot_deg_range=(-0.5, 0.5),
     split=(0.8, 0.1, 0.1),
     seed: int = None,
@@ -36,10 +37,15 @@ def generate_flow_xt_dataset(
 ) -> str:
     """
     Generates a dataset of two-frame, one-step XT flow tensors and saves them into train/validate/test subfolders.
-    Folder name encodes parameter ranges in nano-units (nux, nuz) and nano-degrees (nrot).
-    Each sample's dx, dz and rot_deg are rounded to nano-units/nano-degrees FIRST, and those
-    exact values are used to render the stimulus and written to the filename (nux, nuz, nrot),
-    so the label always matches the stimulus that was generated. If `superimpose` is True,
+    Speed and heading are sampled from half-open intervals. Heading 0 degrees is
+    forward (+Z), -90 is left (-X), and +90 is right (+X). The sampled polar
+    translation is converted with dx=speed*sin(heading) and
+    dz=speed*cos(heading).
+
+    Each sample's resulting dx, dz and rot_deg are rounded to
+    nano-units/nano-degrees FIRST. Those exact Cartesian values are rendered and
+    written to the filename, so the label always matches the stimulus. If
+    `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities.
     Each file contains one uint8 pair with shape [1, 2, X], scaled to 0..255.
@@ -48,33 +54,52 @@ def generate_flow_xt_dataset(
     if output_root is None:
         output_root = DEFAULT_DATA_ROOT
 
-    def validate_range(name, r):
-        r = np.asarray(r)
-        if r.shape != (2,) or r[0] > r[1]:
-            raise ValueError(f"{name} must be a tuple/list with two values where r[0] <= r[1]. Got: {r}")
+    def validate_range(name, r, *, strictly_increasing=False):
+        r = np.asarray(r, dtype=np.float64)
+        valid_order = r.shape == (2,) and np.isfinite(r).all()
+        if valid_order:
+            valid_order = r[0] < r[1] if strictly_increasing else r[0] <= r[1]
+        if not valid_order:
+            relation = '<' if strictly_increasing else '<='
+            raise ValueError(f"{name} must contain two finite values with low {relation} high. Got: {r}")
+        return r
 
     def validate_split(split):
         if not np.isclose(sum(split), 1.0):
             raise ValueError(f"split must sum to 1. Got: {split}")
 
-    validate_range('dx_range', dx_range)
-    validate_range('dz_range', dz_range)
-    validate_range('rot_deg_range', rot_deg_range)
+    speed_range = validate_range('speed_range', speed_range, strictly_increasing=True)
+    heading_deg_range = validate_range(
+        'heading_deg_range', heading_deg_range, strictly_increasing=True)
+    rot_deg_range = validate_range('rot_deg_range', rot_deg_range)
+    if speed_range[0] <= 0:
+        raise ValueError("speed_range must have a strictly positive lower bound")
+    if heading_deg_range[0] < -180 or heading_deg_range[1] > 180:
+        raise ValueError("heading_deg_range must lie within [-180, 180]")
     validate_split(split)
 
     if seed is None:
         import time
         seed = int(time.time() * 1000) % (2**32)
 
-    # Generate folder name using nano-units for dx and dz and nano-degrees for rotation
-    nux_min = int(round(dx_range[0] * 1e9))
-    nux_max = int(round(dx_range[1] * 1e9))
-    nuz_min = int(round(dz_range[0] * 1e9))
-    nuz_max = int(round(dz_range[1] * 1e9))
+    # Include the polar sampling ranges to distinguish datasets that can share
+    # Cartesian bounds. Conservative component bounds retain compatibility with
+    # range-normalized dx/dz training.
+    nspeed_min = int(round(speed_range[0] * 1e9))
+    nspeed_max = int(round(speed_range[1] * 1e9))
+    nheading_min = int(round(heading_deg_range[0] * 1e9))
+    nheading_max = int(round(heading_deg_range[1] * 1e9))
+    nux_min = nuz_min = -nspeed_max
+    nux_max = nuz_max = nspeed_max
     nrot_min = int(round(rot_deg_range[0] * 1e9))
     nrot_max = int(round(rot_deg_range[1] * 1e9))
 
-    folder_name = f"nux={nux_min},{nux_max}_nuz={nuz_min},{nuz_max}_nrot={nrot_min},{nrot_max}"
+    folder_name = (
+        f"nuspeed={nspeed_min},{nspeed_max}_"
+        f"nheading={nheading_min},{nheading_max}_"
+        f"nux={nux_min},{nux_max}_nuz={nuz_min},{nuz_max}_"
+        f"nrot={nrot_min},{nrot_max}"
+    )
     if config.superimpose:
         folder_name += "_superimposed"
     output_folder = os.path.join(output_root, folder_name)
@@ -82,6 +107,25 @@ def generate_flow_xt_dataset(
     # Create subfolders
     for sub in ["train", "validate", "test"]:
         os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
+
+    generation_metadata = {
+        "format": "polar-translation-stimuli-v1",
+        "n_samples": n_samples,
+        "speed_range": {"low_inclusive": float(speed_range[0]),
+                        "high_exclusive": float(speed_range[1]),
+                        "units": "scene_units_per_frame_step"},
+        "heading_deg_range": {"low_inclusive": float(heading_deg_range[0]),
+                              "high_exclusive": float(heading_deg_range[1]),
+                              "convention": "0=+Z_forward,-90=-X_left,+90=+X_right"},
+        "conversion": {"dx": "speed*sin(heading)", "dz": "speed*cos(heading)"},
+        "rot_deg_range": [float(rot_deg_range[0]), float(rot_deg_range[1])],
+        "split": list(split), "seed": seed, "stimulus_config": vars(config),
+        "cartesian_component_bounds": {"dx": [nux_min / 1e9, nux_max / 1e9],
+                                       "dz": [nuz_min / 1e9, nuz_max / 1e9]},
+    }
+    with open(os.path.join(output_folder, "generation.json"), "w") as metadata_file:
+        json.dump(generation_metadata, metadata_file, indent=2)
+        metadata_file.write("\n")
 
     rng = np.random.default_rng(seed)
 
@@ -101,14 +145,22 @@ def generate_flow_xt_dataset(
         current += count
 
     for i in range(n_samples):
-        dx = rng.uniform(*dx_range)
-        dz = rng.uniform(*dz_range)
+        # Component labels are quantized below. Resample the vanishingly thin
+        # boundary cases where Cartesian nano-unit rounding would move the
+        # actual rendered magnitude outside the requested half-open interval.
+        while True:
+            speed = rng.uniform(*speed_range)
+            heading_deg = rng.uniform(*heading_deg_range)
+            heading_rad = np.deg2rad(heading_deg)
+            nux = int(round(speed * np.sin(heading_rad) * 1e9))
+            nuz = int(round(speed * np.cos(heading_rad) * 1e9))
+            quantized_speed = np.hypot(nux, nuz) / 1e9
+            if speed_range[0] <= quantized_speed < speed_range[1]:
+                break
         rot_deg = rng.uniform(*rot_deg_range)
 
         # Round to nano-units/nano-degrees FIRST, then use those exact values for BOTH
         # stimulus generation and the filename, so the label always matches the stimulus.
-        nux = int(round(dx * 1e9))
-        nuz = int(round(dz * 1e9))
         nrot = int(round(rot_deg * 1e9))
         dx, dz, rot_deg = nux / 1e9, nuz / 1e9, nrot / 1e9
 

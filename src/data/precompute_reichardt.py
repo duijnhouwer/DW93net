@@ -53,12 +53,14 @@ def precompute_dataset(source, destination, bank=None):
     if repository_state(repo, destination) != initial_state:
         raise RuntimeError("Source changed during preprocessing; cache left incomplete, rerun in a new folder")
     (destination / 'inputs.json').write_text(json.dumps(samples, indent=2) + "\n")
+    generation_path = source / "generation.json"
+    stimulus_generation = json.loads(generation_path.read_text()) if generation_path.exists() else None
     metadata = dict(bank.metadata, storage_dtype="torch.float16", source=str(source),
                     created_utc=started, completed_utc=datetime.now(timezone.utc).isoformat(),
                     n_samples=len(samples), raw_shape=raw_shape, product_shape=product_shape,
                     input_encoding="uint8 / 255", input_manifest="inputs.json",
                     input_manifest_sha256=hashlib.sha256((destination / 'inputs.json').read_bytes()).hexdigest(),
-                    software=provenance)
+                    stimulus_generation=stimulus_generation, software=provenance)
     (destination / "reichardt.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return metadata
 

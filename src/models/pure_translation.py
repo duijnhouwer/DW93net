@@ -3,8 +3,9 @@
 Input [B,C,1,X] contains cached DoG ON_ON, OFF_OFF, ON_OFF, OFF_ON products, not biological
 motion-energy measurements. At the default 7200 pixels / 120 degrees and spans
 -60..60, C=484 and X=7062. Displacements are pixels per step, NOT deg/s.
-Output [dx,dz] is scene distance per step; heading=atan2(dx,dz), speed per step
-=hypot(dx,dz). Absolute scale depends on the training distance distribution.
+Output [dx,dz] is scene distance per step; heading=atan2(dx,dz), with 0 forward,
+-90 left and +90 right; speed per step=hypot(dx,dz). Absolute scale depends on
+the training distance distribution.
 
 Qian, Andersen & Adelson (1994), doi:10.1523/JNEUROSCI.14-12-07381.1994,
 motivate local opponent suppression BEFORE larger MT pooling. Their suppression

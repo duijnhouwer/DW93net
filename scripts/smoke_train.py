@@ -34,6 +34,7 @@ def main():
     config = StimConfig(stim_wid_px=128, n_world_dots=120)
     source = Path(generate_flow_xt_dataset(
         output_root=str(output / 'raw'), n_samples=80, seed=42,
+        speed_range=(0.001, 0.015), heading_deg_range=(-180, 180),
         rot_deg_range=(0, 0), config=config))
     raw_files = sorted(source.rglob('*.pt'))
     raw = [torch.load(p, weights_only=True) for p in raw_files]

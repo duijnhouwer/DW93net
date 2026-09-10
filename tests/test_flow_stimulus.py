@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -18,7 +19,8 @@ class OneStepStimulusTests(unittest.TestCase):
             with self.subTest(superimpose=superimpose), tempfile.TemporaryDirectory() as root:
                 folder = generate_flow_xt_dataset(
                     output_root=root, n_samples=2,
-                    dx_range=(0, 0), dz_range=(0, 0), rot_deg_range=(0, 0),
+                    speed_range=(0.001, 0.002), heading_deg_range=(0, 1),
+                    rot_deg_range=(0, 0),
                     split=(1, 0, 0), seed=42,
                     config=StimConfig(stim_wid_px=128, n_world_dots=120,
                                       x_supersampling=10, superimpose=superimpose))
@@ -28,8 +30,50 @@ class OneStepStimulusTests(unittest.TestCase):
                     pairs = torch.load(path, weights_only=True)
                     self.assertEqual(pairs.shape, (1, 2, 128))
                     self.assertEqual(pairs.dtype, torch.uint8)
-                    torch.testing.assert_close(pairs[:, 0], pairs[:, 1], rtol=0, atol=0)
                     self.assertTrue(((pairs > 0) & (pairs < 255)).any())
+                metadata = json.loads((Path(folder) / 'generation.json').read_text())
+                self.assertEqual(metadata['speed_range']['low_inclusive'], 0.001)
+                self.assertEqual(metadata['speed_range']['high_exclusive'], 0.002)
+                self.assertEqual(metadata['heading_deg_range']['convention'],
+                                 '0=+Z_forward,-90=-X_left,+90=+X_right')
+
+    def test_polar_sampling_avoids_zero_speed_and_obeys_heading_convention(self):
+        from data.load_flow_xt_data import parse_camera_motion_from_filename
+
+        with tempfile.TemporaryDirectory() as root:
+            folder = generate_flow_xt_dataset(
+                output_root=root, n_samples=40, speed_range=(0.001, 0.015),
+                heading_deg_range=(-180, 180), rot_deg_range=(0, 0),
+                split=(1, 0, 0), seed=17,
+                config=StimConfig(stim_wid_px=32, n_world_dots=4,
+                                  x_supersampling=1))
+            self.assertIn('nuspeed=1000000,15000000', Path(folder).name)
+            self.assertIn('nheading=-180000000000,180000000000', Path(folder).name)
+            for path in Path(folder, 'train').glob('*.pt'):
+                motion = parse_camera_motion_from_filename(path.name)
+                speed = np.hypot(motion['dx'], motion['dz'])
+                heading = np.degrees(np.arctan2(motion['dx'], motion['dz']))
+                self.assertGreaterEqual(speed, 0.001 - 1e-9)
+                self.assertLess(speed, 0.015 + 1e-9)
+                self.assertGreaterEqual(heading, -180)
+                self.assertLess(heading, 180)
+
+        cardinal = [(0, 0, 1), (-90, -1, 0), (90, 1, 0)]
+        for heading, expected_dx, expected_dz in cardinal:
+            radians = np.deg2rad(heading)
+            self.assertAlmostEqual(np.sin(radians), expected_dx)
+            self.assertAlmostEqual(np.cos(radians), expected_dz)
+
+    def test_rejects_zero_speed_and_invalid_heading_ranges(self):
+        config = StimConfig(stim_wid_px=32, n_world_dots=4, x_supersampling=1)
+        with tempfile.TemporaryDirectory() as root:
+            for speeds, headings in [((0, .01), (-180, 180)),
+                                     ((.01, .01), (-180, 180)),
+                                     ((.001, .01), (-181, 180)),
+                                     ((.001, .01), (-180, 181))]:
+                with self.subTest(speeds=speeds, headings=headings), self.assertRaises(ValueError):
+                    generate_flow_xt_dataset(root, 1, speeds, headings, (0, 0),
+                                             (1, 0, 0), 1, config)
 
     def test_default_supersampling_aligns_with_byte_levels(self):
         config = StimConfig(stim_wid_px=128, n_world_dots=120)
