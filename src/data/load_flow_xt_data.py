@@ -13,7 +13,7 @@ import re
 import random
 import json
 from pathlib import Path
-from features.reichardt import ReichardtBank
+from features.dog_motion import DoGMotionBank
 from data.stimulus_io import decode_stimulus
 
 
@@ -51,7 +51,7 @@ class ReichardtDataset(FlowXtDataset):
     def __init__(self, folder, expected_metadata=None):
         super().__init__(folder)
         metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
-        bank = ReichardtBank(metadata["dx_values"])
+        bank = DoGMotionBank.from_metadata(metadata)
         self.metadata = bank.metadata
         if any(metadata.get(key) != value for key, value in self.metadata.items()):
             raise ValueError("Unsupported Reichardt cache format")
@@ -164,3 +164,21 @@ def subset_dataset(dataset, subset_cfg: dict):
         raise ValueError(f"Unknown subset method: {method}")
 
     return Subset(dataset, indices)
+
+
+def require_pure_translation(dataset):
+    """Validate actual labels, including constant nonzero yaw folder ranges."""
+    for filename in dataset.files:
+        if parse_camera_motion_from_filename(filename)["rot_deg"] != 0:
+            raise ValueError(f"Pure translation requires zero yaw: {filename}")
+
+
+def require_pure_translation_root(root_folder):
+    """Fail before any file I/O unless folder bounds explicitly specify zero yaw."""
+    name = Path(root_folder).name
+    match = re.search(r"(?:^|_)nrot=(-?\d+),(-?\d+)(?=_|$)", name)
+    if match is None or any(int(bound) != 0 for bound in match.groups()):
+        raise ValueError(
+            f"Pure translation requires rot_deg=0 for the entire dataset "
+            f"(nrot=0,0); stopping before loading files: {root_folder}"
+        )

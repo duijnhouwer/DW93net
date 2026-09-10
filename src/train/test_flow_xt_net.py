@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
-from models.flow_xt_net import FlowXTNet
+from models.pure_translation import PureTranslationNet
 from data.load_flow_xt_data import ReichardtDataset
-from data.load_flow_xt_data import subset_dataset, make_flow_loader
+from data.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation, require_pure_translation_root
 from data.utils import select_subfolder
 import sys
 
@@ -17,7 +17,7 @@ def run_flow_xt_model_on_test_data(
     num_workers: int = 4,
 ) -> dict:
     """
-    Loads a trained FlowXTNet model and applies it to test data.
+    Loads a trained PureTranslationNet model and applies it to test data.
 
     Args:
         data_folder: Path to the root of the data folder.
@@ -27,22 +27,26 @@ def run_flow_xt_model_on_test_data(
 
     Returns:
         Dictionary with keys:
-            'preds'   → ndarray of predicted values [N x 3]
-            'targets' → ndarray of ground truth values [N x 3]
+            'preds'   → ndarray of predicted values [N x 2]
+            'targets' → ndarray of ground truth values [N x 2]
     """
 
+    require_pure_translation_root(data_folder)
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     batch_size = checkpoint.get("settings", {}).get("batch_size", 64)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if "reichardt" not in checkpoint or "n_input_channels" not in checkpoint:
         raise ValueError("Expected a checkpoint trained on Reichardt response maps")
-    model = FlowXTNet(checkpoint["n_input_channels"]).to(device)
+    if checkpoint.get("architecture") != PureTranslationNet.architecture:
+        raise ValueError("Expected a pure-translation checkpoint")
+    model = PureTranslationNet(checkpoint["reichardt"]["dx_values"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
     test_folder = os.path.join(data_folder, "test")
     test_dataset = ReichardtDataset(folder=test_folder, expected_metadata=checkpoint["reichardt"])
+    require_pure_translation(test_dataset)
     test_dataset = subset_dataset(test_dataset, {"n": subset_size, "method": "random"})
     test_loader = make_flow_loader(test_dataset, batch_size, device, num_workers=num_workers)
 
@@ -54,7 +58,7 @@ def run_flow_xt_model_on_test_data(
             x = x.to(device, non_blocking=True)
             pred = model(x).cpu().numpy()
             all_preds.append(pred)
-            all_targets.append(y.numpy())
+            all_targets.append(y[:, :2].numpy())
 
     return {
         'preds': np.vstack(all_preds),
@@ -69,9 +73,9 @@ def regress_labels_and_estimates(results: dict):
 
     Args:
         results: Dictionary with keys 'preds' and 'targets',
-                 each a numpy array of shape [N x 3] corresponding to dx, dz, and rot_deg.
+                 each a numpy array of shape [N x 2] corresponding to dx and dz.
     """
-    labels = ['dx', 'dz', 'rot_deg']
+    labels = ['dx', 'dz']
     preds = results['preds']
     targets = results['targets']
 
@@ -105,7 +109,7 @@ def analyze_heading_error_vs_heading(results: dict):
 
     Args:
         results: Dictionary with keys 'preds' and 'targets',
-                 each an [N x 3] numpy array for dx, dz, rot_deg.
+                 each an [N x 2] numpy array for dx, dz.
     """
     dx_true = results['targets'][:, 0]
     dz_true = results['targets'][:, 1]
@@ -113,7 +117,13 @@ def analyze_heading_error_vs_heading(results: dict):
     dz_pred = results['preds'][:, 1]
 
     # Compute true and predicted heading angles in degrees
-    heading_true = np.degrees(np.arctan2(dz_true, dx_true))  # range [-180, 180]
+    heading_true = np.degrees(np.arctan2(dx_true, dz_true))  # range [-180, 180]
+
+    # Heading is undefined for zero true or predicted translation.
+    valid = (np.hypot(dx_true, dz_true) > 0) & (np.hypot(dx_pred, dz_pred) > 0)
+    heading_true = heading_true[valid]
+    dx_true, dz_true = dx_true[valid], dz_true[valid]
+    dx_pred, dz_pred = dx_pred[valid], dz_pred[valid]
 
     # Normalize direction vectors
     true_vecs = np.stack([dx_true, dz_true], axis=1)
@@ -128,15 +138,15 @@ def analyze_heading_error_vs_heading(results: dict):
     angle_error = np.degrees(np.arccos(dot))
 
     # Compute sign using 2D cross product
-    cross = true_norm[:, 0] * pred_norm[:, 1] - true_norm[:, 1] * pred_norm[:, 0]
+    cross = true_norm[:, 1] * pred_norm[:, 0] - true_norm[:, 0] * pred_norm[:, 1]
     signed_error = np.where(cross >= 0, angle_error, -angle_error)
 
     # Plot error vs. true heading
     plt.figure(figsize=(8, 5))
     plt.scatter(heading_true, signed_error, alpha=0.3)
     plt.axhline(0, color='gray', linestyle='--')
-    plt.xlabel("True Heading (deg)\n0 = forward, 90 = left, 180 = backward, 270/-90 = right")
-    plt.ylabel("Heading Estimate Error (deg)\n(+ = too CCW, – = too CW)")
+    plt.xlabel("True Heading (deg)\n0 = forward (+Z), 90 = +X, 180 = backward, -90 = -X")
+    plt.ylabel("Heading Estimate Error (deg)\n(+ = toward increasing heading)")
     plt.title("Signed Heading Error vs. True Heading")
     plt.grid(True)
     plt.tight_layout()
@@ -150,7 +160,7 @@ def analyze_speed_error_vs_speed(results: dict):
 
     Args:
         results: Dictionary with keys 'preds' and 'targets',
-                 each an [N x 3] numpy array for dx, dz, rot_deg.
+                 each an [N x 2] numpy array for dx, dz.
     """
     dx_true = results['targets'][:, 0]
     dz_true = results['targets'][:, 1]
@@ -168,82 +178,12 @@ def analyze_speed_error_vs_speed(results: dict):
     plt.figure(figsize=(8, 5))
     plt.scatter(speed_true, speed_error, alpha=0.3)
     plt.axhline(0, color='gray', linestyle='--')
-    plt.xlabel("True Translation Speed (m/s)")
-    plt.ylabel("Speed Estimate Error (m/s)\n(+ = overestimate, – = underestimate)")
+    plt.xlabel("True Translation Distance per Step (scene units)")
+    plt.ylabel("Distance per Step Error (scene units)\n(+ = overestimate, – = underestimate)")
     plt.title("Translation Speed Error vs. True Speed")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig("speed_error_vs_speed.png", dpi=150)
-    plt.show()
-
-
-def analyze_rotdeg_error_vs_rotdeg(results: dict):
-    """
-    Analyzes signed rotation displacement error vs. true rotation displacement.
-
-    Args:
-        results: Dictionary with keys 'preds' and 'targets',
-                 each an [N x 3] numpy array for dx, dz, rot_deg.
-    """
-    rot_true = results['targets'][:, 2]
-    rot_pred = results['preds'][:, 2]
-
-    # Compute signed angular error, wrapped to [-180, 180]
-    rot_error = (rot_pred - rot_true + 180) % 360 - 180
-
-    # Plot error vs. true rotation displacement
-    plt.figure(figsize=(8, 5))
-    plt.scatter(rot_true, rot_error, alpha=0.3)
-    plt.axhline(0, color='gray', linestyle='--')
-    plt.xlabel("True Rotation (deg/frame)")
-    plt.ylabel("Rotation Estimate Error (deg)\n(+ = overestimate, – = underestimate)")
-    plt.title("Rotation Displacement Error vs. True Rotation")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("rotdeg_error_vs_rotdeg.png", dpi=150)
-    plt.show()
-
-
-def analyze_heading_error_vs_rotdeg(results: dict):
-    """
-    Analyzes heading direction estimation error vs. true rotation (rot_deg).
-
-    Args:
-        results: Dictionary with keys 'preds' and 'targets',
-                 each an [N x 3] numpy array for dx, dz, rot_deg.
-    """
-    dx_true = results['targets'][:, 0]
-    dz_true = results['targets'][:, 1]
-    dx_pred = results['preds'][:, 0]
-    dz_pred = results['preds'][:, 1]
-    rot_true = results['targets'][:, 2]
-
-    # Compute normalized direction vectors
-    true_vecs = np.stack([dx_true, dz_true], axis=1)
-    pred_vecs = np.stack([dx_pred, dz_pred], axis=1)
-
-    true_norm = true_vecs / np.linalg.norm(true_vecs, axis=1, keepdims=True)
-    pred_norm = pred_vecs / np.linalg.norm(pred_vecs, axis=1, keepdims=True)
-
-    # Compute signed heading error using dot and 2D cross product
-    dot = np.einsum('ij,ij->i', true_norm, pred_norm)
-    dot = np.clip(dot, -1.0, 1.0)
-    angle_error = np.degrees(np.arccos(dot))
-
-    # Sign from 2D cross product
-    cross = true_norm[:, 0] * pred_norm[:, 1] - true_norm[:, 1] * pred_norm[:, 0]
-    signed_error = np.where(cross >= 0, angle_error, -angle_error)
-
-    # Plot heading error vs. rotation
-    plt.figure(figsize=(8, 5))
-    plt.scatter(rot_true, signed_error, alpha=0.3)
-    plt.axhline(0, color='gray', linestyle='--')
-    plt.xlabel("True Rotation (deg/frame)\n(+ = CCW rotation, – = CW rotation)")
-    plt.ylabel("Heading Estimate Error (deg)\n(+ = too CCW, – = too CW)")
-    plt.title("Heading Bias vs. Rotation")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("heading_error_vs_rotdeg.png", dpi=150)
     plt.show()
 
 
@@ -270,8 +210,6 @@ def main():
     regress_labels_and_estimates(results)
     analyze_heading_error_vs_heading(results)
     analyze_speed_error_vs_speed(results)
-    analyze_rotdeg_error_vs_rotdeg(results)
-    analyze_heading_error_vs_rotdeg(results)
 
 if __name__ == "__main__":
     main()

@@ -12,7 +12,7 @@ class ReichardtBank:
     Opposing directions remain separate products (no subtraction).
     """
 
-    def __init__(self, dx_values=tuple(range(-10, 11))):
+    def __init__(self, dx_values=tuple(range(-60, 61))):
         self.dx_values = tuple(dx_values)
         if (not self.dx_values
                 or any(isinstance(v, bool) or not isinstance(v, Integral)

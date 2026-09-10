@@ -1,0 +1,73 @@
+"""Self-contained Git-visible working source snapshot for a preprocessing run."""
+import hashlib
+import importlib.metadata
+import io
+import json
+import platform
+import subprocess
+import tarfile
+from pathlib import Path
+
+
+def repository_state(repo, exclude):
+    repo, exclude = Path(repo).resolve(), Path(exclude).resolve()
+
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(repo), *args])
+
+    commit = git('rev-parse', 'HEAD').decode().strip()
+    diff = git('diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD', '--')
+    names = git('ls-files', '-z', '--cached', '--others', '--exclude-standard').split(b'\0')
+    files = {}
+    for raw in sorted(set(names)):
+        if not raw:
+            continue
+        name = raw.decode('utf-8', errors='surrogateescape')
+        path = repo / name
+        if path == exclude or exclude in path.parents:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"Source snapshot requires ordinary files, found symlink: {name}")
+        if path.is_file():
+            content = path.read_bytes()
+            files[name] = (content, path.stat().st_mode & 0o777)
+    return commit, diff, files
+
+
+def write_provenance(destination, repo):
+    """Capture before processing. Return state for an end-of-run stability check."""
+    destination = Path(destination)
+    state = repository_state(repo, destination)
+    commit, diff, files = state
+    out = destination / 'provenance'
+    out.mkdir()
+    (out / 'working-tree.patch').write_bytes(diff)
+    # Unlike a patch, this also includes untracked source and requires no Git
+    # object database to recover the current code. No data/.git/environment copy.
+    with tarfile.open(out / 'source.tar.gz', 'w:gz') as archive:
+        for name, (content, mode) in files.items():
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(content), mode
+            archive.addfile(info, io.BytesIO(content))
+    manifest = {name: dict(sha256=hashlib.sha256(content).hexdigest(), mode=mode)
+                for name, (content, mode) in files.items()}
+    (out / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    environment = dict(python=platform.python_version(), platform=platform.platform(),
+                       packages={dist.metadata['Name']: dist.version
+                                 for dist in importlib.metadata.distributions() if dist.metadata['Name']})
+    (out / 'environment.json').write_text(json.dumps(environment, indent=2) + '\n')
+    (out / 'RESTORE.md').write_text(
+        '# Recover this run\n\nExtract `source.tar.gz` into an empty directory to recover '
+        'the working source directly, including Git-visible untracked files. '
+        'Do not overlay an existing checkout: files deleted at capture time are absent.\n\n'
+        f'Base Git commit: `{commit}`. `working-tree.patch` records tracked staged and '
+        'unstaged changes relative to HEAD (binary changes included); it does not contain '
+        'untracked files, which are in the archive. `source-manifest.json` records file hashes '
+        'and modes. `environment.json` records installed package versions, not bundled dependencies.\n\n'
+        'Scope: tracked and nonignored untracked repository files, excluding this output '
+        'directory. Git-ignored datasets, virtual environments and other ignored files are '
+        'not bundled. Git history is not bundled.\n')
+    artifacts = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir()}
+    return dict(git_commit=commit, tracked_changes=bool(diff),
+                directory='provenance', artifacts_sha256=artifacts,
+                snapshot_scope='tracked and nonignored untracked working-tree files'), state

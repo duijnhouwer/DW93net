@@ -113,25 +113,33 @@ parameters and dot positions.
 by 255 before using the intensities. Raw files must contain uint8 tensors;
 product files must contain float16 tensors.
 
-Preprocessing turns its two frames into one row of products per spatial span;
-the network receives these product maps as one training example.
+Preprocessing applies a **1D luminance DoG independently to each frame**:
+center sigma 1 pixel, surround sigma 3 pixels, kernel radius 9 pixels (19 taps).
+Both discrete Gaussians are separately normalized to unit sum. Filtering uses
+valid support, no padding, no temporal filtering, and no per-image rescaling.
+The signed contrast is split into `ON=relu(DoG)` and `OFF=relu(-DoG)`.
 
-For each pair, the current deterministic detector computes
-`R_s(x) = I(0, x-s) * I(1, x)` with one temporal delay, `dT=1`, and multiple
-signed spatial spans `s=dX`. Positive spans detect motion toward increasing X;
-zero span is supported for stationary correlations. Larger spans probe larger
-displacements over the same interval. Fractional intensities produce graded
-products. Opposite directions remain separate channels; opponent subtraction
-is not implemented in this stage.
+`DoGMotionBank(dx_values)` then computes `ON(0,x-s)*ON(1,x)` and
+`OFF(0,x-s)*OFF(1,x)`, plus `ON(0,x-s)*OFF(1,x)` and
+`OFF(0,x-s)*ON(1,x)`, for each signed displacement `s` and a fixed one-frame
+delay. Four nonnegative blocks are saved in order: ON–ON, OFF–OFF, ON–OFF,
+OFF–ON, each in the supplied span order. The first polarity is the first frame;
+the second polarity is the second frame.
 
-Use `ReichardtBank(dx_values)`. The delay is fixed at one time bin; inputs must
-contain exactly two frames. There is no delay parameter or CLI option.
-With `C=len(dx_values)`,
-`left=max(0,max(dx_values))`, and `right=max(0,-min(dx_values))`, a single
-`[2, X]` or `[1, 2, X]` input produces `[C, 1, X-left-right]`. Channels follow
-the supplied span order and share the same valid present-time coordinates.
-The crop uses no padding or wrapping; invalid sizes and nonfinite inputs are
-rejected.
+The model reconstructs signed correlation as `ON_ON + OFF_OFF - ON_OFF - OFF_ON`
+before local pooling and directional opponency. Negative responses are retained
+until opposite-direction subtraction and rectification. The suppressive surround
+uses absolute signed correlation to keep its denominator positive. These fixed
+interactions are a starting hypothesis; the separate cached blocks remain
+available for future divisive or learned cross-polarity interactions.
+
+For radius `r`, `left=r+max(0,max(dx_values))` and
+`right=r+max(0,-min(dx_values))`, a `[2,X]` or `[1,2,X]` stimulus produces
+`[4*len(dx_values),1,X-left-right]`. The defaults give `[484,1,7062]` at X=7200.
+Positions are anchored in the present frame's original pixel coordinates.
+Filtering and products use float32; cached products use float16. The lower-level
+`ReichardtBank` remains the product primitive; cache generation always uses
+`DoGMotionBank`.
 
 Preprocess to a separate, new directory. Keep the
 motion-range folder name so training can read label normalization:
@@ -140,21 +148,21 @@ motion-range folder name so training can read label normalization:
 export PYTHONPATH=src
 python -m data.precompute_reichardt \
   data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  --dx -2 -1 1 2
+  data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0
+
 python -m train.train_flow_xt_net \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   --epochs 10 --from-scratch
 ```
 
 Preprocessing preserves splits and label filenames, and writes `reichardt.json`
-with channel and crop metadata only after completion. Existing destinations are
+with full preprocessing metadata only after completion. Existing destinations are
 refused. Products are computed from normalized intensities in float32 and stored
 as **float16**, with rounding and an overflow check. Regenerate caches when
 stimuli or detector settings change. The fixed-delay cache format is
-`reichardt-products-v2`.
+`dog-onoff-products-v2`.
 
-`ReichardtDataset` reads cached maps as float32. `FlowXTNet` learns from these
+`ReichardtDataset` reads cached maps as float32. `PureTranslationNet` learns from these
 maps downstream of detection. Checkpoints retain detector metadata, and
 validation/evaluation reject mismatched configurations. Use the cached dataset
 root for evaluation; start fresh when detector configurations change.
@@ -179,3 +187,90 @@ Run the correctness and pipeline tests with the project's Python environment:
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+## Translation-only model baseline
+
+On `toward_translation`, `src/models/pure_translation.py` replaces the original
+regressor. It consumes `[B,C,1,X]` product maps and predicts `[dx,dz]` in scene
+units per frame step. Heading is `atan2(dx,dz)` (zero toward +Z, positive toward
++X); translation distance per step is `hypot(dx,dz)`. Heading is undefined at
+zero translation. Speed in units per second additionally requires the step duration.
+
+The default detector bank now includes every integer displacement from **-60
+through +60 pixels per frame step**. At 7200 pixels over 120 degrees, that is
+approximately +/-1 degree per step; degrees/second additionally requires the
+frame duration. With DoG and four polarity pairs it produces `[484,1,7062]` maps: 6,836,016
+bytes of float16 payload per sample, excluding file overhead.
+Existing caches do not acquire new channels automatically: precompute from raw
+stimuli into a new destination using the default CLI settings. Raw stimuli do
+not need regeneration solely to change the detector bank. This extends the
+measurement range, not the camera-translation label ranges, and still cannot
+represent displacements outside +/-60.
+
+The model has explicit V1, MT, and MST inspired stages:
+
+- **V1:** combine the four products into signed correlations; form local responses over 15 pixels
+  and a second population with a broader, same-channel absolute-correlation divisive surround (61
+  pixels, semisaturation 0.03). These are functional rate approximations using
+  cached products, not a physiological motion-energy model.
+- **MT input:** subtract equal-magnitude opposite-direction responses and
+  rectify locally, before larger spatial pooling. Zero-span evidence passes
+  through. Pairing uses actual signed metadata, so both signs must be supplied.
+  This adapts Qian, Andersen & Adelson's local opponency principle; their
+  primary suppression stage is MT, not V1. Our speed-channel matching does
+  not reproduce their spatial-frequency/disparity channels.
+- **MT:** pool the surviving subunits and learn 96-channel local combinations
+  with progressively larger receptive fields. Retain multiple speed signals
+  instead of explicitly reducing them to one local velocity estimate.
+- **MST:** retain 120 ordered spatial bins, then learn 256 broad-field units
+  and decode their activity to two translation components. Broad spatial
+  integration is motivated by MST physiology; biological tuning is not imposed
+  or guaranteed by this learned readout.
+
+Layer comments explain all starting hyperparameters. No dropout or batch
+normalization is used. This simplified feedforward model has no binocular
+signals, orientation channels, temporal dynamics, recurrence, or eccentricity-
+dependent receptive fields. Its mechanisms and estimation accuracy need tests
+and ablations; speed scale still relies on the training distance distribution.
+
+Training and evaluation stop before loading files unless the dataset root
+explicitly specifies `nrot=0,0`; filename checks catch mislabeled samples.
+Checkpoints store detector metadata and the new architecture tag, preventing
+resume from earlier architectures; start fresh for this model and bank.
+Keep FOV, width, crop, and detector semantics fixed across splits. Pipeline
+tests verify implementation, not translation accuracy.
+
+Biological references: [Qian, Andersen & Adelson (1994)](https://doi.org/10.1523/JNEUROSCI.14-12-07381.1994),
+[Tsui et al. (2010)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2888240/),
+and [Duffy & Wurtz (1991)](https://doi.org/10.1152/jn.1991.65.6.1329).
+
+## Preprocessing provenance and recovery
+
+Every new cache root contains `reichardt.json`, recording DoG sigmas/support,
+normalization and boundary rules, polarity/displacement ordering, crop offsets,
+input/output shapes and dtypes, sample count, UTC start/end times, source path,
+and the full Git HEAD commit ID. `inputs.json` records each input's relative
+path and SHA-256 of the exact bytes loaded. The metadata records its hash too.
+
+The `provenance/` folder contains:
+
+- `working-tree.patch`: combined staged and unstaged tracked changes from HEAD,
+  including binary differences and deletions.
+- `source.tar.gz`: a standalone snapshot of the working repository files,
+  including nonignored untracked source. It does not require the base commit
+  to reconstruct the working source.
+- `source-manifest.json`: archived file hashes and permissions.
+- `environment.json`: Python/platform details and installed package versions.
+- `RESTORE.md`: recovery instructions and archive scope.
+
+Extract the source archive into an **empty directory** to recover the code.
+The archive contains tracked and nonignored untracked files, excluding the
+current output directory; Git-ignored datasets/environments and Git history
+are not bundled. Dependencies are recorded, not packaged. Artifact hashes are
+stored in `reichardt.json`. Git must be available with an existing HEAD commit.
+If repository files change during preprocessing, the run fails without publishing
+`reichardt.json`, so training cannot mistake the partial cache for a complete one.
+
+Use `--sigma-center` and `--sigma-surround` to override the pixel sigmas; the
+kernel radius is always `ceil(3*sigma_surround)`. Old raw-product caches and model
+checkpoints are incompatible: generate a new cache and train from scratch.

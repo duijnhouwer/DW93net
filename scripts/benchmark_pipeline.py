@@ -17,8 +17,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from data.load_flow_xt_data import ReichardtDataset
-from features.reichardt import ReichardtBank
-from models.flow_xt_net import FlowXTNet
+from features.dog_motion import DoGMotionBank
+from models.pure_translation import PureTranslationNet
 
 
 class PackedDataset(Dataset):
@@ -67,9 +67,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(17)
     default_threads = torch.get_num_threads()
-    bank = ReichardtBank()
-    shape = (bank.n_output_channels, 1, 7180)
-    report = dict(torch=torch.__version__, gpu=torch.cuda.get_device_name(0),
+    bank = DoGMotionBank()
+    shape = (bank.n_output_channels, 1, 7200 - bank.metadata["crop"]["left"] - bank.metadata["crop"]["right"])
+    report = dict(architecture=PureTranslationNet.architecture, torch=torch.__version__, gpu=torch.cuda.get_device_name(0),
                   shape=shape, batch_size=12, samples=args.samples,
                   default_cpu_threads=default_threads, synthetic=True,
                   cudnn_benchmark=torch.backends.cudnn.benchmark,
@@ -80,14 +80,14 @@ def main():
         (args.output / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
         print(name, json.dumps(result), flush=True)
 
-    model = FlowXTNet(shape[0]).cuda().train()
+    model = PureTranslationNet(bank.dx_values).cuda().train()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     def step(x, y):
         optimizer.zero_grad()
         pred = model(x)
         loss = sum(torch.nn.functional.mse_loss(pred[:, i], y[:, i]) / scale**2
-                   for i, scale in enumerate((.02, .02, 1.)))
+                   for i, scale in enumerate((.02, .02)))
         loss.backward()
         optimizer.step()
         return loss.item()  # Same end-of-step synchronization as training.

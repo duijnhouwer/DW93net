@@ -7,15 +7,28 @@ from unittest.mock import patch
 import torch
 
 from features.reichardt import ReichardtBank
+from features.dog_motion import DoGMotionBank
 from data.precompute_reichardt import precompute_dataset
 from data.load_flow_xt_data import FlowXtDataset, ReichardtDataset, make_flow_loader
 from data.stimulus_io import decode_stimulus
-from models.flow_xt_net import FlowXTNet
+from models.pure_translation import PureTranslationNet
 from train.train_flow_xt_net import Settings, train
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
 class ReichardtTests(unittest.TestCase):
+    def test_default_bank_detects_fast_endpoints(self):
+        bank = ReichardtBank()
+        self.assertEqual(bank.dx_values, tuple(range(-60, 61)))
+        for displacement in [-60, 60]:
+            xt = torch.zeros(2, 7200)
+            xt[0, 3600 - displacement] = 1
+            xt[1, 3600] = 1
+            products = bank(xt)
+            self.assertEqual(products.shape, (121, 1, 7080))
+            self.assertEqual(products[bank.dx_values.index(displacement), 0, 3540], 1)
+            self.assertEqual(products.sum(), 1)
+
     def test_dataset_preserves_fractional_intensities(self):
         from data.generate_flow_xt_data import generate_flow_xt_dataset, StimConfig
         intensities = torch.tensor([[0., .1, .4, .8, 1.]]).repeat(2, 1)
@@ -57,18 +70,18 @@ class ReichardtTests(unittest.TestCase):
             source = root / 'raw'
             (source / 'train').mkdir(parents=True)
             filename = 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
-            levels = torch.tensor([[[0, 1, 128, 255], [255, 1, 64, 128]]], dtype=torch.uint8)
+            levels = torch.tensor([[[0, 1, 128, 255], [255, 1, 64, 128]]], dtype=torch.uint8).repeat(1, 1, 10)
             torch.save(levels, source / 'train' / filename)
-            bank = ReichardtBank([0])
-            # Independent scalar reference also exercises small nonzero products.
-            reference = torch.tensor([[[0., (1/255)**2, (128/255)*(64/255), 128/255]]])
+            bank = DoGMotionBank([0])
+            # Scalar DoG/product reference is tested separately in test_dog_motion.
+            reference = bank(levels.float() / 255)
             cache = root / 'cache'
             metadata = precompute_dataset(source, cache, bank)
             saved = torch.load(cache / 'train' / filename, weights_only=True)
             self.assertEqual(saved.dtype, torch.float16)
             self.assertEqual(metadata['storage_dtype'], 'torch.float16')
             torch.testing.assert_close(saved, reference.half())
-            self.assertGreater(saved[0, 0, 1].item(), 0)
+            self.assertGreater(saved.max().item(), 0)
             decoded, _ = ReichardtDataset(cache / 'train')[0]
             torch.testing.assert_close(decoded, saved.float(), rtol=0, atol=0)
             for invalid in (saved.float(), saved.to(torch.uint8)):
@@ -80,9 +93,9 @@ class ReichardtTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'train').mkdir()
-            (root / 'reichardt.json').write_text(json.dumps(ReichardtBank([0]).metadata))
+            (root / 'reichardt.json').write_text(json.dumps(DoGMotionBank([0]).metadata))
             for i in range(9):
-                torch.save(torch.full((1, 1, 7), i/10, dtype=torch.float16),
+                torch.save(torch.full((4, 1, 7), i/10, dtype=torch.float16),
                            root / 'train' / f'flow_nux={i}_nuz=0_nrot=0_id={i}.pt')
             dataset = ReichardtDataset(root / 'train')
             serial = list(make_flow_loader(dataset, 4, 'cpu', num_workers=0))
@@ -149,8 +162,8 @@ class ReichardtTests(unittest.TestCase):
             for split in ['train', 'validate', 'test']:
                 (source / split).mkdir(parents=True)
                 for i in range(2):
-                    torch.save(torch.randint(0, 256, (1, 2, 9), dtype=torch.uint8), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
-            bank = ReichardtBank([-1, 1])
+                    torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
+            bank = DoGMotionBank([-1, 1])
             precompute_dataset(source, destination, bank)
             dataset = ReichardtDataset(destination / 'train')
             maps, label = dataset[0]
@@ -159,10 +172,10 @@ class ReichardtTests(unittest.TestCase):
             self.assertEqual(maps.dtype, torch.float32)
             self.assertEqual(label.tolist(), [0, 0, 0])
             with self.assertRaises(ValueError):
-                ReichardtDataset(destination / 'train', ReichardtBank([1, -1]).metadata)
+                ReichardtDataset(destination / 'train', DoGMotionBank([1, -1]).metadata)
             with self.assertRaises(FileExistsError):
                 precompute_dataset(source, destination, bank)
-            model = FlowXTNet(dataset.n_channels)
+            model = PureTranslationNet(dataset.metadata["dx_values"])
             self.assertFalse(hasattr(model, 'pre'))
             output = model(torch.stack([maps, maps]))
             output.square().mean().backward()
@@ -174,7 +187,7 @@ class ReichardtTests(unittest.TestCase):
             train(cfg)
             checkpoint = root / 'checkpoints' / destination.name / '_latest.pt'
             result = run_flow_xt_model_on_test_data(str(destination), str(checkpoint), 2)
-            self.assertEqual(result['preds'].shape, (2, 3))
+            self.assertEqual(result['preds'].shape, (2, 2))
             self.assertTrue(torch.isfinite(torch.from_numpy(result['preds'])).all())
             metadata_path = destination / 'reichardt.json'
             metadata = json.loads(metadata_path.read_text())

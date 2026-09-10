@@ -16,7 +16,7 @@ from data.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
 from data.precompute_reichardt import precompute_dataset
 from data.load_flow_xt_data import ReichardtDataset, make_flow_loader
 from data.stimulus_io import decode_stimulus
-from features.reichardt import ReichardtBank
+from features.dog_motion import DoGMotionBank
 from train.train_flow_xt_net import Settings, train
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
@@ -33,12 +33,13 @@ def main():
     started = time.perf_counter()
     config = StimConfig(stim_wid_px=128, n_world_dots=120)
     source = Path(generate_flow_xt_dataset(
-        output_root=str(output / 'raw'), n_samples=80, seed=42, config=config))
+        output_root=str(output / 'raw'), n_samples=80, seed=42,
+        rot_deg_range=(0, 0), config=config))
     raw_files = sorted(source.rglob('*.pt'))
     raw = [torch.load(p, weights_only=True) for p in raw_files]
     assert all(x.dtype == torch.uint8 for x in raw)
     assert any(((x > 0) & (x < 255)).any() for x in raw), 'Antialiasing was lost'
-    bank = ReichardtBank([-3, -2, -1, 1, 2, 3])
+    bank = DoGMotionBank([-3, -2, -1, 1, 2, 3])
     cache = output / 'reichardt' / source.name
     precompute_dataset(source, cache, bank)
     preprocessing_seconds = time.perf_counter() - started
@@ -93,7 +94,7 @@ def main():
     assert all(digest(checkpoint_dir / name) == value for name, value in hashes.items())
     for name in ('_latest.pt', '_best.pt'):
         results = run_flow_xt_model_on_test_data(str(cache), str(checkpoint_dir / name), 8)
-        assert results['preds'].shape == (8, 3) and np.isfinite(results['preds']).all()
+        assert results['preds'].shape == (8, 2) and np.isfinite(results['preds']).all()
         repeated = run_flow_xt_model_on_test_data(str(cache), str(checkpoint_dir / name), 8)
         np.testing.assert_array_equal(results['preds'], repeated['preds'])
     report = {
@@ -102,7 +103,7 @@ def main():
         'splits': {s: len(list((source / s).glob('*.pt'))) for s in ('train', 'validate', 'test')},
         'raw_shape': list(raw[0].shape), 'response_shape': list(expected.shape),
         'raw_levels': sorted(set(v.item() for x in raw for v in x.unique())),
-        'reichardt': bank.metadata, 'storage_dtype': 'float16',
+        'dog_motion': bank.metadata, 'storage_dtype': 'float16',
         'raw_storage_dtype': 'uint8', 'num_workers': cfg.num_workers,
         'pinned_batches': device == 'cuda',
         'raw_bytes': sum(p.stat().st_size for p in raw_files),
