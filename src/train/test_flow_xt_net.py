@@ -6,14 +6,15 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from models.flow_xt_net import FlowXTNet
 from data.load_flow_xt_data import ReichardtDataset
-from data.load_flow_xt_data import subset_dataset
+from data.load_flow_xt_data import subset_dataset, make_flow_loader
 from data.utils import select_subfolder
 import sys
 
 def run_flow_xt_model_on_test_data(
     data_folder: str,
     checkpoint_path: str,
-    subset_size: int = 1000
+    subset_size: int = 1000,
+    num_workers: int = 4,
 ) -> dict:
     """
     Loads a trained FlowXTNet model and applies it to test data.
@@ -22,6 +23,7 @@ def run_flow_xt_model_on_test_data(
         data_folder: Path to the root of the data folder.
         checkpoint_path: Path to the model checkpoint (.pt file).
         subset_size: Number of random test samples to evaluate.
+        num_workers: Background loader workers; use 0 for in-process loading.
 
     Returns:
         Dictionary with keys:
@@ -42,14 +44,14 @@ def run_flow_xt_model_on_test_data(
     test_folder = os.path.join(data_folder, "test")
     test_dataset = ReichardtDataset(folder=test_folder, expected_metadata=checkpoint["reichardt"])
     test_dataset = subset_dataset(test_dataset, {"n": subset_size, "method": "random"})
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = make_flow_loader(test_dataset, batch_size, device, num_workers=num_workers)
 
     all_preds = []
     all_targets = []
 
     with torch.no_grad():
         for x, y in test_loader:
-            x = x.to(device)
+            x = x.to(device, non_blocking=True)
             pred = model(x).cpu().numpy()
             all_preds.append(pred)
             all_targets.append(y.numpy())

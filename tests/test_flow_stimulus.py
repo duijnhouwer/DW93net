@@ -1,7 +1,7 @@
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -27,8 +27,31 @@ class OneStepStimulusTests(unittest.TestCase):
                 for path in files:
                     pairs = torch.load(path, weights_only=True)
                     self.assertEqual(pairs.shape, (1, 2, 128))
+                    self.assertEqual(pairs.dtype, torch.uint8)
                     torch.testing.assert_close(pairs[:, 0], pairs[:, 1], rtol=0, atol=0)
-                    self.assertTrue(((pairs >= 0) & (pairs <= 1)).all())
+                    self.assertTrue(((pairs > 0) & (pairs < 255)).any())
+
+    def test_default_supersampling_aligns_with_byte_levels(self):
+        config = StimConfig(stim_wid_px=128, n_world_dots=120)
+        self.assertEqual(config.x_supersampling, 255)
+        xt = generate_flow_xt_stim(config=config, rng=np.random.default_rng(42))
+        encoded = (xt * 255).round().to(torch.uint8)
+        # The rendered 1/255 levels survive storage, to float32 precision.
+        torch.testing.assert_close(encoded.float() / 255, xt, rtol=0, atol=1e-7)
+        self.assertTrue(((encoded > 0) & (encoded < 255)).any())
+
+    def test_viewer_uses_normalized_byte_and_legacy_intensities(self):
+        from data.show_flow_xt_data import show_xt_sample
+        levels = torch.tensor([[[0, 1, 128, 255], [255, 128, 1, 0]]], dtype=torch.uint8)
+        expected = levels.squeeze(0).float().numpy() / 255
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
+            for tensor in (levels, levels.float() / 255):
+                torch.save(tensor, path)
+                with patch('data.show_flow_xt_data.plt') as plot:
+                    show_xt_sample(directory, 0)
+                np.testing.assert_allclose(plot.imshow.call_args.args[0], expected)
+                self.assertEqual(plot.imshow.call_args.kwargs['vmax'], 1)
 
     def test_zero_motion_preserves_dots_and_fractional_intensities(self):
         xt = generate_flow_xt_stim(

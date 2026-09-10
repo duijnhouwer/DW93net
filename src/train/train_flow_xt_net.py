@@ -2,9 +2,9 @@ import os
 import sys
 import torch
 from dataclasses import dataclass, asdict, field
-from torch.utils.data import DataLoader
 from models.flow_xt_net import FlowXTNet
-from data.load_flow_xt_data import ReichardtDataset, extract_ranges_from_foldername, subset_dataset
+from data.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
+                                   subset_dataset, make_flow_loader)
 
 
 @dataclass
@@ -12,6 +12,7 @@ class Settings:
     root_folder: str = "data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0"
     checkpoints_dir: str = "checkpoints/reichardt"
     batch_size: int = 12
+    num_workers: int = 4
     num_epochs: int = 1_000_000
     lr: float = 1e-3
     train_subset: dict = field(default_factory=lambda: {"n": 80_000, "method": "random"})
@@ -48,8 +49,10 @@ def train(cfg):
     if not any(value > 0 for value in ranges.values()):
         raise ValueError("Dataset folder name must specify at least one nonzero motion range")
 
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False)
+    train_loader = make_flow_loader(train_dataset, cfg.batch_size, device,
+                                   shuffle=True, num_workers=cfg.num_workers)
+    val_loader = make_flow_loader(val_dataset, cfg.batch_size, device,
+                                 num_workers=cfg.num_workers)
 
     # --- Model and optimizer
     model = FlowXTNet(train_cache.n_channels).to(device)
@@ -77,8 +80,8 @@ def train(cfg):
         train_loss_total = 0.0
 
         for x, y in train_loader:
-            x = x.to(device)
-            y = y.to(device)
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             optimizer.zero_grad()
             pred = model(x)
 
@@ -101,8 +104,8 @@ def train(cfg):
         val_loss_total = 0.0
         with torch.no_grad():
             for x, y in val_loader:
-                x = x.to(device)
-                y = y.to(device)
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
                 pred = model(x)
 
                 loss = 0.0
@@ -152,10 +155,13 @@ def main():
     parser.add_argument("--checkpoints-dir", default="checkpoints/reichardt")
     parser.add_argument("--epochs", type=int, default=Settings.num_epochs)
     parser.add_argument("--batch-size", type=int, default=Settings.batch_size)
+    parser.add_argument("--num-workers", type=int, default=Settings.num_workers,
+                        help="Background data workers (0 loads in the main process)")
     parser.add_argument("--from-scratch", action="store_true")
     args = parser.parse_args()
     train(Settings(root_folder=args.root_folder, checkpoints_dir=args.checkpoints_dir,
                    num_epochs=args.epochs, batch_size=args.batch_size,
+                   num_workers=args.num_workers,
                    from_scratch=args.from_scratch))
 
 

@@ -17,7 +17,7 @@ class StimConfig:
     near_exclusion_radius: float = 0.04
     n_world_dots: int = 1000
     superimpose: bool = False
-    x_supersampling: int = 512
+    x_supersampling: int = 255
 
     def __post_init__(self):
         if self.stim_wid_px is None:
@@ -42,7 +42,7 @@ def generate_flow_xt_dataset(
     so the label always matches the stimulus that was generated. If `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities.
-    Each of the n_samples files contains one pair with shape [1, 2, X].
+    Each file contains one uint8 pair with shape [1, 2, X], scaled to 0..255.
     """
 
     if output_root is None:
@@ -145,7 +145,9 @@ def generate_flow_xt_dataset(
         split_name = split_map[i]
         filepath = os.path.join(output_folder, split_name, filename)
 
-        torch.save(xt_tensor, filepath)
+        # Round rather than truncate fractional intensities. At 255x
+        # supersampling the rendered levels align with the byte grayscale grid.
+        torch.save((xt_tensor * 255).round().to(torch.uint8), filepath)
 
         if i % 100 == 0:
             print(f"Saved {split_name}/{filename}")

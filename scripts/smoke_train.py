@@ -14,6 +14,8 @@ import torch
 
 from data.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
 from data.precompute_reichardt import precompute_dataset
+from data.load_flow_xt_data import ReichardtDataset, make_flow_loader
+from data.stimulus_io import decode_stimulus
 from features.reichardt import ReichardtBank
 from train.train_flow_xt_net import Settings, train
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
@@ -29,21 +31,33 @@ def main():
     torch.set_num_threads(2)
     torch.manual_seed(42)
     started = time.perf_counter()
-    config = StimConfig(stim_wid_px=128, n_world_dots=120, x_supersampling=10)
+    config = StimConfig(stim_wid_px=128, n_world_dots=120)
     source = Path(generate_flow_xt_dataset(
         output_root=str(output / 'raw'), n_samples=80, seed=42, config=config))
     raw_files = sorted(source.rglob('*.pt'))
     raw = [torch.load(p, weights_only=True) for p in raw_files]
-    assert all(x.dtype == torch.float32 and torch.isfinite(x).all() for x in raw)
-    assert any(((x > 0) & (x < 1)).any() for x in raw), 'Antialiasing was lost'
+    assert all(x.dtype == torch.uint8 for x in raw)
+    assert any(((x > 0) & (x < 255)).any() for x in raw), 'Antialiasing was lost'
     bank = ReichardtBank([-3, -2, -1, 1, 2, 3])
     cache = output / 'reichardt' / source.name
-    precompute_dataset(source, cache, bank, torch.float16)
+    precompute_dataset(source, cache, bank)
     preprocessing_seconds = time.perf_counter() - started
     for p in raw_files:
         saved = torch.load(cache / p.relative_to(source), weights_only=True)
-        expected = bank(torch.load(p, weights_only=True)).half()
+        assert saved.dtype == torch.float16
+        expected = bank(decode_stimulus(torch.load(p, weights_only=True))).half()
         torch.testing.assert_close(saved, expected, rtol=0, atol=0)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    dataset = ReichardtDataset(cache / 'train')
+    loader = make_flow_loader(dataset, 8, device)
+    assert loader.num_workers == 4 and loader.persistent_workers
+    x, y = next(iter(loader))
+    assert x.is_pinned() == (device == 'cuda')
+    assert y.is_pinned() == (device == 'cuda')
+    reference_x, reference_y = next(iter(make_flow_loader(dataset, 8, device, num_workers=0)))
+    torch.testing.assert_close(x, reference_x, rtol=0, atol=0)
+    torch.testing.assert_close(y, reference_y, rtol=0, atol=0)
+    del loader
     cfg = Settings(root_folder=str(cache), checkpoints_dir=str(output / 'checkpoints'),
                    num_epochs=3, batch_size=8)
     print('Training first three epochs...', flush=True)
@@ -89,6 +103,8 @@ def main():
         'raw_shape': list(raw[0].shape), 'response_shape': list(expected.shape),
         'raw_levels': sorted(set(v.item() for x in raw for v in x.unique())),
         'reichardt': bank.metadata, 'storage_dtype': 'float16',
+        'raw_storage_dtype': 'uint8', 'num_workers': cfg.num_workers,
+        'pinned_batches': device == 'cuda',
         'raw_bytes': sum(p.stat().st_size for p in raw_files),
         'response_bytes': sum(p.stat().st_size for p in cache.rglob('*.pt')),
         'preprocessing_seconds': preprocessing_seconds,
@@ -96,7 +112,8 @@ def main():
         'epochs': [{'epoch': x['epoch'], 'train_loss': x['loss'], 'val_rmse': x['val_rmse']} for x in epochs],
         'best_epoch': best['epoch'], 'best_val_rmse': minimum,
         'adam_steps_before_resume': first_steps[0], 'adam_steps_after_resume': steps[0],
-        'checks': ['fractional raw intensities', 'exact float16 cache products',
+        'checks': ['byte grayscale with fractional decoded intensities', 'exact float16 cache products',
+                   'four-worker batches match serial loading', 'CUDA batches use pinned memory',
                    'finite training weights', 'resume epoch and Adam state',
                    'weights update after resume', 'earlier epoch files preserved',
                    'best checkpoint matches minimum validation RMSE',

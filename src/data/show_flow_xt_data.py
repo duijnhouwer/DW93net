@@ -2,7 +2,8 @@ import os
 import random
 import torch
 import matplotlib.pyplot as plt
-from load_flow_xt_data import parse_camera_motion_from_filename  # adjust if needed
+from data.load_flow_xt_data import parse_camera_motion_from_filename
+from data.stimulus_io import decode_stimulus
 
 def show_xt_sample(folder: str, id, save_dir: str = None):
     """
@@ -39,13 +40,11 @@ def show_xt_sample(folder: str, id, save_dir: str = None):
         raise ValueError("id must be an integer, 'random', or a filename ending in '.pt'")
 
     path = os.path.join(folder, filename)
-    xt_tensor_uint8 = torch.load(path)
+    xt_tensor = decode_stimulus(torch.load(path, map_location="cpu", weights_only=True))
 
     # Fix shape if it's (1, H, W)
-    if xt_tensor_uint8.ndim == 3 and xt_tensor_uint8.shape[0] == 1:
-        xt_tensor_uint8 = xt_tensor_uint8.squeeze(0)
-
-    xt_tensor = xt_tensor_uint8.float()
+    if xt_tensor.ndim == 3 and xt_tensor.shape[0] == 1:
+        xt_tensor = xt_tensor.squeeze(0)
 
     motion = parse_camera_motion_from_filename(filename)
     dx, dz, rot_deg = motion['dx'], motion['dz'], motion['rot_deg']

@@ -101,7 +101,20 @@ By default, `stim_wid_px = round(fov_deg * 60)` provides nominal one-arcminute
 angular sampling: a 120° FOV uses 7,200 pixels. An explicit `stim_wid_px`
 overrides this default, for example in small tests.
 `generate_flow_xt_dataset(..., n_samples=M)` saves M `.pt` files of shape
-`[1, 2, X]`. Each file has newly sampled motion parameters and dot positions.
+`[1, 2, X]`, one stimulus per file, as **uint8 grayscale (0–255)**. Default
+X supersampling is **255**, so the rendered intensity steps align with the byte
+levels. Values are rounded to the nearest byte after summing and clipping any
+superimposed layers. Explicit supersampling overrides remain supported, with
+quantization to the same byte grid at save time. The renderer itself still
+returns float32 intensities in [0, 1]. Each file has newly sampled motion
+parameters and dot positions.
+
+`FlowXtDataset`, preprocessing, and the sample viewer decode uint8 by dividing
+by 255 before using the intensities. Legacy floating-point raw files remain
+readable without rescaling. Historical uint8 files using 0/1 for binary pixels
+must be regenerated or explicitly converted to 0/255; uint8 now always means
+0–255 grayscale. Existing datasets are not converted automatically.
+
 Preprocessing turns its two frames into one row of products per spatial span;
 the network receives these product maps as one training example.
 
@@ -130,7 +143,7 @@ export PYTHONPATH=src
 python -m data.precompute_reichardt \
   data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  --dx -2 -1 1 2 --dtype float32
+  --dx -2 -1 1 2
 python -m train.train_flow_xt_net \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   --epochs 10 --from-scratch
@@ -138,8 +151,9 @@ python -m train.train_flow_xt_net \
 
 Preprocessing preserves splits and label filenames, and writes `reichardt.json`
 with channel and crop metadata only after completion. Existing destinations are
-refused. Products are computed in float32; optional float16 storage reduces size
-with rounding and is checked for overflow. Regenerate caches when stimuli or
+refused. Products are computed from normalized intensities in float32 and stored
+as **float16 by default**, with rounding and an overflow check. Use
+`--dtype float32` to retain float32 storage. Regenerate caches when stimuli or
 detector settings change. The fixed-delay cache format is
 `reichardt-products-v2`; older caches and their checkpoints must be regenerated
 and retrained.
@@ -151,6 +165,19 @@ root for evaluation; start fresh for incompatible detector configurations or
 old convolution-detector checkpoints.
 
 Training uses range-normalized MSE on each example's motion prediction.
+
+Training, validation, and evaluation use **four background data-loader workers**.
+Workers persist across epochs; CUDA batches use pinned system RAM and
+non-blocking transfers. CPU runs do not pin memory. Product maps are converted
+to float32 in the loader, so float16 saves disk space and read bandwidth while
+model inputs and PCIe transfers remain float32. Use training `--num-workers 0`
+for in-process loading/debugging, or set `Settings.num_workers`; evaluation
+accepts a `num_workers` argument. Programs calling these functions with workers
+must use a Python `if __name__ == '__main__':` entry point.
+
+Individual files are retained: the [pipeline benchmark](benchmarks/storage-20260910-final/REPORT.md)
+found four workers competitive with packed arrays on this machine. Recheck
+throughput on a full dataset before changing the file layout.
 
 Run the correctness and pipeline tests with the project's Python environment:
 

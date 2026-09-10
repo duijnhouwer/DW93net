@@ -7,13 +7,14 @@ Created on Fri May 23 14:22:29 2025
 
 import os
 import torch
-from torch.utils.data import Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from typing import Dict
 import re
 import random
 import json
 from pathlib import Path
 from features.reichardt import ReichardtBank
+from data.stimulus_io import decode_stimulus
 
 
 class FlowXtDataset(Dataset):
@@ -24,11 +25,15 @@ class FlowXtDataset(Dataset):
     def __len__(self):
         return len(self.files)
 
+    def _decode_input(self, tensor, filename):
+        return decode_stimulus(tensor)
+
     def __getitem__(self, idx):
         filename = self.files[idx]
         filepath = os.path.join(self.folder, filename)
 
         input_tensor = torch.load(filepath, map_location="cpu", weights_only=True)
+        input_tensor = self._decode_input(input_tensor, filename)
 
         cammot = parse_camera_motion_from_filename(filename)
         label_tensor = torch.tensor([
@@ -54,14 +59,21 @@ class ReichardtDataset(FlowXtDataset):
             raise ValueError("Reichardt detector configuration does not match")
         self.n_channels = bank.n_output_channels
 
-    def __getitem__(self, idx):
-        responses, label = super().__getitem__(idx)
+    def _decode_input(self, responses, filename):
         if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
                 or responses.shape[0] != self.n_channels
                 or responses.shape[1] != 1 or responses.shape[2] < 1 or not responses.is_floating_point()
                 or not torch.isfinite(responses).all()):
-            raise ValueError(f"Invalid Reichardt response tensor: {self.files[idx]}")
-        return responses.float(), label
+            raise ValueError(f"Invalid Reichardt response tensor: {filename}")
+        return responses.float()
+
+
+def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4):
+    """Prepare batches in the background, pinning host memory for CUDA copies."""
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=num_workers,
+                      pin_memory=torch.device(device).type == "cuda",
+                      persistent_workers=num_workers > 0)
 
 
 def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
