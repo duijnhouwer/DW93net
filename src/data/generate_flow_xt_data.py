@@ -12,14 +12,16 @@ DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "data")
 
 @dataclass
 class StimConfig:
-    stim_wid_px: int = 1028
-    n_time_bins: int = 128
-    fov_deg: float = 90
-    near_clip: float = 0.05
+    stim_wid_px: int | None = None
+    fov_deg: float = 120
+    near_exclusion_radius: float = 0.04
     n_world_dots: int = 1000
     superimpose: bool = False
-    max_dot_lifetime: int = 10 # max lifetime of a dot in frames; if <=0, dots never die
-    x_supersampling: int = 10
+    x_supersampling: int = 255
+
+    def __post_init__(self):
+        if self.stim_wid_px is None:
+            self.stim_wid_px = round(self.fov_deg * 60)
 
 
 def generate_flow_xt_dataset(
@@ -30,16 +32,17 @@ def generate_flow_xt_dataset(
     rot_deg_range=(-0.5, 0.5),
     split=(0.8, 0.1, 0.1),
     seed: int = None,
-    config: StimConfig = StimConfig()
+    config: StimConfig = StimConfig(),
 ) -> str:
     """
-    Generates a dataset of XT flow tensors and saves them into train/validate/test subfolders.
+    Generates a dataset of two-frame, one-step XT flow tensors and saves them into train/validate/test subfolders.
     Folder name encodes parameter ranges in nano-units (nux, nuz) and nano-degrees (nrot).
     Each sample's dx, dz and rot_deg are rounded to nano-units/nano-degrees FIRST, and those
     exact values are used to render the stimulus and written to the filename (nux, nuz, nrot),
     so the label always matches the stimulus that was generated. If `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities.
+    Each of the n_samples files contains one pair with shape [1, 2, X].
     """
 
     if output_root is None:
@@ -127,14 +130,12 @@ def generate_flow_xt_dataset(
                 cam_trans_xz=cam_trans,
                 cam_rot_deg=cam_rot,
                 config=layer_config,
-                filename='',
                 rng=rng
             )
             xt_tensor_list.append(xt)
 
         # Preserve antialiased intensities; saturate overlapping flow layers.
-        xt_tensor = sum(xt_tensor_list).clamp(0, 1)
-        xt_tensor = xt_tensor.unsqueeze(0)  # shape [1, T, X]
+        xt_tensor = sum(xt_tensor_list).clamp(0, 1).unsqueeze(0)  # [1, 2, X]
 
         filename = f"flow_nux={nux}_nuz={nuz}_nrot={nrot}_id={i}"
         if config.superimpose:
@@ -162,6 +163,11 @@ def generate_flow_xt_stim(
     rng=None
 ) -> torch.Tensor:
 
+    """Render [2, X]: initial dots and the same dots after one motion step.
+
+    Translation is expressed in the initial camera frame; rotation is in degrees
+    per step. Dots are neither replaced nor wrapped between the two frames.
+    """
     if rng is None:
         rng = np.random.default_rng()
 
@@ -184,7 +190,6 @@ def generate_flow_xt_stim(
     half_fov_rad = np.deg2rad(config.fov_deg / 2)
     cam_rot_rad = np.deg2rad(cam_rot_deg)
     tan_half_fov = np.tan(half_fov_rad)
-    far_clip = np.cos(half_fov_rad)
 
     # Initial dot positions in the 2x2 XZ plane.
     dot_positions = rng.uniform(
@@ -192,24 +197,9 @@ def generate_flow_xt_stim(
         size=(config.n_world_dots, 2)
     )
 
-    # Number of times the current incarnation of each dot has been rendered.
-    # Start dots at random ages so their deaths/rebirths are asynchronous.
-    if config.max_dot_lifetime > 0:
-        dot_ages = rng.integers(
-            0,
-            config.max_dot_lifetime,
-            size=config.n_world_dots,
-            dtype=np.int32,
-        )
-    else:
-        dot_ages = np.zeros(
-            config.n_world_dots,
-            dtype=np.int32
-        )
-
     # Render at supersampled X resolution.
     image = np.zeros(
-        (config.n_time_bins, render_wid_px),
+        (2, render_wid_px),
         dtype=np.float32
     )
 
@@ -218,27 +208,25 @@ def generate_flow_xt_stim(
     s = np.sin(-cam_rot_rad)
     rot = np.array([[c, -s], [s, c]])
 
-    for t in range(config.n_time_bins):
+    # Apply one rigid transform to every dot, then render both states.
+    moved_positions = (dot_positions - cam_trans_xz) @ rot.T
+    for t, positions in enumerate((dot_positions, moved_positions)):
 
         # --------------------------------------------------------------
         # 1. RENDER CURRENT DOT POSITIONS
         # --------------------------------------------------------------
-        radius_squared = np.sum(dot_positions ** 2, axis=1)
-        in_unit_circle = radius_squared < 1
+        radius_squared = np.sum(positions ** 2, axis=1)
+        inside_unit_circle = radius_squared < 1
+        outside_near_exclusion = radius_squared > config.near_exclusion_radius**2
 
-        x = dot_positions[:, 0]
-        z = dot_positions[:, 1]
-
-        z_in_bounds = (
-            (z > config.near_clip) &
-            (z < far_clip)
-        )
+        x = positions[:, 0]
+        z = positions[:, 1]
 
         x_in_fov = np.abs(x / z) < tan_half_fov
 
         visible = (
-            in_unit_circle &
-            z_in_bounds &
+            inside_unit_circle &
+            outside_near_exclusion &
             x_in_fov
         )
 
@@ -270,84 +258,12 @@ def generate_flow_xt_stim(
                 if left < right:
                     image[t, left:right] = 1.0
 
-        # Current positions have now been rendered once more.
-        dot_ages += 1
-
-        if t == config.n_time_bins - 1:
-            continue
-
-        # --------------------------------------------------------------
-        # 2. EXPIRE DOTS THAT HAVE REACHED THEIR MAXIMUM LIFETIME
-        # --------------------------------------------------------------
-        if config.max_dot_lifetime > 0:
-            expired = dot_ages >= config.max_dot_lifetime
-        else:
-            expired = np.zeros(
-                config.n_world_dots,
-                dtype=bool
-            )
-
-        if np.any(expired):
-            dot_positions[expired] = rng.uniform(
-                -1, 1,
-                size=(expired.sum(), 2)
-            )
-            dot_ages[expired] = 0
-
-        # --------------------------------------------------------------
-        # 3. MOVE ONLY THE DOTS THAT DID NOT EXPIRE
-        # --------------------------------------------------------------
-        alive = ~expired
-
-        if np.any(alive):
-
-            # Camera translation.
-            dot_positions[alive] -= cam_trans_xz
-
-            for axis in [0, 1]:
-
-                if cam_trans_xz[axis] > 0:
-                    out_of_bounds = (
-                        alive &
-                        (dot_positions[:, axis] < -1)
-                    )
-                else:
-                    out_of_bounds = (
-                        alive &
-                        (dot_positions[:, axis] > 1)
-                    )
-
-                dot_positions[out_of_bounds, axis] += (
-                    2 if cam_trans_xz[axis] > 0 else -2
-                )
-
-                other_axis = 1 - axis
-
-                dot_positions[out_of_bounds, other_axis] = rng.uniform(
-                    -1,
-                    1,
-                    size=out_of_bounds.sum()
-                )
-
-            # Camera rotation.
-            radius_squared = np.sum(
-                dot_positions ** 2,
-                axis=1
-            )
-
-            rotate_dots = alive & (radius_squared < 1)
-
-            if np.any(rotate_dots):
-                dot_positions[rotate_dots] = (
-                    dot_positions[rotate_dots] @ rot.T
-                )
-
     # --------------------------------------------------------------
-    # 4. DOWNSAMPLE X ONLY
+    # DOWNSAMPLE X ONLY
     # --------------------------------------------------------------
     if x_supersampling > 1:
         image = image.reshape(
-            config.n_time_bins,
+            2,
             config.stim_wid_px,
             x_supersampling
         ).mean(axis=2, dtype=np.float32)

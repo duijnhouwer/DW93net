@@ -29,15 +29,14 @@ def main():
     torch.set_num_threads(2)
     torch.manual_seed(42)
     started = time.perf_counter()
-    config = StimConfig(stim_wid_px=128, n_time_bins=32, n_world_dots=120,
-                        max_dot_lifetime=10, x_supersampling=10)
+    config = StimConfig(stim_wid_px=128, n_world_dots=120, x_supersampling=10)
     source = Path(generate_flow_xt_dataset(
         output_root=str(output / 'raw'), n_samples=80, seed=42, config=config))
     raw_files = sorted(source.rglob('*.pt'))
     raw = [torch.load(p, weights_only=True) for p in raw_files]
     assert all(x.dtype == torch.float32 and torch.isfinite(x).all() for x in raw)
     assert any(((x > 0) & (x < 1)).any() for x in raw), 'Antialiasing was lost'
-    bank = ReichardtBank([-3, -2, -1, 1, 2, 3], [1, 2])
+    bank = ReichardtBank([-3, -2, -1, 1, 2, 3], [1])
     cache = output / 'reichardt' / source.name
     precompute_dataset(source, cache, bank, torch.float16)
     preprocessing_seconds = time.perf_counter() - started

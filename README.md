@@ -94,56 +94,61 @@ The scientific quantities above are represented in the code as follows:
 
 ## Reichardt product preprocessing
 
-The deterministic detector stage is computed once before training. Each channel
-is the product `R(t,x) = I(t-dT,x-dX) * I(t,x)`, using tensor slices only.
-If either leg is zero, the response is zero; fractional antialiased intensities
-produce graded products. Opposite directions are separate channels, with no
-opponent subtraction or convolution in this stage.
+Each stimulus is a pair of time bins: the initial dots and the same dots after
+one translation-and-rotation step. There are no dot lifetimes, replacements, or
+boundary wrapping; X-only supersampling preserves fractional intensities.
+By default, `stim_wid_px = round(fov_deg * 60)` provides nominal one-arcminute
+angular sampling: a 120° FOV uses 7,200 pixels. An explicit `stim_wid_px`
+overrides this default, for example in small tests.
+`generate_flow_xt_dataset(..., n_samples=M)` saves M `.pt` files of shape
+`[1, 2, X]`. Each file has newly sampled motion parameters and dot positions.
+Preprocessing turns its two frames into one row of products per spatial span;
+the network receives these product maps as one training example.
 
-`ReichardtBank(dx_values, dt_values)` uses signed integer pixel displacements
-and positive integer frame delays. Positive dX means motion toward increasing X;
-zero dX is supported for stationary correlations. Values are actual offsets,
-not gaps. Channels follow the supplied order, with dT outermost and dX innermost.
-The nominal speed is dX/dT pixels per frame; equal speeds at different scales
-remain separate channels.
+For each pair, the current deterministic detector computes
+`R_s(x) = I(0, x-s) * I(1, x)` with one temporal delay, `dT=1`, and multiple
+signed spatial spans `s=dX`. Positive spans detect motion toward increasing X;
+zero span is supported for stationary correlations. Larger spans probe larger
+displacements over the same interval. Fractional intensities produce graded
+products. Opposite directions remain separate channels; opponent subtraction
+is not implemented in this stage.
 
-All channels share the same present-time coordinates. For input `[B,1,T,X]`,
-let `t0=max(dT)`, `left=max(0,max(dX))`, and `right=max(0,-min(dX))`.
-Output is `[B,C,T-t0,X-left-right]`, where `C=len(dX)*len(dT)`.
-This common-valid crop introduces no padding, wrapping, masks, or NaNs.
-Inputs too small for the crop and nonfinite inputs are rejected.
-Single stimuli `[T,X]` or `[1,T,X]` return `[C,T',X']`.
+Use `ReichardtBank(dx_values, dt_values=[1])`, or explicitly pass `--dt 1` to
+the preprocessing CLI. The existing defaults still include delay 2, which is
+invalid for a two-bin pair. With `C=len(dx_values)`,
+`left=max(0,max(dx_values))`, and `right=max(0,-min(dx_values))`, a single
+`[2, X]` or `[1, 2, X]` input produces `[C, 1, X-left-right]`. Channels follow
+the supplied span order and share the same valid present-time coordinates.
+The crop uses no padding or wrapping; invalid sizes and nonfinite inputs are
+rejected.
 
-Generate raw stimuli as before, then preprocess to a separate, new directory.
-Keep the motion-range folder name so training can read label normalization:
+Preprocess to a separate, new directory. Keep the
+motion-range folder name so training can read label normalization:
 
 ```bash
 export PYTHONPATH=src
 python -m data.precompute_reichardt \
   data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  --dx -2 -1 1 2 --dt 1 2 --dtype float32
+  --dx -2 -1 1 2 --dt 1 --dtype float32
 python -m train.train_flow_xt_net \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   --epochs 10 --from-scratch
 ```
 
-Preprocessing preserves train/validate/test splits and filenames, and writes
-`reichardt.json` with the channel configuration and crop convention only after
-completion. Existing destinations are refused to prevent overwriting or mixing
-caches. Float32 is the default; optional float16 reduces storage with rounding.
-Products are computed in float32 and checked for overflow after storage conversion.
-Maps can require roughly C times the raw storage, reduced by cropping.
-Regenerate the cache whenever the raw stimuli or detector configuration changes.
+Preprocessing preserves splits and label filenames, and writes `reichardt.json`
+with channel and crop metadata only after completion. Existing destinations are
+refused. Products are computed in float32; optional float16 storage reduces size
+with rounding and is checked for overflow. Regenerate caches when stimuli or
+detector settings change.
 
-`ReichardtDataset` reads cached maps as float32 for training. `FlowXTNet` takes
-`n_input_channels` and accepts only response maps; its convolutions are learned
-processing downstream of detection. Training saves detector metadata in each
-checkpoint, and validation/evaluation reject mismatched configurations even when
-the channel counts match. Use the cached dataset root for evaluation too.
-Old convolution-detector checkpoints are incompatible; start fresh in a separate
-checkpoint directory. The existing X-only supersampling and asynchronous dot
-lifetime changes in the stimulus generator are preserved.
+`ReichardtDataset` reads cached maps as float32. `FlowXTNet` learns from these
+maps downstream of detection. Checkpoints retain detector metadata, and
+validation/evaluation reject mismatched configurations. Use the cached dataset
+root for evaluation; start fresh for incompatible detector configurations or
+old convolution-detector checkpoints.
+
+Training uses range-normalized MSE on each example's motion prediction.
 
 Run the correctness and pipeline tests with the project's Python environment:
 
