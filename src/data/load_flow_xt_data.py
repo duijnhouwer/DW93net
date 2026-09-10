@@ -46,7 +46,7 @@ class ReichardtDataset(FlowXtDataset):
     def __init__(self, folder, expected_metadata=None):
         super().__init__(folder)
         metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
-        bank = ReichardtBank(metadata["dx_values"], metadata["dt_values"])
+        bank = ReichardtBank(metadata["dx_values"])
         self.metadata = bank.metadata
         if any(metadata.get(key) != value for key, value in self.metadata.items()):
             raise ValueError("Unsupported Reichardt cache format")
@@ -58,7 +58,7 @@ class ReichardtDataset(FlowXtDataset):
         responses, label = super().__getitem__(idx)
         if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
                 or responses.shape[0] != self.n_channels
-                or min(responses.shape[1:]) < 1 or not responses.is_floating_point()
+                or responses.shape[1] != 1 or responses.shape[2] < 1 or not responses.is_floating_point()
                 or not torch.isfinite(responses).all()):
             raise ValueError(f"Invalid Reichardt response tensor: {self.files[idx]}")
         return responses.float(), label

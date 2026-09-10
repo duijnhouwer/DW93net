@@ -113,9 +113,9 @@ displacements over the same interval. Fractional intensities produce graded
 products. Opposite directions remain separate channels; opponent subtraction
 is not implemented in this stage.
 
-Use `ReichardtBank(dx_values, dt_values=[1])`, or explicitly pass `--dt 1` to
-the preprocessing CLI. The existing defaults still include delay 2, which is
-invalid for a two-bin pair. With `C=len(dx_values)`,
+Use `ReichardtBank(dx_values)`. The delay is fixed at one time bin; inputs must
+contain exactly two frames. There is no delay parameter or CLI option.
+With `C=len(dx_values)`,
 `left=max(0,max(dx_values))`, and `right=max(0,-min(dx_values))`, a single
 `[2, X]` or `[1, 2, X]` input produces `[C, 1, X-left-right]`. Channels follow
 the supplied span order and share the same valid present-time coordinates.
@@ -130,7 +130,7 @@ export PYTHONPATH=src
 python -m data.precompute_reichardt \
   data/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
-  --dx -2 -1 1 2 --dt 1 --dtype float32
+  --dx -2 -1 1 2 --dtype float32
 python -m train.train_flow_xt_net \
   data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0 \
   --epochs 10 --from-scratch
@@ -140,7 +140,9 @@ Preprocessing preserves splits and label filenames, and writes `reichardt.json`
 with channel and crop metadata only after completion. Existing destinations are
 refused. Products are computed in float32; optional float16 storage reduces size
 with rounding and is checked for overflow. Regenerate caches when stimuli or
-detector settings change.
+detector settings change. The fixed-delay cache format is
+`reichardt-products-v2`; older caches and their checkpoints must be regenerated
+and retrained.
 
 `ReichardtDataset` reads cached maps as float32. `FlowXTNet` learns from these
 maps downstream of detection. Checkpoints retain detector metadata, and

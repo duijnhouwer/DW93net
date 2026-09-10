@@ -30,47 +30,47 @@ class ReichardtTests(unittest.TestCase):
                 self.assertEqual(saved.dtype, torch.float32)
 
     def test_scalar_reference_and_alignment(self):
-        xt = torch.arange(2 * 6 * 11, dtype=torch.float32).reshape(2, 1, 6, 11) / 100
-        bank = ReichardtBank([2, -3, 0], [2, 1])
+        xt = torch.arange(2 * 2 * 11, dtype=torch.float32).reshape(2, 1, 2, 11) / 100
+        bank = ReichardtBank([2, -3, 0])
         result = bank(xt)
-        self.assertEqual(result.shape, (2, 6, 4, 6))
+        self.assertEqual(result.shape, (2, 3, 1, 6))
         for b in range(2):
-            for c, (dx, dt) in enumerate(bank.channels):
-                for t in range(4):
+            for c, dx in enumerate(bank.dx_values):
+                for t in range(1):
                     for x in range(6):
                         self.assertEqual(result[b, c, t, x],
-                                         xt[b, 0, t+2-dt, x+2-dx] * xt[b, 0, t+2, x+2])
+                                         xt[b, 0, 0, x+2-dx] * xt[b, 0, 1, x+2])
         torch.testing.assert_close(bank(xt[0]), result[0])
         torch.testing.assert_close(bank(xt[0, 0]), result[0])
 
-    def test_direction_delay_and_fractional_product(self):
-        bank = ReichardtBank([-2, 2], [1, 2])
+    def test_direction_and_fractional_product(self):
+        bank = ReichardtBank([-2, 2])
         for dx in [-2, 2]:
-            xt = torch.zeros(4, 10)
+            xt = torch.zeros(2, 10)
             xt[0, 4] = .5
-            xt[2, 4+dx] = .25
+            xt[1, 4+dx] = .25
             responses = bank(xt)
             self.assertEqual(responses.sum().item(), .125)
-            c = bank.channels.index((dx, 2))
+            c = bank.dx_values.index(dx)
             self.assertEqual(responses[c].sum().item(), .125)
             xt[0, 4] = 0
             self.assertEqual(bank(xt).sum().item(), 0)
             xt[0, 4] = .5
-            xt[2, 4+dx] = 0
+            xt[1, 4+dx] = 0
             self.assertEqual(bank(xt).sum().item(), 0)
 
     def test_no_wraparound(self):
-        xt = torch.zeros(3, 7)
+        xt = torch.zeros(2, 7)
         xt[0, -1] = xt[1, 0] = 1
-        self.assertEqual(ReichardtBank([-1, 1], [1])(xt).sum().item(), 0)
+        self.assertEqual(ReichardtBank([-1, 1])(xt).sum().item(), 0)
 
     def test_validation(self):
-        for dx, dt in [([], [1]), ([1, 1], [1]), ([1], [0]), ([1.5], [1]), ([True], [1])]:
+        for dx in ([], [1, 1], [1.5], [True]):
             with self.assertRaises(ValueError):
-                ReichardtBank(dx, dt)
-        bank = ReichardtBank([-2, 2], [2])
-        for xt in [torch.zeros(2, 10), torch.zeros(5, 4), torch.ones(2, 5, 10),
-                   torch.full((5, 10), float('nan')), torch.ones(5, 10, dtype=torch.int64)]:
+                ReichardtBank(dx)
+        bank = ReichardtBank([-2, 2])
+        for xt in [torch.zeros(1, 10), torch.zeros(3, 10), torch.zeros(2, 4), torch.ones(2, 5, 10),
+                   torch.full((2, 10), float('nan')), torch.ones(2, 10, dtype=torch.int64)]:
             with self.assertRaises(ValueError):
                 bank(xt)
 
@@ -83,8 +83,8 @@ class ReichardtTests(unittest.TestCase):
             for split in ['train', 'validate', 'test']:
                 (source / split).mkdir(parents=True)
                 for i in range(2):
-                    torch.save(torch.rand(1, 5, 9), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
-            bank = ReichardtBank([-1, 1], [1, 2])
+                    torch.save(torch.rand(1, 2, 9), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
+            bank = ReichardtBank([-1, 1])
             precompute_dataset(source, destination, bank, torch.float16)
             dataset = ReichardtDataset(destination / 'train')
             maps, label = dataset[0]
@@ -93,7 +93,7 @@ class ReichardtTests(unittest.TestCase):
             self.assertEqual(maps.dtype, torch.float32)
             self.assertEqual(label.tolist(), [0, 0, 0])
             with self.assertRaises(ValueError):
-                ReichardtDataset(destination / 'train', ReichardtBank([1, -1], [1, 2]).metadata)
+                ReichardtDataset(destination / 'train', ReichardtBank([1, -1]).metadata)
             with self.assertRaises(FileExistsError):
                 precompute_dataset(source, destination, bank)
             model = FlowXTNet(dataset.n_channels)

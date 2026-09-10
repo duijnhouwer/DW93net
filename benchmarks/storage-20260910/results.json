@@ -1,0 +1,238 @@
+{
+  "torch": "2.11.0+cu128",
+  "gpu": "NVIDIA GeForce RTX 3080 Ti",
+  "shape": [
+    21,
+    1,
+    7180
+  ],
+  "batch_size": 12,
+  "samples": 384,
+  "default_cpu_threads": 20,
+  "synthetic": true,
+  "cudnn_benchmark": false,
+  "cudnn_tf32": true,
+  "runs": {
+    "storage_torch.float16": {
+      "files": 384,
+      "bytes": 116517886,
+      "allocated": 117964800
+    },
+    "storage_torch.float32": {
+      "files": 384,
+      "bytes": 232319998,
+      "allocated": 232783872
+    },
+    "storage_packed_float16": {
+      "bytes": 115799168
+    },
+    "current_float32_default_threads": {
+      "cpu_threads": 20,
+      "workers": 0,
+      "batches": 8,
+      "mean_load_ms": 5.9324143749677205,
+      "mean_transfer_ms": 0.9033227500196972,
+      "mean_train_ms": 4.538390249976487,
+      "mean_total_ms": 11.374127374963905,
+      "median_total_ms": 11.756771499904062,
+      "p90_total_ms": 12.778263799964407,
+      "process_disk_read_bytes": 1150976
+    },
+    "files_float16_default_threads": {
+      "cpu_threads": 20,
+      "workers": 0,
+      "batches": 8,
+      "mean_load_ms": 5.2251306249928575,
+      "mean_transfer_ms": 0.8923019999969029,
+      "mean_train_ms": 4.720684375016049,
+      "mean_total_ms": 10.83811700000581,
+      "median_total_ms": 10.639374499987753,
+      "p90_total_ms": 12.174253200021212,
+      "process_disk_read_bytes": 266240
+    },
+    "files_float32_warm_0": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.898544708325403,
+      "mean_transfer_ms": 0.8556147916844262,
+      "mean_train_ms": 4.550215458337448,
+      "mean_total_ms": 10.304374958347276,
+      "median_total_ms": 10.306933000038043,
+      "p90_total_ms": 10.720009300018774,
+      "process_disk_read_bytes": 0
+    },
+    "files_float16_warm_0": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.6988237499808365,
+      "mean_transfer_ms": 0.7581103750074666,
+      "mean_train_ms": 4.242415958321051,
+      "mean_total_ms": 9.699350083309355,
+      "median_total_ms": 9.7796054999435,
+      "p90_total_ms": 10.250088500015408,
+      "process_disk_read_bytes": 0
+    },
+    "packed_float16_warm_0": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 2.8888364583300095,
+      "mean_transfer_ms": 0.7642221250137027,
+      "mean_train_ms": 4.037620208317587,
+      "mean_total_ms": 7.690678791661298,
+      "median_total_ms": 7.625544999996237,
+      "p90_total_ms": 8.167059699985657,
+      "process_disk_read_bytes": 24576
+    },
+    "files_float32_warm_1": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.780926833338602,
+      "mean_transfer_ms": 0.817628666666792,
+      "mean_train_ms": 4.123512208323632,
+      "mean_total_ms": 9.722067708329027,
+      "median_total_ms": 9.725222000042777,
+      "p90_total_ms": 10.102584699984618,
+      "process_disk_read_bytes": 0
+    },
+    "files_float16_warm_1": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.74243170832267,
+      "mean_transfer_ms": 0.8020586666598698,
+      "mean_train_ms": 4.279258833363997,
+      "mean_total_ms": 9.823749208346536,
+      "median_total_ms": 9.748123999997915,
+      "p90_total_ms": 10.41218190005111,
+      "process_disk_read_bytes": 0
+    },
+    "packed_float16_warm_1": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 2.9027825000108955,
+      "mean_transfer_ms": 0.7731980000045269,
+      "mean_train_ms": 4.1164353749868114,
+      "mean_total_ms": 7.792415875002234,
+      "median_total_ms": 7.616615000017646,
+      "p90_total_ms": 8.128694200013342,
+      "process_disk_read_bytes": 0
+    },
+    "files_float32_warm_2": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.632105041660377,
+      "mean_transfer_ms": 0.783016541660686,
+      "mean_train_ms": 4.153402958332701,
+      "mean_total_ms": 9.568524541653764,
+      "median_total_ms": 9.671522999951776,
+      "p90_total_ms": 9.970901899998807,
+      "process_disk_read_bytes": 0
+    },
+    "files_float16_warm_2": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 4.619701541675643,
+      "mean_transfer_ms": 0.7882557499859407,
+      "mean_train_ms": 4.06376345834758,
+      "mean_total_ms": 9.471720750009164,
+      "median_total_ms": 9.387105500024973,
+      "p90_total_ms": 9.7479270000008,
+      "process_disk_read_bytes": 0
+    },
+    "packed_float16_warm_2": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 2.9110542500158467,
+      "mean_transfer_ms": 0.7479417083260387,
+      "mean_train_ms": 4.09186875001429,
+      "mean_total_ms": 7.7508647083561755,
+      "median_total_ms": 7.732157000077677,
+      "p90_total_ms": 8.04067010003564,
+      "process_disk_read_bytes": 0
+    },
+    "files_torch.float32_cold": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 10.402617916672815,
+      "mean_transfer_ms": 0.7823751249986799,
+      "mean_train_ms": 4.0819311250004375,
+      "mean_total_ms": 15.266924166671933,
+      "median_total_ms": 14.546010000003662,
+      "p90_total_ms": 15.23205369999232,
+      "process_disk_read_bytes": 174587904
+    },
+    "files_torch.float16_cold": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 8.292052666665958,
+      "mean_transfer_ms": 0.7749404583279329,
+      "mean_train_ms": 4.228049583327713,
+      "mean_total_ms": 13.295042708321603,
+      "median_total_ms": 12.732808500004467,
+      "p90_total_ms": 13.22083669992935,
+      "process_disk_read_bytes": 88473600
+    },
+    "packed_float16_cold": {
+      "cpu_threads": 2,
+      "workers": 0,
+      "batches": 24,
+      "mean_load_ms": 5.3224411249838495,
+      "mean_transfer_ms": 0.8238652916740344,
+      "mean_train_ms": 4.255947250011142,
+      "mean_total_ms": 10.402253666669026,
+      "median_total_ms": 10.360813000033886,
+      "p90_total_ms": 10.740124499955073,
+      "process_disk_read_bytes": 103616512
+    },
+    "files_float16_two_workers": {
+      "cpu_threads": 2,
+      "workers": 2,
+      "batches": 24,
+      "mean_load_ms": 0.07696829166548014,
+      "mean_transfer_ms": 0.5638063749936842,
+      "mean_train_ms": 4.2106143750165375,
+      "mean_total_ms": 4.851389041675702,
+      "median_total_ms": 4.8087205000229005,
+      "p90_total_ms": 5.464968599983422,
+      "process_disk_read_bytes": 0
+    },
+    "gpu_resident_threads_20": {
+      "mean_ms": 4.342778479160832,
+      "median_ms": 4.379427000060332
+    },
+    "gpu_resident_threads_2": {
+      "mean_ms": 4.347020499996764,
+      "median_ms": 4.375364499935586
+    },
+    "transfer_torch.float32_pinned_False": {
+      "mean_ms": 0.4284814599964193,
+      "bytes": 7237440,
+      "includes_gpu_float32_cast": true
+    },
+    "transfer_torch.float32_pinned_True": {
+      "mean_ms": 0.3557665199969051,
+      "bytes": 7237440,
+      "includes_gpu_float32_cast": true
+    },
+    "transfer_torch.float16_pinned_False": {
+      "mean_ms": 0.26604176000091684,
+      "bytes": 3618720,
+      "includes_gpu_float32_cast": true
+    },
+    "transfer_torch.float16_pinned_True": {
+      "mean_ms": 0.21375649999754387,
+      "bytes": 3618720,
+      "includes_gpu_float32_cast": true
+    }
+  }
+}

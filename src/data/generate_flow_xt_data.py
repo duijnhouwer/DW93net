@@ -17,7 +17,7 @@ class StimConfig:
     near_exclusion_radius: float = 0.04
     n_world_dots: int = 1000
     superimpose: bool = False
-    x_supersampling: int = 255
+    x_supersampling: int = 512
 
     def __post_init__(self):
         if self.stim_wid_px is None:
@@ -287,4 +287,9 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_flow_xt_dataset(config=StimConfig(superimpose=True))
+    generate_flow_xt_dataset(
+        n_samples=500_000,
+        rot_deg_range=(0, 0),
+        split=(0.8, 0.1, 0.1),
+        config=StimConfig(superimpose=False),
+    )

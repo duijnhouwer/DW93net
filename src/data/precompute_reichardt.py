@@ -40,10 +40,9 @@ def main():
     parser.add_argument("source")
     parser.add_argument("destination")
     parser.add_argument("--dx", nargs="+", type=int, default=list(ReichardtBank().dx_values))
-    parser.add_argument("--dt", nargs="+", type=int, default=[1, 2])
     parser.add_argument("--dtype", choices=["float16", "float32"], default="float32")
     args = parser.parse_args()
-    precompute_dataset(args.source, args.destination, ReichardtBank(args.dx, args.dt),
+    precompute_dataset(args.source, args.destination, ReichardtBank(args.dx),
                        getattr(torch, args.dtype))
 
 

@@ -36,7 +36,7 @@ def main():
     raw = [torch.load(p, weights_only=True) for p in raw_files]
     assert all(x.dtype == torch.float32 and torch.isfinite(x).all() for x in raw)
     assert any(((x > 0) & (x < 1)).any() for x in raw), 'Antialiasing was lost'
-    bank = ReichardtBank([-3, -2, -1, 1, 2, 3], [1])
+    bank = ReichardtBank([-3, -2, -1, 1, 2, 3])
     cache = output / 'reichardt' / source.name
     precompute_dataset(source, cache, bank, torch.float16)
     preprocessing_seconds = time.perf_counter() - started
