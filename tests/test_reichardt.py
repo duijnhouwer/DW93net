@@ -34,19 +34,21 @@ class ReichardtTests(unittest.TestCase):
                 original = (intensities * (2 if superimpose else 1)).clamp(0, 1)[None]
                 torch.testing.assert_close(decoded, original, rtol=0, atol=0.5/255 + 1e-7)
 
-    def test_byte_grayscale_and_legacy_float_loading(self):
+    def test_byte_grayscale_loading(self):
         levels = torch.arange(256, dtype=torch.uint8).repeat(1, 2, 1)
         expected = torch.arange(256, dtype=torch.float32).repeat(1, 2, 1) / 255
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             name = 'flow_nux=1000000000_nuz=-2000000000_nrot=3000000000_id=0.pt'
-            for tensor in (levels, expected, expected.half()):
-                torch.save(tensor, root / name)
-                decoded, label = FlowXtDataset(root)[0]
-                self.assertEqual(decoded.dtype, torch.float32)
-                torch.testing.assert_close(label, torch.tensor([1., -2., 3.]), rtol=0, atol=0)
-                reference = expected if tensor.dtype == torch.uint8 else tensor.float()
-                torch.testing.assert_close(decoded, reference, rtol=0, atol=0)
+            torch.save(levels, root / name)
+            decoded, label = FlowXtDataset(root)[0]
+            self.assertEqual(decoded.dtype, torch.float32)
+            torch.testing.assert_close(label, torch.tensor([1., -2., 3.]), rtol=0, atol=0)
+            torch.testing.assert_close(decoded, expected, rtol=0, atol=0)
+            for invalid in (expected, expected.half()):
+                torch.save(invalid, root / name)
+                with self.assertRaises(ValueError):
+                    FlowXtDataset(root)[0]
             torch.testing.assert_close(decode_stimulus(levels)[..., 1], torch.full((1, 2), 1/255))
 
     def test_byte_preprocessing_scales_before_products(self):
@@ -60,21 +62,19 @@ class ReichardtTests(unittest.TestCase):
             bank = ReichardtBank([0])
             # Independent scalar reference also exercises small nonzero products.
             reference = torch.tensor([[[0., (1/255)**2, (128/255)*(64/255), 128/255]]])
-            for dtype in (torch.float16, torch.float32):
-                cache = root / str(dtype)
-                options = {} if dtype == torch.float16 else {'dtype': dtype}
-                metadata = precompute_dataset(source, cache, bank, **options)
-                saved = torch.load(cache / 'train' / filename, weights_only=True)
-                self.assertEqual(saved.dtype, dtype)
-                self.assertEqual(metadata['storage_dtype'], str(dtype))
-                torch.testing.assert_close(saved, reference.to(dtype))
-                self.assertGreater(saved[0, 0, 1].item(), 0)
-                decoded, _ = ReichardtDataset(cache / 'train')[0]
-                torch.testing.assert_close(decoded, saved.float(), rtol=0, atol=0)
-            # Products are never interpreted as byte-encoded raw stimuli.
-            torch.save(levels, cache / 'train' / filename)
-            with self.assertRaises(ValueError):
-                ReichardtDataset(cache / 'train')[0]
+            cache = root / 'cache'
+            metadata = precompute_dataset(source, cache, bank)
+            saved = torch.load(cache / 'train' / filename, weights_only=True)
+            self.assertEqual(saved.dtype, torch.float16)
+            self.assertEqual(metadata['storage_dtype'], 'torch.float16')
+            torch.testing.assert_close(saved, reference.half())
+            self.assertGreater(saved[0, 0, 1].item(), 0)
+            decoded, _ = ReichardtDataset(cache / 'train')[0]
+            torch.testing.assert_close(decoded, saved.float(), rtol=0, atol=0)
+            for invalid in (saved.float(), saved.to(torch.uint8)):
+                torch.save(invalid, cache / 'train' / filename)
+                with self.assertRaises(ValueError):
+                    ReichardtDataset(cache / 'train')[0]
 
     def test_background_loader_matches_serial_across_epochs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -149,13 +149,13 @@ class ReichardtTests(unittest.TestCase):
             for split in ['train', 'validate', 'test']:
                 (source / split).mkdir(parents=True)
                 for i in range(2):
-                    torch.save(torch.rand(1, 2, 9), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
+                    torch.save(torch.randint(0, 256, (1, 2, 9), dtype=torch.uint8), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
             bank = ReichardtBank([-1, 1])
-            precompute_dataset(source, destination, bank, torch.float16)
+            precompute_dataset(source, destination, bank)
             dataset = ReichardtDataset(destination / 'train')
             maps, label = dataset[0]
             raw = torch.load(source / 'train' / dataset.files[0], weights_only=True)
-            torch.testing.assert_close(maps, bank(raw).half().float())
+            torch.testing.assert_close(maps, bank(decode_stimulus(raw)).half().float())
             self.assertEqual(maps.dtype, torch.float32)
             self.assertEqual(label.tolist(), [0, 0, 0])
             with self.assertRaises(ValueError):

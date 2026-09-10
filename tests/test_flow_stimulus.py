@@ -40,18 +40,17 @@ class OneStepStimulusTests(unittest.TestCase):
         torch.testing.assert_close(encoded.float() / 255, xt, rtol=0, atol=1e-7)
         self.assertTrue(((encoded > 0) & (encoded < 255)).any())
 
-    def test_viewer_uses_normalized_byte_and_legacy_intensities(self):
+    def test_viewer_uses_normalized_byte_intensities(self):
         from data.show_flow_xt_data import show_xt_sample
         levels = torch.tensor([[[0, 1, 128, 255], [255, 128, 1, 0]]], dtype=torch.uint8)
         expected = levels.squeeze(0).float().numpy() / 255
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
-            for tensor in (levels, levels.float() / 255):
-                torch.save(tensor, path)
-                with patch('data.show_flow_xt_data.plt') as plot:
-                    show_xt_sample(directory, 0)
-                np.testing.assert_allclose(plot.imshow.call_args.args[0], expected)
-                self.assertEqual(plot.imshow.call_args.kwargs['vmax'], 1)
+            torch.save(levels, path)
+            with patch('data.show_flow_xt_data.plt') as plot:
+                show_xt_sample(directory, 0)
+            np.testing.assert_allclose(plot.imshow.call_args.args[0], expected)
+            self.assertEqual(plot.imshow.call_args.kwargs['vmax'], 1)
 
     def test_zero_motion_preserves_dots_and_fractional_intensities(self):
         xt = generate_flow_xt_stim(

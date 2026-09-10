@@ -62,7 +62,7 @@ class ReichardtDataset(FlowXtDataset):
     def _decode_input(self, responses, filename):
         if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
                 or responses.shape[0] != self.n_channels
-                or responses.shape[1] != 1 or responses.shape[2] < 1 or not responses.is_floating_point()
+                or responses.shape[1] != 1 or responses.shape[2] < 1 or responses.dtype != torch.float16
                 or not torch.isfinite(responses).all()):
             raise ValueError(f"Invalid Reichardt response tensor: {filename}")
         return responses.float()

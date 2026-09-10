@@ -138,52 +138,42 @@ def main():
         torch.set_num_threads(2)
         array = np.lib.format.open_memmap(root / 'packed.npy', mode='w+', dtype=np.float16,
                                          shape=(args.samples, *shape))
-        folders = {}
-        for dtype in (torch.float16, torch.float32):
-            folder = root / str(dtype) / 'train'
-            folder.mkdir(parents=True)
-            (folder.parent / 'reichardt.json').write_text(json.dumps(bank.metadata))
-            folders[dtype] = folder
+        folder = root / 'products' / 'train'
+        folder.mkdir(parents=True)
+        (folder.parent / 'reichardt.json').write_text(json.dumps(bank.metadata))
         for i in range(args.samples):
-            # Use identical representable values for both storage comparisons.
             x = (torch.randint(0, 256, shape).float() / 255).square().half()
             array[i] = x.numpy()
-            for dtype, folder in folders.items():
-                torch.save(x.to(dtype), folder / f'flow_nux=0_nuz=0_nrot=0_id={i}.pt')
+            torch.save(x, folder / f'flow_nux=0_nuz=0_nrot=0_id={i}.pt')
         array.flush()
         del array
-        datasets = {dtype: ReichardtDataset(folder) for dtype, folder in folders.items()}
-        for dtype, folder in folders.items():
-            paths = list(folder.glob('*.pt'))
-            publish('storage_' + str(dtype), dict(files=len(paths),
-                    bytes=sum(p.stat().st_size for p in paths),
-                    allocated=sum(p.stat().st_blocks*512 for p in paths)))
+        dataset = ReichardtDataset(folder)
+        paths = list(folder.glob('*.pt'))
+        publish('storage_torch.float16', dict(files=len(paths),
+                bytes=sum(p.stat().st_size for p in paths),
+                allocated=sum(p.stat().st_blocks*512 for p in paths)))
         publish('storage_packed_float16', dict(bytes=(root / 'packed.npy').stat().st_size))
         torch.set_num_threads(default_threads)
-        pipeline('current_float32_default_threads', datasets[torch.float32], 8)
-        pipeline('files_float16_default_threads', datasets[torch.float16], 8)
+        pipeline('files_float16_default_threads', dataset, 8)
         torch.set_num_threads(2)
         for repeat in range(3):
-            pipeline(f'files_float32_warm_{repeat}', datasets[torch.float32], args.batches)
-            pipeline(f'files_float16_warm_{repeat}', datasets[torch.float16], args.batches)
+            pipeline(f'files_float16_warm_{repeat}', dataset, args.batches)
             pipeline(f'packed_float16_warm_{repeat}', PackedDataset(root / 'packed.npy'), args.batches)
-        for dtype in (torch.float32, torch.float16):
-            pipeline('files_' + str(dtype) + '_cold', datasets[dtype], args.batches,
-                     cold_paths=list(folders[dtype].glob('*.pt')))
+        pipeline('files_torch.float16_cold', dataset, args.batches, cold_paths=paths)
         pipeline('packed_float16_cold', PackedDataset(root / 'packed.npy'), args.batches,
                  cold_paths=[root / 'packed.npy'])
-        pipeline('files_float16_two_workers', datasets[torch.float16], args.batches, workers=2)
+        pipeline('files_float16_two_workers', dataset, args.batches, workers=2)
         torch.set_num_threads(default_threads)
         for repeat in range(3):
             pipeline(f'files_float16_workers_default_threads_cold_{repeat}',
-                     datasets[torch.float16], args.batches, workers=2,
-                     cold_paths=list(folders[torch.float16].glob('*.pt')))
+                     dataset, args.batches, workers=2,
+                     cold_paths=paths)
             pipeline(f'packed_float16_workers_default_threads_cold_{repeat}',
                      PackedDataset(root / 'packed.npy'), args.batches, workers=2,
                      cold_paths=[root / 'packed.npy'])
             pipeline(f'files_float16_four_workers_default_threads_cold_{repeat}',
-                     datasets[torch.float16], args.batches, workers=4,
-                     cold_paths=list(folders[torch.float16].glob('*.pt')))
+                     dataset, args.batches, workers=4,
+                     cold_paths=paths)
 
         for threads in (default_threads, 2):
             torch.set_num_threads(threads)

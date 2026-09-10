@@ -110,10 +110,8 @@ returns float32 intensities in [0, 1]. Each file has newly sampled motion
 parameters and dot positions.
 
 `FlowXtDataset`, preprocessing, and the sample viewer decode uint8 by dividing
-by 255 before using the intensities. Legacy floating-point raw files remain
-readable without rescaling. Historical uint8 files using 0/1 for binary pixels
-must be regenerated or explicitly converted to 0/255; uint8 now always means
-0–255 grayscale. Existing datasets are not converted automatically.
+by 255 before using the intensities. Raw files must contain uint8 tensors;
+product files must contain float16 tensors.
 
 Preprocessing turns its two frames into one row of products per spatial span;
 the network receives these product maps as one training example.
@@ -152,17 +150,14 @@ python -m train.train_flow_xt_net \
 Preprocessing preserves splits and label filenames, and writes `reichardt.json`
 with channel and crop metadata only after completion. Existing destinations are
 refused. Products are computed from normalized intensities in float32 and stored
-as **float16 by default**, with rounding and an overflow check. Use
-`--dtype float32` to retain float32 storage. Regenerate caches when stimuli or
-detector settings change. The fixed-delay cache format is
-`reichardt-products-v2`; older caches and their checkpoints must be regenerated
-and retrained.
+as **float16**, with rounding and an overflow check. Regenerate caches when
+stimuli or detector settings change. The fixed-delay cache format is
+`reichardt-products-v2`.
 
 `ReichardtDataset` reads cached maps as float32. `FlowXTNet` learns from these
 maps downstream of detection. Checkpoints retain detector metadata, and
 validation/evaluation reject mismatched configurations. Use the cached dataset
-root for evaluation; start fresh for incompatible detector configurations or
-old convolution-detector checkpoints.
+root for evaluation; start fresh when detector configurations change.
 
 Training uses range-normalized MSE on each example's motion prediction.
 
