@@ -27,7 +27,7 @@ class Settings:
     batch_size: int = 12
     num_workers: int = 4
     num_epochs: int = 1_000_000
-    lr: float = 1e-3
+    learning_rate: float = 1e-3
     train_subset: dict = field(default_factory=lambda: {"n": 80_000, "method": "random"})
     val_subset: dict = field(default_factory=lambda: {"n": 10_000, "method": "first"})
     from_scratch: bool = False
@@ -79,7 +79,7 @@ def train(cfg):
 
     # --- Model and optimizer
     model = PureTranslationNet(train_cache.metadata["dx_values"]).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
 
     start_epoch = 0
     best_val_rmse = float("inf")

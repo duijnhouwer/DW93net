@@ -81,7 +81,8 @@ def main():
         print(name, json.dumps(result), flush=True)
 
     model = PureTranslationNet(bank.dx_values).cuda().train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    learning_rate = 1e-3
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     def step(x, y):
         optimizer.zero_grad()
