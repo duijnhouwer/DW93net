@@ -3,7 +3,7 @@ import sys
 import torch
 from dataclasses import dataclass, asdict, field
 from models.pure_translation import PureTranslationNet
-from data.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
+from stimuli.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
                                    subset_dataset, make_flow_loader, require_pure_translation,
                                    require_pure_translation_root)
 
@@ -11,7 +11,7 @@ from data.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_folder
 @dataclass
 class Settings:
     root_folder: str = (
-        "data/reichardt/"
+        "stimuli/reichardt/"
         "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0"
     )
     checkpoints_dir: str = "checkpoints/reichardt"

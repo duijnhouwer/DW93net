@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from data.load_flow_xt_data import ReichardtDataset
+from stimuli.load_flow_xt_data import ReichardtDataset
 from features.dog_motion import DoGMotionBank
 from models.pure_translation import PureTranslationNet
 

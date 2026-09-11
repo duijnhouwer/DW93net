@@ -12,10 +12,10 @@ from dataclasses import asdict
 import numpy as np
 import torch
 
-from data.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
-from data.precompute_reichardt import precompute_dataset
-from data.load_flow_xt_data import ReichardtDataset, make_flow_loader
-from data.stimulus_io import decode_stimulus
+from stimuli.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
+from stimuli.precompute_reichardt import precompute_dataset
+from stimuli.load_flow_xt_data import ReichardtDataset, make_flow_loader
+from stimuli.stimulus_io import decode_stimulus
 from features.dog_motion import DoGMotionBank
 from train.train_flow_xt_net import Settings, train
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
@@ -26,7 +26,7 @@ def digest(path):
 
 
 def main():
-    output = Path(sys.argv[1] if len(sys.argv) > 1 else 'data/reichardt-pilot').resolve()
+    output = Path(sys.argv[1] if len(sys.argv) > 1 else 'stimuli/reichardt-pilot').resolve()
     output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(2)
     torch.manual_seed(42)

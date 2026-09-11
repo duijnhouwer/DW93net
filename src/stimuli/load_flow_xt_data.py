@@ -15,7 +15,7 @@ import random
 import json
 from pathlib import Path
 from features.dog_motion import DoGMotionBank
-from data.stimulus_io import decode_stimulus
+from stimuli.stimulus_io import decode_stimulus
 
 
 class FlowXtDataset(Dataset):

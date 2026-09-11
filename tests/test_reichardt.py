@@ -8,9 +8,9 @@ import torch
 
 from features.reichardt import ReichardtBank
 from features.dog_motion import DoGMotionBank
-from data.precompute_reichardt import precompute_dataset
-from data.load_flow_xt_data import FlowXtDataset, ReichardtDataset, make_flow_loader
-from data.stimulus_io import decode_stimulus
+from stimuli.precompute_reichardt import precompute_dataset
+from stimuli.load_flow_xt_data import FlowXtDataset, ReichardtDataset, make_flow_loader
+from stimuli.stimulus_io import decode_stimulus
 from models.pure_translation import PureTranslationNet
 from train.train_flow_xt_net import Settings, train
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
@@ -30,11 +30,11 @@ class ReichardtTests(unittest.TestCase):
             self.assertEqual(products.sum(), 1)
 
     def test_dataset_preserves_fractional_intensities(self):
-        from data.generate_flow_xt_data import generate_flow_xt_dataset, StimConfig
+        from stimuli.generate_flow_xt_data import generate_flow_xt_dataset, StimConfig
         intensities = torch.tensor([[0., .1, .4, .8, 1.]]).repeat(2, 1)
         for superimpose in (False, True):
             with tempfile.TemporaryDirectory() as directory:
-                with patch('data.generate_flow_xt_data.generate_flow_xt_stim', return_value=intensities):
+                with patch('stimuli.generate_flow_xt_data.generate_flow_xt_stim', return_value=intensities):
                     folder = generate_flow_xt_dataset(
                         output_root=directory, n_samples=1, split=(1, 0, 0), seed=42,
                         config=StimConfig(superimpose=superimpose))

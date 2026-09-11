@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from data.load_flow_xt_data import require_pure_translation, require_pure_translation_root
+from stimuli.load_flow_xt_data import require_pure_translation, require_pure_translation_root
 from models.pure_translation import PureTranslationNet, LocalMotionOpponency, V1Motion
 
 

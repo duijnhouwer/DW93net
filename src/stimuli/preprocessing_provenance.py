@@ -43,7 +43,7 @@ def write_provenance(destination, repo):
     out.mkdir()
     (out / 'working-tree.patch').write_bytes(diff)
     # Unlike a patch, this also includes untracked source and requires no Git
-    # object database to recover the current code. No data/.git/environment copy.
+    # object database to recover the current code. No stimuli/.git/environment copy.
     with tarfile.open(out / 'source.tar.gz', 'w:gz') as archive:
         for name, (content, mode) in files.items():
             info = tarfile.TarInfo(name)

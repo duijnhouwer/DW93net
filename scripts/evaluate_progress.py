@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from data.load_flow_xt_data import ReichardtDataset, require_pure_translation
+from stimuli.load_flow_xt_data import ReichardtDataset, require_pure_translation
 from models.pure_translation import PureTranslationNet
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,7 @@ def fingerprint(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoints', type=Path, help='Default: sole directory under checkpoints/reichardt')
-    parser.add_argument('--data', type=Path, help='Default: data/reichardt/<checkpoint directory name>')
+    parser.add_argument('--data', type=Path, help='Default: stimuli/reichardt/<checkpoint directory name>')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
     parser.add_argument('--samples', type=int, default=256, help='Fixed seeded subset; 0 means all')
     parser.add_argument('--seed', type=int, default=42)
@@ -69,7 +69,7 @@ def main():
             parser.error('Specify --checkpoints (could not identify a unique checkpoint directory)')
         args.checkpoints = candidates[0].parent
     args.checkpoints = args.checkpoints.resolve()
-    args.data = (args.data or ROOT / 'data/reichardt' / args.checkpoints.name).resolve()
+    args.data = (args.data or ROOT / 'stimuli/reichardt' / args.checkpoints.name).resolve()
     dataset = ReichardtDataset(args.data / args.split)
     require_pure_translation(dataset)
     if not len(dataset):
@@ -83,7 +83,7 @@ def main():
                                 (args.data / args.split / f).stat().st_mtime_ns) for f in selected],
                 'code': fingerprint([Path(__file__).read_text(),
                     (ROOT / 'src/models/pure_translation.py').read_text(),
-                    (ROOT / 'src/data/load_flow_xt_data.py').read_text()]),
+                    (ROOT / 'src/stimuli/load_flow_xt_data.py').read_text()]),
                 'torch': torch.__version__, 'device': args.device}
     out = args.output / fingerprint(manifest)[:16]
     out.mkdir(parents=True, exist_ok=True)

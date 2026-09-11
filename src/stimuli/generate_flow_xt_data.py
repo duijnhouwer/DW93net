@@ -3,7 +3,7 @@ import json
 import sys
 
 # Support launching this file directly from an IDE's "Run" button.  In that
-# case Python puts src/data (rather than src) on sys.path, so the top-level
+# case Python puts src/stimuli (rather than src) on sys.path, so the top-level
 # ``data`` package would otherwise be unavailable.
 _SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _SRC_ROOT not in sys.path:
@@ -13,8 +13,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from dataclasses import dataclass, replace
+from pathlib import Path
+from stimuli.precompute_reichardt import precompute_dataset
 
-# Repo root is two levels up from this file (src/data/ -> repo root), so the
+# Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "data")
@@ -223,6 +225,17 @@ def generate_flow_xt_dataset(
     return output_folder
 
 
+def generate_and_precompute(*, precomputed_root=None, **generation_kwargs):
+    """Generate raw XT stimuli, then cache their default DoG product maps."""
+    raw_folder = Path(generate_flow_xt_dataset(**generation_kwargs)).resolve()
+    if precomputed_root is None:
+        precomputed_root = raw_folder.parent / "reichardt"
+    product_folder = Path(precomputed_root).resolve() / raw_folder.name
+    precompute_dataset(raw_folder, product_folder)
+    print(f"\n✅ Precomputed DoG/Reichardt maps saved to {product_folder}")
+    return str(raw_folder), str(product_folder)
+
+
 
 def generate_flow_xt_stim(
     cam_trans_xz=[0, 1e-3],
@@ -356,7 +369,7 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_flow_xt_dataset(
+    generate_and_precompute(
         n_samples=50_000,
         speed_range=(0.005, 0.005),
         rot_deg_range=(0, 0),

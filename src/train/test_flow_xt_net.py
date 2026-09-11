@@ -5,9 +5,9 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from models.pure_translation import PureTranslationNet
-from data.load_flow_xt_data import ReichardtDataset
-from data.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation, require_pure_translation_root
-from data.utils import select_subfolder
+from stimuli.load_flow_xt_data import ReichardtDataset
+from stimuli.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation, require_pure_translation_root
+from stimuli.utils import select_subfolder
 import sys
 
 def run_flow_xt_model_on_test_data(

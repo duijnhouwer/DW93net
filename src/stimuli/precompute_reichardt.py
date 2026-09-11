@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import torch
 from features.dog_motion import DoGMotionBank
-from data.preprocessing_provenance import write_provenance, repository_state
-from data.stimulus_io import decode_stimulus
+from stimuli.preprocessing_provenance import write_provenance, repository_state
+from stimuli.stimulus_io import decode_stimulus
 
 
 def precompute_dataset(source, destination, bank=None):

@@ -13,8 +13,8 @@ import torch
 from features.dog_motion import DoGMotionBank
 from features.reichardt import ReichardtBank
 from models.pure_translation import PureTranslationNet
-from data.preprocessing_provenance import write_provenance, repository_state
-from data.precompute_reichardt import precompute_dataset
+from stimuli.preprocessing_provenance import write_provenance, repository_state
+from stimuli.precompute_reichardt import precompute_dataset
 
 
 class DoGMotionTests(unittest.TestCase):
@@ -139,7 +139,7 @@ class ProvenanceTests(unittest.TestCase):
             source.mkdir()
             torch.save(torch.zeros(2, 150, dtype=torch.uint8), source / 'sample.pt')
             output = Path(directory) / 'cache'
-            with patch('data.precompute_reichardt.repository_state', return_value=None):
+            with patch('stimuli.precompute_reichardt.repository_state', return_value=None):
                 with self.assertRaisesRegex(RuntimeError, 'Source changed'):
                     precompute_dataset(source, output)
             self.assertFalse((output / 'reichardt.json').exists())

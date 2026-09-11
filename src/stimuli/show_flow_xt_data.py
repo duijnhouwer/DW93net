@@ -3,8 +3,8 @@ import random
 import re
 import torch
 import matplotlib.pyplot as plt
-from data.load_flow_xt_data import parse_camera_motion_from_filename
-from data.stimulus_io import decode_stimulus
+from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
+from stimuli.stimulus_io import decode_stimulus
 
 def show_xt_sample(folder: str, id, save_dir: str = None):
     """

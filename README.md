@@ -1,5 +1,13 @@
 # dw93net
 
+## Repository layout
+
+`stimuli/` holds generated input examples and precomputed detector maps used for
+training and evaluation. It is local experiment data and is ignored by Git.
+`src/stimuli/` contains the code that generates, preprocesses, loads, and
+displays those inputs. `checkpoints/` holds trained model snapshots, and
+`evaluations/` holds cached measurements and reports derived from them.
+
 ## Reusable training evaluation
 
 From the repository root, evaluate saved checkpoints with:
@@ -190,7 +198,7 @@ motion-range folder name so training can read label normalization:
 
 ```bash
 export PYTHONPATH=src
-python -m data.precompute_reichardt \
+python -m stimuli.precompute_reichardt \
   <raw-dataset-folder> \
   <new-product-dataset-folder>
 

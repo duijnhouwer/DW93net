@@ -7,13 +7,27 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 
-from data.generate_flow_xt_data import (
+from stimuli.generate_flow_xt_data import (
     StimConfig, generate_flow_xt_stim,
-    generate_flow_xt_dataset,
+    generate_flow_xt_dataset, generate_and_precompute,
 )
 
 
 class OneStepStimulusTests(unittest.TestCase):
+    def test_combined_generation_precomputes_sibling_cache(self):
+        with tempfile.TemporaryDirectory() as root, patch(
+                'stimuli.generate_flow_xt_data.precompute_dataset') as precompute:
+            raw, products = generate_and_precompute(
+                output_root=root, n_samples=1,
+                speed_range=(0.005, 0.005), heading_deg_range=(0, 0),
+                rot_deg_range=(0, 0), split=(1, 0, 0), seed=4,
+                config=StimConfig(stim_wid_px=32, n_world_dots=4,
+                                  x_supersampling=1))
+
+            expected = Path(root, 'reichardt', Path(raw).name).resolve()
+            self.assertEqual(Path(products), expected)
+            precompute.assert_called_once_with(Path(raw), expected)
+
     def test_dataset_saves_one_pair_per_file(self):
         for superimpose in (False, True):
             with self.subTest(superimpose=superimpose), tempfile.TemporaryDirectory() as root:
@@ -38,7 +52,7 @@ class OneStepStimulusTests(unittest.TestCase):
                                  '0=+Z_forward,-90=-X_left,+90=+X_right')
 
     def test_polar_sampling_avoids_zero_speed_and_obeys_heading_convention(self):
-        from data.load_flow_xt_data import parse_camera_motion_from_filename
+        from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
 
         with tempfile.TemporaryDirectory() as root:
             folder = generate_flow_xt_dataset(
@@ -65,7 +79,7 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertAlmostEqual(np.cos(radians), expected_dz)
 
     def test_equal_range_endpoints_generate_fixed_values(self):
-        from data.load_flow_xt_data import parse_camera_motion_from_filename
+        from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
 
         with tempfile.TemporaryDirectory() as root:
             folder = generate_flow_xt_dataset(
@@ -89,7 +103,7 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertEqual(metadata['rot_deg_range']['value'], 0)
 
     def test_folder_polar_ranges_determine_component_ranges(self):
-        from data.load_flow_xt_data import (extract_ranges_from_foldername,
+        from stimuli.load_flow_xt_data import (extract_ranges_from_foldername,
                                             parse_camera_motion_from_filename)
 
         ranges = extract_ranges_from_foldername(
@@ -135,13 +149,13 @@ class OneStepStimulusTests(unittest.TestCase):
         self.assertTrue(((encoded > 0) & (encoded < 255)).any())
 
     def test_viewer_uses_normalized_byte_intensities(self):
-        from data.show_flow_xt_data import show_xt_sample
+        from stimuli.show_flow_xt_data import show_xt_sample
         levels = torch.tensor([[[0, 1, 128, 255], [255, 128, 1, 0]]], dtype=torch.uint8)
         expected = levels.squeeze(0).float().numpy() / 255
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'ndx=0_ndz=0_nrot=0_id=0.pt'
             torch.save(levels, path)
-            with patch('data.show_flow_xt_data.plt') as plot:
+            with patch('stimuli.show_flow_xt_data.plt') as plot:
                 show_xt_sample(directory, 0)
             np.testing.assert_allclose(plot.imshow.call_args.args[0], expected)
             self.assertEqual(plot.imshow.call_args.kwargs['vmax'], 1)

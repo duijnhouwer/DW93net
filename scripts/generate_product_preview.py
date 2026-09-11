@@ -11,8 +11,8 @@ from matplotlib.colors import PowerNorm
 import numpy as np
 import torch
 
-from data.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
-from data.precompute_reichardt import precompute_dataset
+from stimuli.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
+from stimuli.precompute_reichardt import precompute_dataset
 
 
 def main():
