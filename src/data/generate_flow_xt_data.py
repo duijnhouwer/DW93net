@@ -1,5 +1,14 @@
 import os
 import json
+import sys
+
+# Support launching this file directly from an IDE's "Run" button.  In that
+# case Python puts src/data (rather than src) on sys.path, so the top-level
+# ``data`` package would otherwise be unavailable.
+_SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _SRC_ROOT not in sys.path:
+    sys.path.insert(0, _SRC_ROOT)
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
