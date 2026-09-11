@@ -24,9 +24,9 @@ def main():
                     heading_deg_range=[-180, 180],
                     rot_deg_range=[0, 0], split=[.8, .1, .1], config=asdict(config))
     (root / 'generation.json').write_text(json.dumps(settings, indent=2) + '\n')
-    source = Path(generate_flow_xt_dataset(output_root=str(root / 'raw'),
+    source = Path(generate_flow_xt_dataset(output_root=str(root),
                                          **{**settings, 'config': config}))
-    cache = root / 'products' / source.name
+    cache = source.parent / 'reichardt'
     metadata = precompute_dataset(source, cache)
     previews = root / 'previews'
     previews.mkdir()

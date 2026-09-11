@@ -33,7 +33,7 @@ def main():
     started = time.perf_counter()
     config = StimConfig(stim_wid_px=128, n_world_dots=120)
     source = Path(generate_flow_xt_dataset(
-        output_root=str(output / 'raw'), n_samples=80, seed=42,
+        output_root=str(output), n_samples=80, seed=42,
         speed_range=(0.001, 0.015), heading_deg_range=(-180, 180),
         rot_deg_range=(0, 0), config=config))
     raw_files = sorted(source.rglob('*.pt'))
@@ -41,7 +41,7 @@ def main():
     assert all(x.dtype == torch.uint8 for x in raw)
     assert any(((x > 0) & (x < 255)).any() for x in raw), 'Antialiasing was lost'
     bank = DoGMotionBank([-3, -2, -1, 1, 2, 3])
-    cache = output / 'reichardt' / source.name
+    cache = source.parent / 'reichardt'
     precompute_dataset(source, cache, bank)
     preprocessing_seconds = time.perf_counter() - started
     for p in raw_files:
@@ -64,7 +64,7 @@ def main():
                    num_epochs=3, batch_size=8)
     print('Training first three epochs...', flush=True)
     train(cfg)
-    checkpoint_dir = output / 'checkpoints' / source.name
+    checkpoint_dir = output / 'checkpoints' / source.parent.name
     latest_path = checkpoint_dir / '_latest.pt'
     first = torch.load(latest_path, map_location='cpu', weights_only=True)
     assert first['epoch'] == 3

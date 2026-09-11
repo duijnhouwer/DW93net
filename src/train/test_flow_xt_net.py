@@ -9,6 +9,7 @@ from stimuli.load_flow_xt_data import ReichardtDataset
 from stimuli.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation, require_pure_translation_root
 from stimuli.utils import select_subfolder
 import sys
+from pathlib import Path
 
 def run_flow_xt_model_on_test_data(
     data_folder: str,
@@ -189,19 +190,24 @@ def analyze_speed_error_vs_speed(results: dict):
 
 def main():
     # --- Data selection
-    data_root = "F:/dw93net/data"
+    repo = Path(__file__).resolve().parents[2]
+    data_root = str(repo / 'stimuli')
     data_folder = select_subfolder(data_root, header_str="\nSelect a data folder")
     if data_folder is None:
         print("No data folder selected. Exiting.")
         sys.exit()
 
     # --- Checkpoint selection
-    checkpoints_root = "F:/dw93net/checkpoints"
-    checkpoints_folder = select_subfolder(checkpoints_root, header_str="\nSelect a checkpoints folder")
+    data_folder = os.path.join(data_folder, 'reichardt')
+    checkpoints_root = str(repo / 'checkpoints')
+    commit_folder = select_subfolder(checkpoints_root, header_str="\nSelect a training commit")
+    if commit_folder is None:
+        return
+    checkpoints_folder = select_subfolder(commit_folder, header_str="\nSelect a checkpoints folder")
     if checkpoints_folder is None:
         print("No checkpoints folder selected. Exiting.")
         sys.exit()
-    checkpoint_path = os.path.join(checkpoints_root, checkpoints_folder, "_best.pt")
+    checkpoint_path = os.path.join(checkpoints_folder, "_best.pt")
 
     # --- Run model on test data
     #from evaluate_flow_xt import run_flow_xt_model_on_test_data  # update this import path as needed

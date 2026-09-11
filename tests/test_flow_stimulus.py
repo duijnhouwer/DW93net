@@ -24,7 +24,8 @@ class OneStepStimulusTests(unittest.TestCase):
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
 
-            expected = Path(root, 'reichardt', Path(raw).name).resolve()
+            self.assertEqual(Path(raw).name, 'raw')
+            expected = Path(raw).parent / 'reichardt'
             self.assertEqual(Path(products), expected)
             precompute.assert_called_once_with(Path(raw), expected)
 
@@ -61,8 +62,8 @@ class OneStepStimulusTests(unittest.TestCase):
                 split=(1, 0, 0), seed=17,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
-            self.assertIn('nspeed=1000000,15000000', Path(folder).name)
-            self.assertIn('nheading=-180000000000,180000000000', Path(folder).name)
+            self.assertIn('nspeed=1000000,15000000', Path(folder).parent.name)
+            self.assertIn('nheading=-180000000000,180000000000', Path(folder).parent.name)
             for path in Path(folder, 'train').glob('*.pt'):
                 motion = parse_camera_motion_from_filename(path.name)
                 speed = np.hypot(motion['dx'], motion['dz'])
@@ -88,8 +89,8 @@ class OneStepStimulusTests(unittest.TestCase):
                 split=(1, 0, 0), seed=23,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
-            self.assertIn('nspeed=5000000,5000000', Path(folder).name)
-            self.assertIn('nheading=-90000000000,-90000000000', Path(folder).name)
+            self.assertIn('nspeed=5000000,5000000', Path(folder).parent.name)
+            self.assertIn('nheading=-90000000000,-90000000000', Path(folder).parent.name)
             for path in Path(folder, 'train').glob('*.pt'):
                 motion = parse_camera_motion_from_filename(path.name)
                 self.assertEqual(motion['dx'], -0.005)

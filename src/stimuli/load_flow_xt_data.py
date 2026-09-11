@@ -191,9 +191,15 @@ def require_pure_translation(dataset):
             raise ValueError(f"Pure translation requires zero yaw: {filename}")
 
 
+def stimulus_set_name(root_folder):
+    """Parameter-set name for a raw/reichardt directory (or a legacy root)."""
+    root = Path(root_folder)
+    return root.parent.name if root.name in ('raw', 'reichardt') else root.name
+
+
 def require_pure_translation_root(root_folder):
     """Fail before any file I/O unless folder bounds explicitly specify zero yaw."""
-    name = Path(root_folder).name
+    name = stimulus_set_name(root_folder)
     match = re.search(r"(?:^|_)nrot=(-?\d+),(-?\d+)(?=_|$)", name)
     if match is None or any(int(bound) != 0 for bound in match.groups()):
         raise ValueError(

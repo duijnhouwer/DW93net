@@ -19,7 +19,7 @@ from stimuli.precompute_reichardt import precompute_dataset
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "data")
+DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "stimuli")
 
 
 @dataclass
@@ -111,7 +111,7 @@ def generate_flow_xt_dataset(
     )
     if config.superimpose:
         folder_name += "_superimposed"
-    output_folder = os.path.join(output_root, folder_name)
+    output_folder = os.path.join(output_root, folder_name, "raw")
 
     # Create subfolders
     for sub in ["train", "validate", "test"]:
@@ -228,9 +228,8 @@ def generate_flow_xt_dataset(
 def generate_and_precompute(*, precomputed_root=None, **generation_kwargs):
     """Generate raw XT stimuli, then cache their default DoG product maps."""
     raw_folder = Path(generate_flow_xt_dataset(**generation_kwargs)).resolve()
-    if precomputed_root is None:
-        precomputed_root = raw_folder.parent / "reichardt"
-    product_folder = Path(precomputed_root).resolve() / raw_folder.name
+    product_folder = (raw_folder.parent / "reichardt" if precomputed_root is None
+                      else Path(precomputed_root).resolve() / raw_folder.parent.name / "reichardt")
     precompute_dataset(raw_folder, product_folder)
     print(f"\n✅ Precomputed DoG/Reichardt maps saved to {product_folder}")
     return str(raw_folder), str(product_folder)

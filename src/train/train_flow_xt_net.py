@@ -1,20 +1,29 @@
 import os
 import sys
+import subprocess
+from pathlib import Path
 import torch
 from dataclasses import dataclass, asdict, field
+
+# VS Code's Play button executes this file directly, so Python starts with
+# src/train on sys.path rather than the project-wide src package directory.
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 from models.pure_translation import PureTranslationNet
 from stimuli.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
                                    subset_dataset, make_flow_loader, require_pure_translation,
-                                   require_pure_translation_root)
+                                   require_pure_translation_root, stimulus_set_name)
 
 
 @dataclass
 class Settings:
     root_folder: str = (
-        "stimuli/reichardt/"
-        "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0"
+        "stimuli/"
+        "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0/reichardt"
     )
-    checkpoints_dir: str = "checkpoints/reichardt"
+    checkpoints_dir: str = "checkpoints"
     batch_size: int = 12
     num_workers: int = 4
     num_epochs: int = 1_000_000
@@ -30,10 +39,10 @@ def train(cfg):
     # --- Data paths
     train_folder = os.path.join(cfg.root_folder, "train")
     val_folder = os.path.join(cfg.root_folder, "validate")
-    data_folder_name = os.path.basename(cfg.root_folder)
+    data_folder_name = stimulus_set_name(cfg.root_folder)
 
     # --- Extract normalization factors from folder name
-    ranges = extract_ranges_from_foldername(os.path.basename(cfg.root_folder))
+    ranges = extract_ranges_from_foldername(data_folder_name)
     dx_range = ranges['dx']
     dz_range = ranges['dz']
 
@@ -78,7 +87,7 @@ def train(cfg):
     if os.path.exists(latest_ckpt_path) and not cfg.from_scratch:
         checkpoint = torch.load(latest_ckpt_path, map_location=device)
         if checkpoint.get("architecture") != PureTranslationNet.architecture:
-            raise ValueError("Checkpoint architecture mismatch; use --from-scratch")
+            raise ValueError("Checkpoint architecture mismatch; start with an empty checkpoint directory")
         if checkpoint.get("reichardt") != train_cache.metadata:
             raise ValueError("Checkpoint detector configuration does not match cache")
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -162,20 +171,32 @@ def train(cfg):
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Train on precomputed Reichardt maps")
-    parser.add_argument("root_folder")
-    parser.add_argument("--checkpoints-dir", default="checkpoints/reichardt")
-    parser.add_argument("--epochs", type=int, default=Settings.num_epochs)
-    parser.add_argument("--batch-size", type=int, default=Settings.batch_size)
-    parser.add_argument("--num-workers", type=int, default=Settings.num_workers,
-                        help="Background data workers (0 loads in the main process)")
-    parser.add_argument("--from-scratch", action="store_true")
-    args = parser.parse_args()
-    train(Settings(root_folder=args.root_folder, checkpoints_dir=args.checkpoints_dir,
-                   num_epochs=args.epochs, batch_size=args.batch_size,
-                   num_workers=args.num_workers,
-                   from_scratch=args.from_scratch))
+    # CLI parameter overrides are disabled: edit Settings above and commit.
+    # parser.add_argument("root_folder")
+    # parser.add_argument("--checkpoints-dir", default="checkpoints")
+    # parser.add_argument("--epochs", type=int, default=Settings.num_epochs)
+    # parser.add_argument("--batch-size", type=int, default=Settings.batch_size)
+    # parser.add_argument("--num-workers", type=int, default=Settings.num_workers)
+    # parser.add_argument("--from-scratch", action="store_true")
+    if len(sys.argv) != 1:
+        raise SystemExit('Training takes no arguments. Edit Settings and commit before running.')
+    root = Path(__file__).resolve().parents[2]
+    commit = committed_revision(root)
+    os.chdir(root)
+    cfg = Settings()
+    cfg.checkpoints_dir = str(Path(cfg.checkpoints_dir) / commit)
+    print(f'Training commit {commit}\nCheckpoints: {cfg.checkpoints_dir}', flush=True)
+    train(cfg)
+
+
+def committed_revision(root):
+    """Reject staged, unstaged, and untracked changes before terminal training."""
+    status = subprocess.check_output(
+        ['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=all'], text=True)
+    if status.strip():
+        raise SystemExit('Commit your repository changes before training:\n' + status)
+    return subprocess.check_output(
+        ['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
 
 
 if __name__ == "__main__":

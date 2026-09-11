@@ -5,8 +5,39 @@
 `stimuli/` holds generated input examples and precomputed detector maps used for
 training and evaluation. It is local experiment data and is ignored by Git.
 `src/stimuli/` contains the code that generates, preprocesses, loads, and
-displays those inputs. `checkpoints/` holds trained model snapshots, and
+displays those inputs. `checkpoints/<commit-id>/<stimulus-set>/` holds trained model
+snapshots, and
 `evaluations/` holds cached measurements and reports derived from them.
+
+Each parameter set groups its original images and precomputed responses:
+
+```text
+stimuli/<parameter-set>/
+  raw/          # generation.json and train/, validate/, test/ images
+  reichardt/    # detector metadata, provenance, and matching split responses
+```
+
+Generation returns the `raw/` path; combined generation/preprocessing writes
+its sibling `reichardt/`. Training `Settings.root_folder` and evaluation
+`--data` point to `stimuli/<parameter-set>/reichardt/`.
+
+## Start or resume training
+
+Edit `Settings` in `src/train/train_flow_xt_net.py`, commit all repository
+changes, then run from the repository root:
+
+```bash
+PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python -m train.train_flow_xt_net
+```
+
+The terminal entry point refuses staged, unstaged, or untracked changes and
+accepts no parameter overrides. Generated stimuli, checkpoints, and evaluations
+are ignored by Git. Checkpoints use the full current commit ID. With
+`Settings.from_scratch = False`, repeating the command resumes that commit's
+`_latest.pt`; a new commit uses a new directory. Even a documentation-only
+commit changes this identity. For a fresh run under the same commit, empty its
+checkpoint directory yourself first. Run only one training process at a time.
+The low-level `train(cfg)` function remains available for temporary test fixtures.
 
 ## Reusable training evaluation
 
@@ -193,18 +224,17 @@ Filtering and products use float32; cached products use float16. The lower-level
 `ReichardtBank` remains the product primitive; cache generation always uses
 `DoGMotionBank`.
 
-Preprocess to a separate, new directory. Keep the
-motion-range folder name so training can read label normalization:
+Preprocess the raw images to their new sibling directory. Training reads motion
+ranges from their shared parameter-set parent:
 
 ```bash
 export PYTHONPATH=src
 python -m stimuli.precompute_reichardt \
-  <raw-dataset-folder> \
-  <new-product-dataset-folder>
+  stimuli/<parameter-set>/raw \
+  stimuli/<parameter-set>/reichardt
 
-python -m train.train_flow_xt_net \
-  <new-product-dataset-folder> \
-  --epochs 10 --from-scratch
+# Set the cached dataset path and epoch count in Settings, then commit.
+python -m train.train_flow_xt_net
 ```
 
 Preprocessing preserves splits and label filenames, and writes `reichardt.json`
@@ -225,8 +255,8 @@ Training, validation, and evaluation use **four background data-loader workers**
 Workers persist across epochs; CUDA batches use pinned system RAM and
 non-blocking transfers. CPU runs do not pin memory. Product maps are converted
 to float32 in the loader, so float16 saves disk space and read bandwidth while
-model inputs and PCIe transfers remain float32. Use training `--num-workers 0`
-for in-process loading/debugging, or set `Settings.num_workers`; evaluation
+model inputs and PCIe transfers remain float32. Set `Settings.num_workers = 0`
+for in-process loading/debugging; evaluation
 accepts a `num_workers` argument. Programs calling these functions with workers
 must use a Python `if __name__ == '__main__':` entry point.
 

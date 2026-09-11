@@ -161,8 +161,8 @@ class ReichardtTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'raw'
-            destination = (root / 'cache' /
-                           'nspeed=1000000000,1000000000_nheading=0,90000000000_nrot=0,0')
+            destination = (root /
+                           'nspeed=1000000000,1000000000_nheading=0,90000000000_nrot=0,0' / 'reichardt')
             for split in ['train', 'validate', 'test']:
                 (source / split).mkdir(parents=True)
                 for i in range(2):
@@ -189,7 +189,7 @@ class ReichardtTests(unittest.TestCase):
             train(cfg)
             cfg.num_epochs = 2
             train(cfg)
-            checkpoint = root / 'checkpoints' / destination.name / '_latest.pt'
+            checkpoint = root / 'checkpoints' / destination.parent.name / '_latest.pt'
             result = run_flow_xt_model_on_test_data(str(destination), str(checkpoint), 2)
             self.assertEqual(result['preds'].shape, (2, 2))
             self.assertTrue(torch.isfinite(torch.from_numpy(result['preds'])).all())
