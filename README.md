@@ -1,5 +1,34 @@
 # dw93net
 
+## Reusable training evaluation
+
+From the repository root, evaluate saved checkpoints with:
+
+```bash
+/home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py
+```
+
+The current experiment recovers translation vectors from one-step flow fields,
+with varying heading and fixed speed. Heading angular error is the primary
+metric; speed and vector errors are tracked as well. Fixed-speed accuracy does
+not demonstrate recovery across different speeds. Rotation is deferred until
+simple translation recovery works.
+
+The command uses 256 seeded validation examples, CPU inference, and no worker
+processes by default. It saves a sample manifest, per-checkpoint JSON metrics,
+and a chronological `progress.md` report under `evaluations/`. Repeating the
+command reuses results for unchanged checkpoints, data, and evaluation code.
+New or overwritten checkpoints are evaluated once; old cached records remain.
+Use `--samples 0` for the whole split, `--split test` for a final held-out
+assessment, or `--help` for explicit dataset/checkpoint paths and other options.
+Changing sample size or seed creates a separate comparison set. Reports include
+heading mean/median error and within-15-degree accuracy, speed RMSE, and vector
+RMSE; JSON also includes heading bias, 90th percentile, undefined-heading count,
+and speed bias/MAE. Units for speed are scene units per step.
+
+Legacy checkpoints may come from overlapping runs sharing filenames. Their
+save times and settings are recorded; epoch number alone is not a run identity.
+
 **dw93net** stands for **Duffy & Wurtz (1993) network**. It is an artificial
 neural network experiment designed to test the *"compensation for eye rotation"*
 hypothesis proposed to explain a perceptual illusion in optic-flow perception.
