@@ -5,7 +5,7 @@
 `stimuli/` holds generated input examples and precomputed detector maps used for
 training and evaluation. It is local experiment data and is ignored by Git.
 `src/stimuli/` contains the code that generates, preprocesses, loads, and
-displays those inputs. `checkpoints/<commit-id>/<stimulus-set>/` holds trained model
+displays those inputs. `checkpoints/<commit-date>-<commit-id>/<stimulus-set>/` holds trained model
 snapshots, and
 `evaluations/` holds cached measurements and reports derived from them.
 
@@ -32,7 +32,8 @@ PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python -m train.train_flow_xt_net
 
 The terminal entry point refuses staged, unstaged, or untracked changes and
 accepts no parameter overrides. Generated stimuli, checkpoints, and evaluations
-are ignored by Git. Checkpoints use the full current commit ID. With
+are ignored by Git. Checkpoints use the commit date and full current commit ID,
+such as `20260911-<commit-id>`. With
 `Settings.from_scratch = False`, repeating the command resumes that commit's
 `_latest.pt`; a new commit uses a new directory. Even a documentation-only
 commit changes this identity. For a fresh run under the same commit, empty its

@@ -24,8 +24,8 @@ class Settings:
         "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0/reichardt"
     )
     checkpoints_dir: str = "checkpoints"
-    batch_size: int = 12
-    num_workers: int = 4
+    batch_size: int = 36
+    num_workers: int = 8
     num_epochs: int = 1_000_000
     learning_rate: float = 1e-3
     train_subset: dict = field(default_factory=lambda: {"n": 80_000, "method": "random"})
@@ -182,9 +182,10 @@ def main():
         raise SystemExit('Training takes no arguments. Edit Settings and commit before running.')
     root = Path(__file__).resolve().parents[2]
     commit = committed_revision(root)
+    run_id = commit_run_id(root, commit)
     os.chdir(root)
     cfg = Settings()
-    cfg.checkpoints_dir = str(Path(cfg.checkpoints_dir) / commit)
+    cfg.checkpoints_dir = str(Path(cfg.checkpoints_dir) / run_id)
     print(f'Training commit {commit}\nCheckpoints: {cfg.checkpoints_dir}', flush=True)
     train(cfg)
 
@@ -197,6 +198,14 @@ def committed_revision(root):
         raise SystemExit('Commit your repository changes before training:\n' + status)
     return subprocess.check_output(
         ['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+
+
+def commit_run_id(root, commit):
+    """Stable, human-readable checkpoint parent: YYYYMMDD-<full commit ID>."""
+    date = subprocess.check_output(
+        ['git', '-C', str(root), 'show', '-s', '--format=%cd', '--date=format:%Y%m%d', commit],
+        text=True).strip()
+    return f'{date}-{commit}'
 
 
 if __name__ == "__main__":

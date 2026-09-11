@@ -51,7 +51,7 @@ def fingerprint(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--checkpoints', type=Path, help='Default: sole stimulus directory under checkpoints/<current commit>')
+    parser.add_argument('--checkpoints', type=Path, help='Default: sole stimulus directory under checkpoints/<commit date>-<current commit>')
     parser.add_argument('--data', type=Path, help='Default: stimuli/<checkpoint directory name>/reichardt')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
     parser.add_argument('--samples', type=int, default=256, help='Fixed seeded subset; 0 means all')
@@ -66,7 +66,9 @@ def main():
         parser.error('samples must be >=0; batch-size and threads must be positive')
     if args.checkpoints is None:
         commit = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
-        candidates = sorted((ROOT / 'checkpoints' / commit).glob('*/_latest.pt'))
+        date = subprocess.check_output(
+            ['git', '-C', str(ROOT), 'show', '-s', '--format=%cd', '--date=format:%Y%m%d', commit], text=True).strip()
+        candidates = sorted((ROOT / 'checkpoints' / f'{date}-{commit}').glob('*/_latest.pt'))
         if len(candidates) != 1:
             parser.error('Specify --checkpoints (could not identify a unique checkpoint directory)')
         args.checkpoints = candidates[0].parent
