@@ -144,7 +144,7 @@ def main():
         for i in range(args.samples):
             x = (torch.randint(0, 256, shape).float() / 255).square().half()
             array[i] = x.numpy()
-            torch.save(x, folder / f'flow_nux=0_nuz=0_nrot=0_id={i}.pt')
+            torch.save(x, folder / f'ndx=0_ndz=0_nrot=0_id={i}.pt')
         array.flush()
         del array
         dataset = ReichardtDataset(folder)

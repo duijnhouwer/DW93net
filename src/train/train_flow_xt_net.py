@@ -10,7 +10,10 @@ from data.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_folder
 
 @dataclass
 class Settings:
-    root_folder: str = "data/reichardt/nux=-10000000,10000000_nuz=-10000000,10000000_nrot=0,0"
+    root_folder: str = (
+        "data/reichardt/"
+        "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0"
+    )
     checkpoints_dir: str = "checkpoints/reichardt"
     batch_size: int = 12
     num_workers: int = 4

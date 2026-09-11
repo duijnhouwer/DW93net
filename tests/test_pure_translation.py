@@ -41,7 +41,7 @@ class PureTranslationTests(unittest.TestCase):
         from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
         for suffix in ['nrot=-1,1', 'nrot=1,1', 'nrot=0,1', 'missing', 'nrot=bad']:
-            root = '/nonexistent/nux=0,1_nuz=0,1_' + suffix
+            root = '/nonexistent/nspeed=1,1_nheading=0,0_' + suffix
             with self.subTest(suffix=suffix), patch('torch.load') as load, patch('os.listdir') as listing:
                 with self.assertRaisesRegex(ValueError, 'stopping before loading files'):
                     train(Settings(root_folder=root))
@@ -49,7 +49,8 @@ class PureTranslationTests(unittest.TestCase):
                     run_flow_xt_model_on_test_data(root, '/nonexistent/checkpoint.pt')
                 load.assert_not_called()
                 listing.assert_not_called()
-        require_pure_translation_root('/nonexistent/nux=0,1_nuz=0,1_nrot=0,0/')
+        require_pure_translation_root(
+            '/nonexistent/nspeed=1,1_nheading=0,0_nrot=0,0/')
 
     def test_full_resolution_backward_and_roundtrip(self):
         torch.manual_seed(10)
@@ -74,10 +75,10 @@ class PureTranslationTests(unittest.TestCase):
 
     def test_reject_yaw_even_if_folder_range_would_be_zero(self):
         for yaw in [1, -1, 3000000000]:
-            dataset = SimpleNamespace(files=[f'flow_nux=0_nuz=0_nrot={yaw}_id=0.pt'])
+            dataset = SimpleNamespace(files=[f'ndx=0_ndz=0_nrot={yaw}_id=0.pt'])
             with self.assertRaisesRegex(ValueError, 'zero yaw'):
                 require_pure_translation(dataset)
-        require_pure_translation(SimpleNamespace(files=['flow_nux=1_nuz=2_nrot=0_id=0.pt']))
+        require_pure_translation(SimpleNamespace(files=['ndx=1_ndz=2_nrot=0_id=0.pt']))
 
 
 if __name__ == '__main__':

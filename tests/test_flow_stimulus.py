@@ -47,7 +47,7 @@ class OneStepStimulusTests(unittest.TestCase):
                 split=(1, 0, 0), seed=17,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
-            self.assertIn('nuspeed=1000000,15000000', Path(folder).name)
+            self.assertIn('nspeed=1000000,15000000', Path(folder).name)
             self.assertIn('nheading=-180000000000,180000000000', Path(folder).name)
             for path in Path(folder, 'train').glob('*.pt'):
                 motion = parse_camera_motion_from_filename(path.name)
@@ -64,11 +64,61 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertAlmostEqual(np.sin(radians), expected_dx)
             self.assertAlmostEqual(np.cos(radians), expected_dz)
 
+    def test_equal_range_endpoints_generate_fixed_values(self):
+        from data.load_flow_xt_data import parse_camera_motion_from_filename
+
+        with tempfile.TemporaryDirectory() as root:
+            folder = generate_flow_xt_dataset(
+                output_root=root, n_samples=3, speed_range=(0.005, 0.005),
+                heading_deg_range=(-90, -90), rot_deg_range=(0, 0),
+                split=(1, 0, 0), seed=23,
+                config=StimConfig(stim_wid_px=32, n_world_dots=4,
+                                  x_supersampling=1))
+            self.assertIn('nspeed=5000000,5000000', Path(folder).name)
+            self.assertIn('nheading=-90000000000,-90000000000', Path(folder).name)
+            for path in Path(folder, 'train').glob('*.pt'):
+                motion = parse_camera_motion_from_filename(path.name)
+                self.assertEqual(motion['dx'], -0.005)
+                self.assertEqual(motion['dz'], 0)
+                self.assertEqual(motion['rot_deg'], 0)
+
+            metadata = json.loads((Path(folder) / 'generation.json').read_text())
+            self.assertEqual(metadata['speed_range']['value'], 0.005)
+            self.assertEqual(metadata['speed_range']['sampling'], 'fixed')
+            self.assertEqual(metadata['heading_deg_range']['value'], -90)
+            self.assertEqual(metadata['rot_deg_range']['value'], 0)
+
+    def test_folder_polar_ranges_determine_component_ranges(self):
+        from data.load_flow_xt_data import (extract_ranges_from_foldername,
+                                            parse_camera_motion_from_filename)
+
+        ranges = extract_ranges_from_foldername(
+            'nspeed=5000000,5000000_'
+            'nheading=-180000000000,180000000000_nrot=0,0')
+        self.assertAlmostEqual(ranges['dx'], 0.01)
+        self.assertAlmostEqual(ranges['dz'], 0.01)
+        self.assertEqual(ranges['rot_deg'], 0)
+
+        quadrant = extract_ranges_from_foldername(
+            'nspeed=5000000,5000000_'
+            'nheading=0,90000000000_nrot=-1000000000,1000000000')
+        self.assertAlmostEqual(quadrant['dx'], 0.005)
+        self.assertAlmostEqual(quadrant['dz'], 0.005)
+        self.assertEqual(quadrant['rot_deg'], 2)
+
+        with self.assertRaises(ValueError):
+            extract_ranges_from_foldername(
+                'nuspeed=5000000,5000000_nheading=0,0_nrot=0,0')
+        with self.assertRaises(ValueError):
+            parse_camera_motion_from_filename(
+                'flow_ndx=0_ndz=0_nrot=0_id=0.pt')
+
     def test_rejects_zero_speed_and_invalid_heading_ranges(self):
         config = StimConfig(stim_wid_px=32, n_world_dots=4, x_supersampling=1)
         with tempfile.TemporaryDirectory() as root:
             for speeds, headings in [((0, .01), (-180, 180)),
-                                     ((.01, .01), (-180, 180)),
+                                     (0, (-180, 180)),
+                                     ((.001, .01), 0),
                                      ((.001, .01), (-181, 180)),
                                      ((.001, .01), (-180, 181))]:
                 with self.subTest(speeds=speeds, headings=headings), self.assertRaises(ValueError):
@@ -89,7 +139,7 @@ class OneStepStimulusTests(unittest.TestCase):
         levels = torch.tensor([[[0, 1, 128, 255], [255, 128, 1, 0]]], dtype=torch.uint8)
         expected = levels.squeeze(0).float().numpy() / 255
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
+            path = Path(directory) / 'ndx=0_ndz=0_nrot=0_id=0.pt'
             torch.save(levels, path)
             with patch('data.show_flow_xt_data.plt') as plot:
                 show_xt_sample(directory, 0)

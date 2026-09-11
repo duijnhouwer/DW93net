@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import torch
 import matplotlib.pyplot as plt
 from data.load_flow_xt_data import parse_camera_motion_from_filename
@@ -26,11 +27,11 @@ def show_xt_sample(folder: str, id, save_dir: str = None):
     elif isinstance(id, int):
         match = None
         for f in os.listdir(folder):
-            if f.endswith('.pt') and f"_id={id}.pt" in f:
+            if re.search(rf"_id={id}(?:_superimposed)?\.pt$", f):
                 match = f
                 break
         if match is None:
-            raise FileNotFoundError(f"No file with _id={id}.pt found in {folder}")
+            raise FileNotFoundError(f"No file with ID {id} found in {folder}")
         filename = match
 
     elif isinstance(id, str) and id.endswith('.pt'):
@@ -51,7 +52,9 @@ def show_xt_sample(folder: str, id, save_dir: str = None):
 
     plt.figure(figsize=(10, 4))
     plt.imshow(xt_tensor.numpy(), cmap='gray', vmin=0, vmax=1, aspect='auto')
-    plt.title(f'dx={dx:.6f} m, dz={dz:.6f} m, rot={rot_deg:.6f} deg\n{filename}')
+    plt.title(
+        f'dx={dx:.6f}, dz={dz:.6f} scene units, rot={rot_deg:.6f} deg\n{filename}'
+    )
     plt.xlabel('X position (pixels)')
     plt.ylabel('Time (frames)')
     plt.tight_layout()

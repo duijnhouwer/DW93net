@@ -52,7 +52,7 @@ class ReichardtTests(unittest.TestCase):
         expected = torch.arange(256, dtype=torch.float32).repeat(1, 2, 1) / 255
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            name = 'flow_nux=1000000000_nuz=-2000000000_nrot=3000000000_id=0.pt'
+            name = 'ndx=1000000000_ndz=-2000000000_nrot=3000000000_id=0.pt'
             torch.save(levels, root / name)
             decoded, label = FlowXtDataset(root)[0]
             self.assertEqual(decoded.dtype, torch.float32)
@@ -71,7 +71,7 @@ class ReichardtTests(unittest.TestCase):
             (source / 'train').mkdir(parents=True)
             generation = {"format": "polar-translation-stimuli-v1", "seed": 7}
             (source / 'generation.json').write_text(json.dumps(generation))
-            filename = 'flow_nux=0_nuz=0_nrot=0_id=0.pt'
+            filename = 'ndx=0_ndz=0_nrot=0_id=0.pt'
             levels = torch.tensor([[[0, 1, 128, 255], [255, 1, 64, 128]]], dtype=torch.uint8).repeat(1, 1, 10)
             torch.save(levels, source / 'train' / filename)
             bank = DoGMotionBank([0])
@@ -99,7 +99,7 @@ class ReichardtTests(unittest.TestCase):
             (root / 'reichardt.json').write_text(json.dumps(DoGMotionBank([0]).metadata))
             for i in range(9):
                 torch.save(torch.full((4, 1, 7), i/10, dtype=torch.float16),
-                           root / 'train' / f'flow_nux={i}_nuz=0_nrot=0_id={i}.pt')
+                           root / 'train' / f'ndx={i}_ndz=0_nrot=0_id={i}.pt')
             dataset = ReichardtDataset(root / 'train')
             serial = list(make_flow_loader(dataset, 4, 'cpu', num_workers=0))
             loader = make_flow_loader(dataset, 4, 'cpu')
@@ -161,11 +161,12 @@ class ReichardtTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'raw'
-            destination = root / 'cache' / 'nux=0,1000000000_nuz=0,0_nrot=0,0'
+            destination = (root / 'cache' /
+                           'nspeed=1000000000,1000000000_nheading=0,90000000000_nrot=0,0')
             for split in ['train', 'validate', 'test']:
                 (source / split).mkdir(parents=True)
                 for i in range(2):
-                    torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8), source / split / f'flow_nux={i*1000000000}_nuz=0_nrot=0_id={i}.pt')
+                    torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8), source / split / f'ndx={i*1000000000}_ndz=0_nrot=0_id={i}.pt')
             bank = DoGMotionBank([-1, 1])
             precompute_dataset(source, destination, bank)
             dataset = ReichardtDataset(destination / 'train')
