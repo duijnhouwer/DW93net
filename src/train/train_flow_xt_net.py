@@ -22,7 +22,7 @@ from stimuli.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_fol
 class Settings:
     root_folder: str = (
         "stimuli/"
-        "nspeed=5000000,5000000_nheading=-180000000000,180000000000_nrot=0,0/reichardt"
+        "nspeed=1000000,6000000_nheading=-180000000000,180000000000_nrot=0,0/reichardt"
     )
     checkpoints_dir: str = "checkpoints"
     batch_size: int = 36
