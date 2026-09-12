@@ -14,7 +14,8 @@ if str(SRC_ROOT) not in sys.path:
 from models.pure_translation import PureTranslationNet
 from stimuli.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
                                    subset_dataset, make_flow_loader, require_pure_translation,
-                                   require_pure_translation_root, stimulus_set_name)
+                                   require_pure_translation_root, stimulus_set_name,
+                                   with_mirrored_reichardt_training)
 
 
 @dataclass
@@ -32,6 +33,7 @@ class Settings:
     learning_rate_factor: float = 0.5
     learning_rate_patience: int = 10
     learning_rate_minimum: float = 1e-6
+    mirror_train_stimuli: bool = True
     train_subset: dict = field(default_factory=lambda: {"n": 0, "method": "random"})
     val_subset: dict = field(default_factory=lambda: {"n": 0, "method": "first"})
     from_scratch: bool = False
@@ -73,10 +75,15 @@ def train(cfg):
     require_pure_translation(val_cache)
     train_dataset = subset_dataset(train_cache, cfg.train_subset)
     val_dataset = subset_dataset(val_cache, cfg.val_subset)
+    if cfg.mirror_train_stimuli:
+        train_dataset = with_mirrored_reichardt_training(
+            train_dataset, train_cache.metadata['dx_values'])
     if not len(train_dataset) or not len(val_dataset):
         raise ValueError("Training and validation datasets must be nonempty")
     if not any(value > 0 for value in ranges.values()):
         raise ValueError("Dataset folder name must specify at least one nonzero motion range")
+    if cfg.mirror_train_stimuli:
+        print(f'Mirrored training augmentation: {len(train_dataset):,} presentations per epoch')
 
     train_loader = make_flow_loader(train_dataset, cfg.batch_size, device,
                                    shuffle=True, num_workers=cfg.num_workers)

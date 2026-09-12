@@ -8,7 +8,7 @@ Created on Fri May 23 14:22:29 2025
 import os
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, Subset, ConcatDataset
 from typing import Dict
 import re
 import random
@@ -67,6 +67,40 @@ class ReichardtDataset(FlowXtDataset):
                 or not torch.isfinite(responses).all()):
             raise ValueError(f"Invalid Reichardt response tensor: {filename}")
         return responses.float()
+
+
+class MirroredReichardtDataset(Dataset):
+    """In-memory horizontal reflections of cached Reichardt maps."""
+
+    def __init__(self, dataset, dx_values):
+        self.dataset = dataset
+        self.dx_values = tuple(dx_values)
+        self.n_displacements = len(self.dx_values)
+        lookup = {dx: index for index, dx in enumerate(self.dx_values)}
+        if any(-dx not in lookup for dx in self.dx_values):
+            raise ValueError('Mirroring requires paired positive and negative displacements')
+        self.opposite_indices = torch.tensor(
+            [lookup[-dx] for dx in self.dx_values], dtype=torch.long)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        responses, target = self.dataset[index]
+        expected_channels = 4 * self.n_displacements
+        if responses.ndim != 3 or responses.shape[0] != expected_channels or responses.shape[1] != 1:
+            raise ValueError('Expected [4 * displacement_channels, 1, X] Reichardt responses')
+        groups = responses.reshape(4, self.n_displacements, 1, responses.shape[-1])
+        mirrored = groups.index_select(1, self.opposite_indices).flip(-1).reshape_as(responses)
+        mirrored_target = target.clone()
+        mirrored_target[0] = -mirrored_target[0]
+        mirrored_target[2] = -mirrored_target[2]  # Reflection reverses yaw too.
+        return mirrored, mirrored_target
+
+
+def with_mirrored_reichardt_training(dataset, dx_values):
+    """Return originals followed by their horizontal reflections."""
+    return ConcatDataset([dataset, MirroredReichardtDataset(dataset, dx_values)])
 
 
 def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4):

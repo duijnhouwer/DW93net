@@ -9,7 +9,8 @@ import torch
 from features.reichardt import ReichardtBank
 from features.dog_motion import DoGMotionBank
 from stimuli.precompute_reichardt import precompute_dataset
-from stimuli.load_flow_xt_data import FlowXtDataset, ReichardtDataset, make_flow_loader
+from stimuli.load_flow_xt_data import (FlowXtDataset, ReichardtDataset, MirroredReichardtDataset,
+                                       make_flow_loader)
 from stimuli.stimulus_io import decode_stimulus
 from models.pure_translation import PureTranslationNet
 from train.train_flow_xt_net import Settings, train
@@ -17,6 +18,18 @@ from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
 class ReichardtTests(unittest.TestCase):
+    def test_mirrored_reichardt_reverses_space_displacement_dx_and_yaw(self):
+        dx_values = (-1, 0, 1)
+        responses = torch.arange(4 * 3 * 1 * 5, dtype=torch.float32).reshape(12, 1, 5)
+        target = torch.tensor([2.0, 3.0, 0.5])
+        mirrored, mirrored_target = MirroredReichardtDataset([(responses, target)], dx_values)[0]
+        expected = responses.reshape(4, 3, 1, 5).flip(1, 3).reshape_as(responses)
+        torch.testing.assert_close(mirrored, expected)
+        torch.testing.assert_close(mirrored_target, torch.tensor([-2.0, 3.0, -0.5]))
+        torch.testing.assert_close(target, torch.tensor([2.0, 3.0, 0.5]))
+        restored, restored_target = MirroredReichardtDataset([(mirrored, mirrored_target)], dx_values)[0]
+        torch.testing.assert_close(restored, responses)
+        torch.testing.assert_close(restored_target, target)
     def test_default_bank_detects_fast_endpoints(self):
         bank = ReichardtBank()
         self.assertEqual(bank.dx_values, tuple(range(-60, 61)))

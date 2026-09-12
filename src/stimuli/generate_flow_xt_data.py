@@ -349,26 +349,14 @@ def generate_flow_xt_stim(
 
     tensor_image = torch.from_numpy(image)
 
-    if filename:
-        if not filename.lower().endswith('.png'):
-            raise ValueError("filename must end with '.png'")
-
-        plt.imsave(
-            filename,
-            image,
-            cmap='gray',
-            vmin=0,
-            vmax=1
-        )
-
     return tensor_image
 
 
 
 if __name__ == "__main__":
     generate_and_precompute(
-        n_samples=50_000,
-        speed_range=(0.005, 0.005),
+        n_samples=100_000,
+        speed_range=(0.001, 0.006),
         rot_deg_range=(0, 0),
         split=(0.8, 0.1, 0.1),
         config=StimConfig(superimpose=False),

@@ -52,6 +52,12 @@ relative improvement threshold of 0.01%. Reductions are printed; checkpoints
 save the scheduler history and optimizer rate for resume. This does not stop
 training automatically. Both subset limits default to 0, meaning all examples.
 
+Training also presents an in-memory horizontal reflection of every Reichardt
+response by default (`Settings.mirror_train_stimuli = True`). It reverses the
+spatial and signed-displacement axes within each of the four polarity groups,
+and changes the motion target from `[dx, dz, rot]` to `[-dx, dz, -rot]`. Validation
+and test examples remain unchanged.
+
 ## Reusable training evaluation
 
 From the repository root, evaluate saved checkpoints with:
