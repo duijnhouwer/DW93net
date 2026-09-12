@@ -54,6 +54,8 @@ def main():
     parser.add_argument('--checkpoints', type=Path, help='Default: sole stimulus directory under checkpoints/<commit date>-<current commit>')
     parser.add_argument('--data', type=Path, help='Default: stimuli/<checkpoint directory name>/reichardt')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
+    parser.add_argument('--epochs', nargs='+', type=int,
+                        help='Evaluate only these epoch numbers; omit to evaluate every saved epoch')
     parser.add_argument('--samples', type=int, default=256, help='Fixed seeded subset; 0 means all')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--batch-size', type=int, default=4)
@@ -95,6 +97,9 @@ def main():
     torch.set_num_threads(args.threads)
     rows = []
     paths = sorted(args.checkpoints.glob('epoch_*.pt'))
+    if args.epochs is not None:
+        requested = set(args.epochs)
+        paths = [path for path in paths if int(path.stem.removeprefix('epoch_')) in requested]
     paths += [p for p in [args.checkpoints / '_best.pt', args.checkpoints / '_latest.pt'] if p.exists()]
     if not paths:
         parser.error('No checkpoints found')

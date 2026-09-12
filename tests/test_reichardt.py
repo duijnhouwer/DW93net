@@ -187,9 +187,14 @@ class ReichardtTests(unittest.TestCase):
             cfg = Settings(root_folder=str(destination), checkpoints_dir=str(root / 'checkpoints'),
                            num_epochs=1, batch_size=2)
             train(cfg)
+            self.assertFalse((root / 'checkpoints' / destination.parent.name / 'epoch_000001.pt').exists())
             cfg.num_epochs = 2
             train(cfg)
             checkpoint = root / 'checkpoints' / destination.parent.name / '_latest.pt'
+            saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
+            self.assertEqual(saved['scheduler_state_dict']['last_epoch'], 2)
+            self.assertEqual(saved['scheduler_state_dict']['_last_lr'],
+                             [saved['optimizer_state_dict']['param_groups'][0]['lr']])
             result = run_flow_xt_model_on_test_data(str(destination), str(checkpoint), 2)
             self.assertEqual(result['preds'].shape, (2, 2))
             self.assertTrue(torch.isfinite(torch.from_numpy(result['preds'])).all())

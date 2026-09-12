@@ -61,7 +61,7 @@ def main():
     torch.testing.assert_close(y, reference_y, rtol=0, atol=0)
     del loader
     cfg = Settings(root_folder=str(cache), checkpoints_dir=str(output / 'checkpoints'),
-                   num_epochs=3, batch_size=8)
+                   num_epochs=3, batch_size=8, checkpoint_save_interval=1)
     print('Training first three epochs...', flush=True)
     train(cfg)
     checkpoint_dir = output / 'checkpoints' / source.parent.name

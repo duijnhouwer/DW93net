@@ -40,6 +40,18 @@ commit changes this identity. For a fresh run under the same commit, empty its
 checkpoint directory yourself first. Run only one training process at a time.
 The low-level `train(cfg)` function remains available for temporary test fixtures.
 
+`Settings.checkpoint_save_interval` controls numbered `epoch_*.pt` archives
+and defaults to 25. `_latest.pt` still saves after every epoch for resume, and
+`_best.pt` saves whenever validation improves.
+
+Adam starts at `Settings.learning_rate`. PyTorch's `ReduceLROnPlateau` watches
+validation RMSE and multiplies the rate by `learning_rate_factor` (0.5) after
+more than `learning_rate_patience` (10) consecutive epochs without significant
+improvement, down to `learning_rate_minimum` (1e-6). It uses PyTorch's default
+relative improvement threshold of 0.01%. Reductions are printed; checkpoints
+save the scheduler history and optimizer rate for resume. This does not stop
+training automatically. Both subset limits default to 0, meaning all examples.
+
 ## Reusable training evaluation
 
 From the repository root, evaluate saved checkpoints with:

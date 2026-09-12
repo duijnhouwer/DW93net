@@ -27,13 +27,19 @@ class Settings:
     batch_size: int = 36
     num_workers: int = 8
     num_epochs: int = 1_000_000
+    checkpoint_save_interval: int = 25
     learning_rate: float = 1e-3
-    train_subset: dict = field(default_factory=lambda: {"n": 80_000, "method": "random"})
-    val_subset: dict = field(default_factory=lambda: {"n": 10_000, "method": "first"})
+    learning_rate_factor: float = 0.5
+    learning_rate_patience: int = 10
+    learning_rate_minimum: float = 1e-6
+    train_subset: dict = field(default_factory=lambda: {"n": 0, "method": "random"})
+    val_subset: dict = field(default_factory=lambda: {"n": 0, "method": "first"})
     from_scratch: bool = False
 
 def train(cfg):
     require_pure_translation_root(cfg.root_folder)
+    if cfg.checkpoint_save_interval < 1:
+        raise ValueError('checkpoint_save_interval must be at least 1')
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Data paths
@@ -80,6 +86,9 @@ def train(cfg):
     # --- Model and optimizer
     model = PureTranslationNet(train_cache.metadata["dx_values"]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=cfg.learning_rate_factor,
+        patience=cfg.learning_rate_patience, min_lr=cfg.learning_rate_minimum)
 
     start_epoch = 0
     best_val_rmse = float("inf")
@@ -92,6 +101,10 @@ def train(cfg):
             raise ValueError("Checkpoint detector configuration does not match cache")
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        else:
+            print('Checkpoint has no scheduler history; starting a new plateau schedule.')
         start_epoch = checkpoint["epoch"]
         best_val_rmse = checkpoint.get("best_val_rmse", checkpoint.get("val_rmse", float("inf")))
         print(f"🔁 Resumed from epoch {start_epoch} with val RMSE {best_val_rmse:.6f}")
@@ -141,7 +154,12 @@ def train(cfg):
 
         epoch_val_loss = val_loss_total / len(val_dataset)
         val_rmse = epoch_val_loss ** 0.5
-        print(f"Epoch {epoch+1:,} - Train Loss: {epoch_train_loss:.6f} - Val RMSE: {val_rmse:.6f}")
+        previous_learning_rate = optimizer.param_groups[0]['lr']
+        scheduler.step(val_rmse)
+        next_learning_rate = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1:,} - Train Loss: {epoch_train_loss:.6f} - Val RMSE: {val_rmse:.6f} - Learning rate: {previous_learning_rate:.6g}")
+        if next_learning_rate < previous_learning_rate:
+            print(f'Validation plateau: learning rate reduced to {next_learning_rate:.6g} for the next epoch')
         sys.stdout.flush()
 
         # --- Save
@@ -152,6 +170,7 @@ def train(cfg):
             "epoch": epoch + 1,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "loss": epoch_train_loss,
             "val_rmse": val_rmse,
             "best_val_rmse": best_val_rmse,
@@ -160,7 +179,8 @@ def train(cfg):
             "n_input_channels": train_cache.n_channels,
         }
 
-        torch.save(checkpoint_data, os.path.join(checkpoint_subdir, f"epoch_{epoch+1:06d}.pt"))
+        if (epoch + 1) % cfg.checkpoint_save_interval == 0:
+            torch.save(checkpoint_data, os.path.join(checkpoint_subdir, f"epoch_{epoch+1:06d}.pt"))
         torch.save(checkpoint_data, latest_ckpt_path)
 
         if improved:
