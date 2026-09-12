@@ -10,7 +10,6 @@ if _SRC_ROOT not in sys.path:
     sys.path.insert(0, _SRC_ROOT)
 
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -240,7 +239,6 @@ def generate_flow_xt_stim(
     cam_trans_xz=[0, 1e-3],
     cam_rot_deg=0,
     config: StimConfig = StimConfig(),
-    filename='',
     rng=None
 ) -> torch.Tensor:
 
