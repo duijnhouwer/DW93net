@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import time
 from pathlib import Path
 import torch
 from dataclasses import dataclass, asdict, field
@@ -25,7 +26,9 @@ class Settings:
         "nspeed=1000000,6000000_nheading=-180000000000,180000000000_nrot=0,0/reichardt"
     )
     checkpoints_dir: str = "checkpoints"
-    batch_size: int = 36
+    batch_size: int = 64
+    mixed_precision: bool = True
+    profile_batches: int = 20
     num_workers: int = 8
     num_epochs: int = 1_000_000
     checkpoint_save_interval: int = 25
@@ -69,8 +72,8 @@ def train(cfg):
     best_ckpt_path = os.path.join(checkpoint_subdir, "_best.pt")
 
     # --- Dataset setup
-    train_cache = ReichardtDataset(folder=train_folder)
-    val_cache = ReichardtDataset(folder=val_folder, expected_metadata=train_cache.metadata)
+    train_cache = ReichardtDataset(folder=train_folder, keep_half=True)
+    val_cache = ReichardtDataset(folder=val_folder, expected_metadata=train_cache.metadata, keep_half=True)
     require_pure_translation(train_cache)
     require_pure_translation(val_cache)
     train_dataset = subset_dataset(train_cache, cfg.train_subset)
@@ -93,6 +96,8 @@ def train(cfg):
     # --- Model and optimizer
     model = PureTranslationNet(train_cache.metadata["dx_values"]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    amp_enabled = device == 'cuda' and cfg.mixed_precision
+    scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=cfg.learning_rate_factor,
         patience=cfg.learning_rate_patience, min_lr=cfg.learning_rate_minimum)
@@ -108,6 +113,8 @@ def train(cfg):
             raise ValueError("Checkpoint detector configuration does not match cache")
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
         if 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         else:
@@ -119,16 +126,31 @@ def train(cfg):
         print("⚠️ Found _latest.pt but starting from scratch")
 
     # --- Training loop
-    torch.cuda.empty_cache()
     for epoch in range(start_epoch, cfg.num_epochs):
         model.train()
-        train_loss_total = 0.0
+        train_loss_total = torch.zeros((), device=device)
+        epoch_start = time.perf_counter()
+        data_wait = 0.0
+        gpu_events = []
+        iterator = iter(train_loader)
 
-        for x, y in train_loader:
-            x = x.to(device, non_blocking=True)
+        for batch_index in range(len(train_loader)):
+            wait_start = time.perf_counter()
+            x, y = next(iterator)
+            data_wait += time.perf_counter() - wait_start
+            events = None
+            if device == 'cuda' and batch_index < cfg.profile_batches:
+                events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
+                events[0].record()
+            x = x.to(device, non_blocking=True).float()
             y = y.to(device, non_blocking=True)
-            optimizer.zero_grad()
-            pred = model(x)
+            if events:
+                events[1].record()
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device, dtype=torch.float16, enabled=amp_enabled):
+                pred = model(x)
+            # Loss accumulation stays float32 even when convolutions use AMP.
+            pred = pred.float()
 
             loss = 0.0
             if dx_range > 0:
@@ -136,20 +158,34 @@ def train(cfg):
             if dz_range > 0:
                 loss += torch.nn.functional.mse_loss(pred[:, 1], y[:, 1]) / dz_range**2
 
-            loss.backward()
-            optimizer.step()
-            train_loss_total += loss.item() * x.size(0)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            train_loss_total += loss.detach() * x.size(0)
+            if events:
+                events[2].record()
+                gpu_events.append(events)
 
-        epoch_train_loss = train_loss_total / len(train_dataset)
+        epoch_train_loss = train_loss_total.item() / len(train_dataset)
+        elapsed = time.perf_counter() - epoch_start
+        print(f'Train throughput: {len(train_dataset)/elapsed:.1f} samples/s; '
+              f'epoch {elapsed:.2f}s; host loader wait {data_wait:.2f}s')
+        if gpu_events:
+            transfer_ms = sum(a.elapsed_time(b) for a, b, c in gpu_events) / len(gpu_events)
+            compute_ms = sum(b.elapsed_time(c) for a, b, c in gpu_events) / len(gpu_events)
+            print(f'GPU sampled {len(gpu_events)} batches: transfer/cast {transfer_ms:.2f}ms; '
+                  f'forward/backward/optimizer {compute_ms:.2f}ms per batch')
 
         # --- Validation
         model.eval()
-        val_loss_total = 0.0
+        val_loss_total = torch.zeros((), device=device)
         with torch.no_grad():
             for x, y in val_loader:
-                x = x.to(device, non_blocking=True)
+                x = x.to(device, non_blocking=True).float()
                 y = y.to(device, non_blocking=True)
-                pred = model(x)
+                with torch.autocast(device_type=device, dtype=torch.float16, enabled=amp_enabled):
+                    pred = model(x)
+                pred = pred.float()
 
                 loss = 0.0
                 if dx_range > 0:
@@ -157,9 +193,9 @@ def train(cfg):
                 if dz_range > 0:
                     loss += torch.nn.functional.mse_loss(pred[:, 1], y[:, 1]) / dz_range**2
 
-                val_loss_total += loss.item() * x.size(0)
+                val_loss_total += loss.detach() * x.size(0)
 
-        epoch_val_loss = val_loss_total / len(val_dataset)
+        epoch_val_loss = val_loss_total.item() / len(val_dataset)
         val_rmse = epoch_val_loss ** 0.5
         previous_learning_rate = optimizer.param_groups[0]['lr']
         scheduler.step(val_rmse)
@@ -177,6 +213,7 @@ def train(cfg):
             "epoch": epoch + 1,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "loss": epoch_train_loss,
             "val_rmse": val_rmse,
@@ -194,7 +231,6 @@ def train(cfg):
             torch.save(checkpoint_data, best_ckpt_path)
             print(f"🎯 New best model saved (Val RMSE: {val_rmse:.6f})")
 
-        torch.cuda.empty_cache()
 
 
 def main():

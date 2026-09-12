@@ -18,6 +18,41 @@ from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
 class ReichardtTests(unittest.TestCase):
+    def test_sharded_half_cache_matches_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'raw'
+            for split in ('train', 'validate'):
+                (source / split).mkdir(parents=True)
+                for i in range(3):
+                    torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8),
+                               source / split / f'ndx={i}_ndz=0_nrot=0_id={i}.pt')
+            bank = DoGMotionBank([-1, 1])
+            precompute_dataset(source, root / 'legacy', bank)
+            metadata = precompute_dataset(source, root / 'sharded', bank, shard_size=2)
+            self.assertTrue(metadata['finite_validated'])
+            for split in ('train', 'validate'):
+                legacy = ReichardtDataset(root / 'legacy' / split, keep_half=True)
+                sharded = ReichardtDataset(root / 'sharded' / split, keep_half=True)
+                self.assertEqual(legacy.files, sharded.files)
+                self.assertEqual(len(list((root / 'sharded' / split).glob('*.npy'))), 2)
+                for i in (2, 0, 1, 2):
+                    x, y = sharded[i]
+                    self.assertEqual(x.dtype, torch.float16)
+                    torch.testing.assert_close(x, legacy[i][0], rtol=0, atol=0)
+                    torch.testing.assert_close(y, legacy[i][1], rtol=0, atol=0)
+
+    def test_nonfinite_cache_is_rejected_at_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'raw' / 'train').mkdir(parents=True)
+            torch.save(torch.zeros((1, 2, 49), dtype=torch.uint8),
+                       root / 'raw' / 'train' / 'ndx=0_ndz=0_nrot=0_id=0.pt')
+            with patch.object(DoGMotionBank, '__call__', return_value=torch.full((4, 1, 7), 1e10)):
+                with self.assertRaisesRegex(ValueError, 'Storage dtype overflow'):
+                    precompute_dataset(root / 'raw', root / 'cache', DoGMotionBank([0]), shard_size=2)
+            self.assertFalse((root / 'cache' / 'reichardt.json').exists())
+
     def test_mirrored_reichardt_reverses_space_displacement_dx_and_yaw(self):
         dx_values = (-1, 0, 1)
         responses = torch.arange(4 * 3 * 1 * 5, dtype=torch.float32).reshape(12, 1, 5)

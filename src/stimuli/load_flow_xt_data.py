@@ -49,8 +49,15 @@ class FlowXtDataset(Dataset):
 class ReichardtDataset(FlowXtDataset):
     """Load saved maps, requiring identical detector semantics across datasets."""
 
-    def __init__(self, folder, expected_metadata=None):
+    def __init__(self, folder, expected_metadata=None, *, keep_half=False):
         super().__init__(folder)
+        self.keep_half = keep_half
+        self.shard_index = None
+        self._mapped = {}
+        index_path = Path(folder) / 'shards.json'
+        if index_path.exists():
+            self.shard_index = json.loads(index_path.read_text())
+            self.files = [entry[0] for entry in self.shard_index]
         metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
         bank = DoGMotionBank.from_metadata(metadata)
         self.metadata = bank.metadata
@@ -60,13 +67,30 @@ class ReichardtDataset(FlowXtDataset):
             raise ValueError("Reichardt detector configuration does not match")
         self.n_channels = bank.n_output_channels
 
+    def __getitem__(self, idx):
+        if self.shard_index is None:
+            return super().__getitem__(idx)
+        filename, shard, row = self.shard_index[idx]
+        if shard not in self._mapped:
+            # Bound open mappings per worker; pages are shared by the OS cache.
+            if len(self._mapped) >= 4:
+                self._mapped.pop(next(iter(self._mapped)))
+            self._mapped[shard] = np.load(Path(self.folder) / shard, mmap_mode='r')
+        responses = torch.from_numpy(self._mapped[shard][row].copy())
+        motion = parse_camera_motion_from_filename(filename)
+        return self._decode_input(responses, filename), torch.tensor(
+            [motion['dx'], motion['dz'], motion['rot_deg']], dtype=torch.float32)
+
+    def __getstate__(self):
+        return dict(self.__dict__, _mapped={})
+
     def _decode_input(self, responses, filename):
         if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
                 or responses.shape[0] != self.n_channels
-                or responses.shape[1] != 1 or responses.shape[2] < 1 or responses.dtype != torch.float16
-                or not torch.isfinite(responses).all()):
+                or responses.shape[1] != 1 or responses.shape[2] < 1 or responses.dtype != torch.float16):
             raise ValueError(f"Invalid Reichardt response tensor: {filename}")
-        return responses.float()
+        # Finiteness is validated after float16 conversion by the cache writer.
+        return responses if self.keep_half else responses.float()
 
 
 class MirroredReichardtDataset(Dataset):
