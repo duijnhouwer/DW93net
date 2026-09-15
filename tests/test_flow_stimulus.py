@@ -27,7 +27,7 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertEqual(Path(raw).name, 'raw')
             expected = Path(raw).parent / 'reichardt'
             self.assertEqual(Path(products), expected)
-            precompute.assert_called_once_with(Path(raw), expected)
+            precompute.assert_called_once_with(Path(raw), expected, stimulus_bundle_size=64)
 
     def test_dataset_saves_one_pair_per_file(self):
         for superimpose in (False, True):

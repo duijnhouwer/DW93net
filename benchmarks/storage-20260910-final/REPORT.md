@@ -87,7 +87,7 @@ float16 product storage. Initially retain individual files and use four loading
 workers plus pin_memory; persistent workers should avoid repeated epoch startup,
 although startup savings were not measured here. Validate numerical scaling and
 cache compatibility separately from these performance measurements. Rebenchmark
-the real large dataset before deciding on shards; packing may still be useful
+the real large dataset before deciding on stimulus bundles; bundling may still be useful
 for directory management, copying, or if large-scale loading stops keeping up.
 
 Reproduce from repository root:

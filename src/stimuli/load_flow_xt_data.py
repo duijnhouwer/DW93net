@@ -47,18 +47,20 @@ class FlowXtDataset(Dataset):
 
 
 class ReichardtDataset(FlowXtDataset):
-    """Load saved maps, requiring identical detector semantics across datasets."""
+    """Load bundled maps, requiring identical detector semantics across datasets."""
 
     def __init__(self, folder, expected_metadata=None, *, keep_half=False):
-        super().__init__(folder)
+        self.folder = folder
         self.keep_half = keep_half
-        self.shard_index = None
         self._mapped = {}
-        index_path = Path(folder) / 'shards.json'
-        if index_path.exists():
-            self.shard_index = json.loads(index_path.read_text())
-            self.files = [entry[0] for entry in self.shard_index]
+        index_path = Path(folder) / 'bundles.json'
+        if not index_path.exists():
+            raise ValueError(f'Reichardt cache requires bundled storage: missing {index_path}')
+        self.bundle_index = json.loads(index_path.read_text())
+        self.files = [entry[0] for entry in self.bundle_index]
         metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
+        if metadata.get('storage_format') != 'npy-stimulus-bundles-v2':
+            raise ValueError('Unsupported Reichardt cache storage format')
         bank = DoGMotionBank.from_metadata(metadata)
         self.metadata = bank.metadata
         if any(metadata.get(key) != value for key, value in self.metadata.items()):
@@ -68,18 +70,18 @@ class ReichardtDataset(FlowXtDataset):
         self.n_channels = bank.n_output_channels
 
     def __getitem__(self, idx):
-        if self.shard_index is None:
-            return super().__getitem__(idx)
-        filename, shard, row = self.shard_index[idx]
-        if shard not in self._mapped:
+        filename, bundle, row = self.bundle_index[idx]
+        if bundle not in self._mapped:
             # Bound open mappings per worker; pages are shared by the OS cache.
             if len(self._mapped) >= 4:
                 self._mapped.pop(next(iter(self._mapped)))
-            self._mapped[shard] = np.load(Path(self.folder) / shard, mmap_mode='r')
-        responses = torch.from_numpy(self._mapped[shard][row].copy())
-        motion = parse_camera_motion_from_filename(filename)
-        return self._decode_input(responses, filename), torch.tensor(
-            [motion['dx'], motion['dz'], motion['rot_deg']], dtype=torch.float32)
+            self._mapped[bundle] = np.load(Path(self.folder) / bundle, mmap_mode='r')
+        sample = self._mapped[bundle][row]
+        responses = torch.from_numpy(sample['reichardt_responses'].copy())
+        target = torch.from_numpy(sample['target'].copy())
+        if target.shape != (3,) or target.dtype != torch.float32 or not torch.isfinite(target).all():
+            raise ValueError(f'Invalid motion target in bundle: {filename}')
+        return self._decode_input(responses, filename), target
 
     def __getstate__(self):
         return dict(self.__dict__, _mapped={})

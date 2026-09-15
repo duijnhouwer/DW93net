@@ -137,7 +137,8 @@ class ProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'raw'
             source.mkdir()
-            torch.save(torch.zeros(2, 150, dtype=torch.uint8), source / 'sample.pt')
+            torch.save(torch.zeros(2, 150, dtype=torch.uint8),
+                       source / 'ndx=0_ndz=0_nrot=0_id=0.pt')
             output = Path(directory) / 'cache'
             with patch('stimuli.precompute_reichardt.repository_state', return_value=None):
                 with self.assertRaisesRegex(RuntimeError, 'Source changed'):

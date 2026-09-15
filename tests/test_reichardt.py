@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from features.reichardt import ReichardtBank
@@ -18,7 +19,7 @@ from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
 class ReichardtTests(unittest.TestCase):
-    def test_sharded_half_cache_matches_legacy(self):
+    def test_bundle_sizes_one_and_two_preserve_half_responses_and_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'raw'
@@ -28,19 +29,46 @@ class ReichardtTests(unittest.TestCase):
                     torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8),
                                source / split / f'ndx={i}_ndz=0_nrot=0_id={i}.pt')
             bank = DoGMotionBank([-1, 1])
-            precompute_dataset(source, root / 'legacy', bank)
-            metadata = precompute_dataset(source, root / 'sharded', bank, shard_size=2)
+            precompute_dataset(source, root / 'single', bank, stimulus_bundle_size=1)
+            metadata = precompute_dataset(source, root / 'bundled', bank, stimulus_bundle_size=2)
             self.assertTrue(metadata['finite_validated'])
+            self.assertEqual(metadata['storage_format'], 'npy-stimulus-bundles-v2')
             for split in ('train', 'validate'):
-                legacy = ReichardtDataset(root / 'legacy' / split, keep_half=True)
-                sharded = ReichardtDataset(root / 'sharded' / split, keep_half=True)
-                self.assertEqual(legacy.files, sharded.files)
-                self.assertEqual(len(list((root / 'sharded' / split).glob('*.npy'))), 2)
+                single = ReichardtDataset(root / 'single' / split, keep_half=True)
+                bundled = ReichardtDataset(root / 'bundled' / split, keep_half=True)
+                self.assertEqual(single.files, bundled.files)
+                self.assertEqual(len(list((root / 'single' / split).glob('*.npy'))), 3)
+                self.assertEqual(len(list((root / 'bundled' / split).glob('*.npy'))), 2)
+                stored = np.load(next((root / 'bundled' / split).glob('*.npy')), mmap_mode='r')
+                self.assertEqual(stored.dtype.names, ('reichardt_responses', 'target'))
+                self.assertEqual(stored['target'].dtype, np.float32)
                 for i in (2, 0, 1, 2):
-                    x, y = sharded[i]
+                    with patch('stimuli.load_flow_xt_data.parse_camera_motion_from_filename',
+                               side_effect=AssertionError('bundled targets must not be parsed from filenames')):
+                        x, y = bundled[i]
                     self.assertEqual(x.dtype, torch.float16)
-                    torch.testing.assert_close(x, legacy[i][0], rtol=0, atol=0)
-                    torch.testing.assert_close(y, legacy[i][1], rtol=0, atol=0)
+                    torch.testing.assert_close(x, single[i][0], rtol=0, atol=0)
+                    torch.testing.assert_close(y, single[i][1], rtol=0, atol=0)
+                    self.assertEqual(y.dtype, torch.float32)
+            self.assertEqual([path.name for path in sorted((root / 'bundled').rglob('*.npy'))],
+                             ['bundle-000000000.npy', 'bundle-000000001.npy',
+                              'bundle-000000002.npy', 'bundle-000000003.npy'])
+
+    def test_bundle_size_must_be_a_positive_integer(self):
+        for invalid in (0, -1, 1.5, True):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, 'positive integer'):
+                    precompute_dataset('.', '.', stimulus_bundle_size=invalid)
+
+    def test_reichardt_dataset_rejects_non_bundled_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'train').mkdir()
+            (root / 'reichardt.json').write_text(json.dumps(DoGMotionBank([0]).metadata))
+            torch.save(torch.zeros((4, 1, 7), dtype=torch.float16),
+                       root / 'train' / 'ndx=0_ndz=0_nrot=0_id=0.pt')
+            with self.assertRaisesRegex(ValueError, 'requires bundled storage'):
+                ReichardtDataset(root / 'train')
 
     def test_nonfinite_cache_is_rejected_at_creation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,7 +78,7 @@ class ReichardtTests(unittest.TestCase):
                        root / 'raw' / 'train' / 'ndx=0_ndz=0_nrot=0_id=0.pt')
             with patch.object(DoGMotionBank, '__call__', return_value=torch.full((4, 1, 7), 1e10)):
                 with self.assertRaisesRegex(ValueError, 'Storage dtype overflow'):
-                    precompute_dataset(root / 'raw', root / 'cache', DoGMotionBank([0]), shard_size=2)
+                    precompute_dataset(root / 'raw', root / 'cache', DoGMotionBank([0]), stimulus_bundle_size=2)
             self.assertFalse((root / 'cache' / 'reichardt.json').exists())
 
     def test_mirrored_reichardt_reverses_space_displacement_dx_and_yaw(self):
@@ -127,7 +155,9 @@ class ReichardtTests(unittest.TestCase):
             reference = bank(levels.float() / 255)
             cache = root / 'cache'
             metadata = precompute_dataset(source, cache, bank)
-            saved = torch.load(cache / 'train' / filename, weights_only=True)
+            bundle_path = next((cache / 'train').glob('*.npy'))
+            stored = np.load(bundle_path)
+            saved = torch.from_numpy(stored['reichardt_responses'][0].copy())
             self.assertEqual(saved.dtype, torch.float16)
             self.assertEqual(metadata['storage_dtype'], 'torch.float16')
             self.assertEqual(metadata['stimulus_generation'], generation)
@@ -135,20 +165,28 @@ class ReichardtTests(unittest.TestCase):
             self.assertGreater(saved.max().item(), 0)
             decoded, _ = ReichardtDataset(cache / 'train')[0]
             torch.testing.assert_close(decoded, saved.float(), rtol=0, atol=0)
-            for invalid in (saved.float(), saved.to(torch.uint8)):
-                torch.save(invalid, cache / 'train' / filename)
+            for invalid_dtype in (np.float32, np.uint8):
+                invalid = np.empty(1, dtype=np.dtype([
+                    ('reichardt_responses', invalid_dtype, saved.shape),
+                    ('target', np.float32, (3,)),
+                ]))
+                invalid['reichardt_responses'][0] = saved.numpy()
+                invalid['target'][0] = stored['target'][0]
+                np.save(bundle_path, invalid)
                 with self.assertRaises(ValueError):
                     ReichardtDataset(cache / 'train')[0]
 
     def test_background_loader_matches_serial_across_epochs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / 'train').mkdir()
-            (root / 'reichardt.json').write_text(json.dumps(DoGMotionBank([0]).metadata))
+            source = root / 'raw'
+            (source / 'train').mkdir(parents=True)
             for i in range(9):
-                torch.save(torch.full((4, 1, 7), i/10, dtype=torch.float16),
-                           root / 'train' / f'ndx={i}_ndz=0_nrot=0_id={i}.pt')
-            dataset = ReichardtDataset(root / 'train')
+                torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8),
+                           source / 'train' / f'ndx={i}_ndz=0_nrot=0_id={i}.pt')
+            cache = root / 'cache'
+            precompute_dataset(source, cache, DoGMotionBank([0]), stimulus_bundle_size=4)
+            dataset = ReichardtDataset(cache / 'train')
             serial = list(make_flow_loader(dataset, 4, 'cpu', num_workers=0))
             loader = make_flow_loader(dataset, 4, 'cpu')
             for _ in range(2):
