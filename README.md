@@ -117,9 +117,30 @@ New or overwritten checkpoints are evaluated once; old cached records remain.
 Use `--samples 0` for the whole split, `--split test` for a final held-out
 assessment, or `--help` for explicit dataset/checkpoint paths and other options.
 Changing sample size or seed creates a separate comparison set. Reports include
-heading mean/median error and within-15-degree accuracy, speed RMSE, and vector
-RMSE; JSON also includes heading bias, 90th percentile, undefined-heading count,
-and speed bias/MAE. Units for speed are scene units per step.
+heading mean/median error and within-15-degree accuracy, speed MAE/RMSE, and
+mean Euclidean vector-tip error (`||[dx,dz]-[dx_hat,dz_hat]||`); JSON also
+includes vector-tip median/90th percentile, heading bias/90th percentile/
+undefined-heading count, and speed bias. Speed and vector errors are in scene
+units per step.
+
+By default, reports also stratify results by true heading (global and four
+cardinal bins: front/right/back/left) and true speed (global plus slow/medium/
+fast thirds). Use `--heading-bins 1 4 8 12` or `--speed-bins 1 3 5` to request
+any positive number of equal-width bins. Heading bins are circular and centred
+on front (0 degrees); speed-bin edges span the fixed evaluation sample's true
+speed range.
+
+The evaluator saves PNG plots by default under its report directory: global
+metrics plus one plot for every requested non-global heading or speed bin count.
+Pass `--no-plots` to skip them, or `--show-plots` to additionally open local
+interactive plot windows when a graphical desktop is available. All plot axes
+start at zero and mean-error points have normal-approximation 95% confidence
+interval error bars. By default, heading is plotted in degrees while speed and
+vector-tip error are plotted as per-sample percentages. Add
+`--plot-heading-percent` (or the legacy alias `--plot-percent`) to also save
+heading percentage plots. The percentage definitions are, respectively,
+`100 * heading_error_deg / 180`, `100 * |speed_hat - speed| / speed`, and
+`100 * ||[dx_hat,dz_hat]-[dx,dz]|| / ||[dx,dz]||`.
 
 Legacy checkpoints may come from overlapping runs sharing filenames. Their
 save times and settings are recorded; epoch number alone is not a run identity.
