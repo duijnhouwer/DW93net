@@ -156,6 +156,48 @@ class TrainingRecipeTests(unittest.TestCase):
             module._safe_delete_managed(path)
             self.assertFalse(path.exists())
 
+    def test_candidate_validation_resumes_after_last_saved_result(self):
+        commit = 'a' * 40
+        metric = {'n_samples': 2, 'translation_speed_mae': 0.1,
+                  'translation_vector_tip_mae': 0.2, 'rotation_mae_deg': 0.0,
+                  'heading_mae_deg': 1.0}
+        recipe = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidates = root / 'checkpoints' / 'candidates'
+            final = root / 'final'
+            candidates.mkdir(parents=True)
+            final.mkdir()
+            for epoch in range(1, 4):
+                torch.save({'git_commit': commit, 'model_state_dict': {},
+                            'global_epoch': epoch}, candidates / f'epoch-{epoch:06d}.pt')
+
+            first = {**metric, 'normalized_rmse': 3.0}
+            with patch.object(module, 'evaluate_model',
+                              side_effect=[first, RuntimeError('interrupted')]) as evaluate:
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    module._select_final(root / 'checkpoints', final, root / 'validation',
+                                         recipe, commit)
+                self.assertEqual(evaluate.call_count, 2)
+            progress = json.loads((final / 'validation-progress.json').read_text())
+            self.assertFalse(progress['complete'])
+            self.assertEqual([row['candidate'] for row in progress['candidates']],
+                             ['epoch-000001.pt'])
+
+            remaining = [{**metric, 'normalized_rmse': 2.0},
+                         {**metric, 'normalized_rmse': 1.0}]
+            with patch.object(module, 'evaluate_model', side_effect=remaining) as evaluate:
+                promoted = module._select_final(root / 'checkpoints', final,
+                                                root / 'validation', recipe, commit)
+                self.assertEqual(evaluate.call_count, 2)
+            self.assertTrue(promoted)
+            progress = json.loads((final / 'validation-progress.json').read_text())
+            self.assertTrue(progress['complete'])
+            self.assertEqual(progress['selected'], 'epoch-000003.pt')
+            results = json.loads((final / 'validation-results.json').read_text())
+            self.assertEqual(len(results['candidates']), 3)
+            self.assertNotIn('checkpoint_sha256', results['candidates'][0])
+
     def test_tiny_end_to_end_run_replaces_training_sets_and_selects_final(self):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:

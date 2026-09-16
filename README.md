@@ -58,7 +58,10 @@ deleted unless requested otherwise. The persistent test set is generated or
 reused at `test_set.path` and evaluates only the final model. A recipe mismatch
 never silently overwrites that test set.
 
-`final/validation-results.json` records candidate selection and
+Validation progress is atomically saved after every candidate in
+`final/validation-progress.json`. If the runner is interrupted, it verifies each
+checkpoint fingerprint and resumes at the first candidate that still needs
+evaluation. `final/validation-results.json` records completed candidate selection and
 `final/test-results.json` records the final test measurement. Rerunning restarts
 only an interrupted epoch and otherwise resumes from the recorded training-set
 index and seed.

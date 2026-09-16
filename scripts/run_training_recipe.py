@@ -1,5 +1,6 @@
 """Run the repository's single committed training recipe."""
 
+import hashlib
 import json
 import math
 import os
@@ -247,6 +248,15 @@ def _atomic_torch_save(value, path):
     os.replace(temporary, path)
 
 
+def _sha256(path):
+    """Return a stable identity for a checkpoint that may be replaced on resume."""
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _prepare_dataset(path, role, section, stimuli, *, persistent):
     """Generate one role-only set, retaining only its bundled Reichardt data."""
     path = Path(path).resolve()
@@ -348,17 +358,67 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     candidates = sorted((checkpoint_dir / 'candidates').glob('epoch-*.pt'))
     if not candidates:
         raise ValueError('No candidate model checkpoints were saved')
+
+    # Validation can take much longer than training when every epoch is a
+    # candidate. Publish each result independently so an interruption resumes
+    # at the first unevaluated (or subsequently replaced) checkpoint.
+    progress_path = final_dir / 'validation-progress.json'
+    context = {'version': 1, 'git_commit': commit,
+               'selection_metric': 'normalized_rmse',
+               'evaluation': recipe['evaluation']}
+    progress = {**context, 'complete': False, 'candidates': []}
+    if progress_path.is_file():
+        saved = json.loads(progress_path.read_text())
+        if any(saved.get(key) != value for key, value in context.items()):
+            raise ValueError('Saved validation progress does not match this recipe run')
+        if not isinstance(saved.get('candidates'), list):
+            raise ValueError('Saved validation progress has invalid candidate results')
+        progress = saved
+    saved_by_name = {}
+    for result in progress['candidates']:
+        if (not isinstance(result, dict) or
+                not isinstance(result.get('candidate'), str) or
+                not isinstance(result.get('checkpoint_sha256'), str)):
+            raise ValueError('Saved validation progress has an invalid candidate result')
+        if result['candidate'] in saved_by_name:
+            raise ValueError('Saved validation progress has duplicate candidate results')
+        saved_by_name[result['candidate']] = result
+
     results = []
     for index, candidate in enumerate(candidates, 1):
-        print(f'Validating candidate {index}/{len(candidates)}: {candidate.name}', flush=True)
-        metrics = evaluate_model(candidate, validation_cache, 'validate',
-                                 recipe['evaluation'], commit)
-        results.append({'candidate': candidate.name, **metrics})
+        fingerprint = _sha256(candidate)
+        saved = saved_by_name.get(candidate.name)
+        if saved is not None and saved['checkpoint_sha256'] == fingerprint:
+            print(f'Validation already complete {index}/{len(candidates)}: {candidate.name}',
+                  flush=True)
+            result = saved
+        else:
+            print(f'Validating candidate {index}/{len(candidates)}: {candidate.name}', flush=True)
+            metrics = evaluate_model(candidate, validation_cache, 'validate',
+                                     recipe['evaluation'], commit)
+            result = {'candidate': candidate.name,
+                      'checkpoint_sha256': fingerprint, **metrics}
+            saved_by_name[candidate.name] = result
+            # Preserve candidate order and any results for later candidates;
+            # they remain reusable if a previously evaluated file changed.
+            progress['candidates'] = sorted(
+                saved_by_name.values(), key=lambda item: item['candidate'])
+            progress['complete'] = False
+            progress.pop('selected', None)
+            progress.pop('selected_value', None)
+            _atomic_json(progress_path, progress)
+        results.append(result)
     best = min(results, key=lambda item: item['normalized_rmse'])
     _atomic_json(final_dir / 'validation-results.json', {
         'git_commit': commit, 'selection_metric': 'normalized_rmse',
         'selected': best['candidate'], 'selected_value': best['normalized_rmse'],
-        'candidates': results})
+        'candidates': [{key: value for key, value in result.items()
+                        if key != 'checkpoint_sha256'} for result in results]})
+    progress['candidates'] = results
+    progress['complete'] = True
+    progress['selected'] = best['candidate']
+    progress['selected_value'] = best['normalized_rmse']
+    _atomic_json(progress_path, progress)
     model_path = final_dir / 'model.pt'
     promote = True
     if model_path.is_file():
