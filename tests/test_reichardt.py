@@ -14,7 +14,8 @@ from stimuli.load_flow_xt_data import (FlowXtDataset, ReichardtDataset, Mirrored
                                        make_flow_loader)
 from stimuli.stimulus_io import decode_stimulus
 from models.pure_translation import PureTranslationNet
-from train.train_flow_xt_net import Settings, train
+from train.train_flow_xt_net import (RecipeTrainingSettings, Settings, train,
+                                     train_recipe_set)
 from train.test_flow_xt_net import run_flow_xt_model_on_test_data
 
 
@@ -290,6 +291,44 @@ class ReichardtTests(unittest.TestCase):
             metadata_path.write_text(json.dumps(metadata))
             with self.assertRaises(ValueError):
                 train(cfg)
+
+    def test_recipe_training_continues_optimizer_across_seeded_sets(self):
+        torch.set_num_threads(1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'raw'
+            (source / 'train').mkdir(parents=True)
+            for i in range(2):
+                torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8),
+                           source / 'train' /
+                           f'ndx={i * 1000000000}_ndz=1000000000_nrot=0_id={i}.pt')
+            cache = (root /
+                     'nspeed=1000000000,2000000000_nheading=0,90000000000_nrot=0,0' /
+                     'reichardt')
+            precompute_dataset(source, cache, DoGMotionBank([-1, 1]))
+            checkpoints = root / 'checkpoints'
+            common = dict(
+                root_folder=str(cache), checkpoint_dir=str(checkpoints),
+                git_commit='a' * 40, epochs_per_set=1, shuffle_seed=99,
+                batch_size=2, num_workers=0, profile_batches=0,
+                mirror_train_stimuli=False)
+            train_recipe_set(RecipeTrainingSettings(
+                training_set_index=0, training_seed=1000, **common))
+            train_recipe_set(RecipeTrainingSettings(
+                training_set_index=1, training_seed=1001, **common))
+            latest = torch.load(checkpoints / 'latest.pt', map_location='cpu',
+                                weights_only=True)
+            self.assertEqual(latest['training_set_index'], 1)
+            self.assertEqual(latest['training_seed'], 1001)
+            self.assertEqual(latest['epoch_within_set'], 1)
+            self.assertEqual(latest['global_epoch'], 2)
+            self.assertEqual(latest['scheduler_state_dict']['last_epoch'], 2)
+            candidates = sorted((checkpoints / 'candidates').glob('epoch-*.pt'))
+            self.assertEqual([path.name for path in candidates],
+                             ['epoch-000001.pt', 'epoch-000002.pt'])
+            candidate = torch.load(candidates[-1], map_location='cpu', weights_only=True)
+            self.assertNotIn('optimizer_state_dict', candidate)
+            self.assertEqual(candidate['model_state_dict']['decoder.weight'].shape[0], 3)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,66 @@
+# The filename is the network name. This repository permits one recipe per commit.
+version = 1
+require_cuda = true
+
+[network]
+output_path = "/home/jacob/Documents/dw93net_output"
+
+[stimuli]
+speed_range = [0.001, 0.006]
+heading_deg_range = [-180, 180]
+rot_deg_range = [0, 0]
+fov_deg = 120
+near_exclusion_radius = 0.04
+n_world_dots = 1000
+superimpose = false
+x_supersampling = 255
+stimulus_bundle_size = 64
+
+[training_sets]
+path = "/home/jacob/Documents/dw93net_stimuli/training"
+number_of_sets = 3
+samples_per_set = 5000
+epochs_per_set = 10
+start_seed = 1000
+seed_increment = 1
+shuffle_seed = 7000
+
+[validation_set]
+path = "/home/jacob/Documents/dw93net_stimuli/validation"
+seed = 2000
+n_samples = 1000
+keep_after_run = false
+selection_metric = "normalized_rmse"
+
+[test_set]
+path = "/home/jacob/Documents/dw93net_stimuli/test"
+seed = 3000
+n_samples = 1000
+# Optional: copy the persistent test set to a faster disk before evaluation.
+# staging_path = "/fast-ssd/dw93net-test-staging"
+
+[optimization]
+batch_size = 64
+mixed_precision = true
+profile_batches = 20
+num_workers = 8
+mirror_train_stimuli = true
+
+[learning_rate]
+initial = 0.001
+scheduler = "reduce_on_plateau"
+monitor = "training_loss"
+factor = 0.5
+patience_epochs = 10
+minimum = 0.000001
+relative_improvement_threshold = 0.0001
+reset_on_new_training_set = false
+
+[checkpoints]
+candidate_interval_epochs = 1
+keep_previous_resumable = true
+
+[evaluation]
+batch_size = 64
+num_workers = 8
+shuffle = false

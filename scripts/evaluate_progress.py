@@ -398,7 +398,7 @@ def main():
             predictions, targets = [], []
             with torch.inference_mode():
                 for x, y in loader:
-                    predictions.append(model(x.to(args.device)).cpu().numpy())
+                    predictions.append(model(x.to(args.device))[:, :2].cpu().numpy())
                     targets.append(y[:, :2].numpy())
             after = path.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):

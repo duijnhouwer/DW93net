@@ -3,9 +3,10 @@
 Input [B,C,1,X] contains cached DoG ON_ON, OFF_OFF, ON_OFF, OFF_ON products, not biological
 motion-energy measurements. At the default 7200 pixels / 120 degrees and spans
 -60..60, C=484 and X=7062. Displacements are pixels per step, NOT deg/s.
-Output [dx,dz] is scene distance per step; heading=atan2(dx,dz), with 0 forward,
--90 left and +90 right; speed per step=hypot(dx,dz). Absolute scale depends on
-the training distance distribution.
+Output [dx,dz,rot] uses scene distance per step for translation and degrees per
+step for yaw. Translation-only training targets zero on the rotation output.
+Heading=atan2(dx,dz), with 0 forward, -90 left and +90 right; speed per
+step=hypot(dx,dz). Absolute scale depends on the training distance distribution.
 
 Qian, Andersen & Adelson (1994), doi:10.1523/JNEUROSCI.14-12-07381.1994,
 motivate local opponent suppression BEFORE larger MT pooling. Their suppression
@@ -76,7 +77,7 @@ class V1Motion(nn.Module):
 
 
 class PureTranslationNet(nn.Module):
-    architecture = "pure-translation-v4-cross-polarity-v1-mt-mst"
+    architecture = "flow-v5-three-output-cross-polarity-v1-mt-mst"
 
     def __init__(self, dx_values=tuple(range(-60, 61))):
         super().__init__()
@@ -114,10 +115,11 @@ class PureTranslationNet(nn.Module):
             nn.Linear(96 * 120, 256),
             nn.ReLU(),  # Nonnegative MST-like population; tuning must be measured.
         )
-        # A downstream linear decoder reads two signed Cartesian components.
+        # A downstream linear decoder reads dx, dz, and yaw. Translation-only
+        # training teaches the yaw output to remain zero.
         # No dropout/batch normalization: begin with deterministic rate responses;
         # regularization can be studied separately if held-out performance demands it.
-        self.decoder = nn.Linear(256, 2)
+        self.decoder = nn.Linear(256, 3)
 
     def forward(self, x):
         if (x.ndim != 4 or x.shape[1] != self.n_input_channels

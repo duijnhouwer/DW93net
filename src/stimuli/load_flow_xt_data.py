@@ -129,10 +129,12 @@ def with_mirrored_reichardt_training(dataset, dx_values):
     return ConcatDataset([dataset, MirroredReichardtDataset(dataset, dx_values)])
 
 
-def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4):
+def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4,
+                     generator=None):
     """Prepare batches in the background, pinning host memory for CUDA copies."""
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                       num_workers=num_workers,
+                      generator=generator,
                       pin_memory=torch.device(device).type == "cuda",
                       persistent_workers=num_workers > 0)
 

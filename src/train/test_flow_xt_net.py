@@ -6,7 +6,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from models.pure_translation import PureTranslationNet
 from stimuli.load_flow_xt_data import ReichardtDataset
-from stimuli.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation, require_pure_translation_root
+from stimuli.load_flow_xt_data import subset_dataset, make_flow_loader, require_pure_translation_root
 from stimuli.utils import select_subfolder
 import sys
 from pathlib import Path
@@ -47,7 +47,6 @@ def run_flow_xt_model_on_test_data(
 
     test_folder = os.path.join(data_folder, "test")
     test_dataset = ReichardtDataset(folder=test_folder, expected_metadata=checkpoint["reichardt"])
-    require_pure_translation(test_dataset)
     test_dataset = subset_dataset(test_dataset, {"n": subset_size, "method": "random"})
     test_loader = make_flow_loader(test_dataset, batch_size, device, num_workers=num_workers)
 
@@ -57,7 +56,7 @@ def run_flow_xt_model_on_test_data(
     with torch.no_grad():
         for x, y in test_loader:
             x = x.to(device, non_blocking=True)
-            pred = model(x).cpu().numpy()
+            pred = model(x)[:, :2].cpu().numpy()
             all_preds.append(pred)
             all_targets.append(y[:, :2].numpy())
 

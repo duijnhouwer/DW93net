@@ -14,6 +14,35 @@ from stimuli.generate_flow_xt_data import (
 
 
 class OneStepStimulusTests(unittest.TestCase):
+    def test_seed_reproduces_stimuli_targets_and_reichardt_bundles(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            outputs = []
+            for root in (first, second):
+                outputs.append(generate_and_precompute(
+                    output_root=root, n_samples=3,
+                    speed_range=(0.001, 0.006), heading_deg_range=(-180, 180),
+                    rot_deg_range=(0, 0), split=(1, 0, 0), seed=12345,
+                    stimulus_bundle_size=2,
+                    config=StimConfig(stim_wid_px=180, n_world_dots=20,
+                                      x_supersampling=4)))
+            first_raw, first_cache = map(Path, outputs[0])
+            second_raw, second_cache = map(Path, outputs[1])
+            first_files = sorted(first_raw.rglob('*.pt'))
+            second_files = sorted(second_raw.rglob('*.pt'))
+            self.assertEqual([path.relative_to(first_raw) for path in first_files],
+                             [path.relative_to(second_raw) for path in second_files])
+            for left, right in zip(first_files, second_files):
+                torch.testing.assert_close(torch.load(left, weights_only=True),
+                                           torch.load(right, weights_only=True),
+                                           rtol=0, atol=0)
+            from stimuli.load_flow_xt_data import ReichardtDataset
+            left = ReichardtDataset(first_cache / 'train', keep_half=True)
+            right = ReichardtDataset(second_cache / 'train', keep_half=True)
+            self.assertEqual(left.files, right.files)
+            for index in range(len(left)):
+                torch.testing.assert_close(left[index][0], right[index][0], rtol=0, atol=0)
+                torch.testing.assert_close(left[index][1], right[index][1], rtol=0, atol=0)
+
     def test_combined_generation_precomputes_sibling_cache(self):
         with tempfile.TemporaryDirectory() as root, patch(
                 'stimuli.generate_flow_xt_data.precompute_dataset') as precompute:

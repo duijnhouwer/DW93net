@@ -2,12 +2,12 @@
 
 ## Repository layout
 
-`stimuli/` holds generated input examples and precomputed detector maps used for
-training and evaluation. It is local experiment data and is ignored by Git.
+Generated input examples and precomputed detector maps are local experiment
+data and are ignored by Git. Their absolute locations are configured by the
+committed recipe.
 `src/stimuli/` contains the code that generates, preprocesses, loads, and
-displays those inputs. `checkpoints/<commit-date>-<commit-id>/<stimulus-set>/` holds trained model
-snapshots, and
-`evaluations/` holds cached measurements and reports derived from them.
+displays those inputs. A committed `recipe/<network-name>.toml` generates the
+datasets, trains one network, selects its final weights, and evaluates them.
 
 Each parameter set groups its original images and precomputed responses:
 
@@ -20,6 +20,48 @@ stimuli/<parameter-set>/
 Generation returns the `raw/` path; combined generation/preprocessing writes
 its sibling `reichardt/`. Training `Settings.root_folder` and evaluation
 `--data` point to `stimuli/<parameter-set>/reichardt/`.
+
+## Unattended training recipes
+
+Exactly one TOML file may exist directly under `recipe/` in a commit. Its
+filename stem is the network name. The recipe gives the common stimulus ranges,
+absolute training/validation/test paths, a sequence of training seeds, epoch
+counts, dynamic learning-rate settings, and an absolute output root. The runner
+takes no arguments and discovers that one file.
+
+The shared topology always outputs `[dx, dz, rot]`. Rotation training is
+currently disabled, so the recipe must specify
+`rot_deg_range = [0, 0]`; this trains the rotation output toward zero. The same
+topology can be retained when rotation experiments are enabled later.
+
+Edit the safe example stages, commit the recipe and all code changes, then run:
+
+```bash
+PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/run_training_recipe.py
+```
+
+The runner requires a clean commit and CUDA by default. For a recipe named
+`translation_only.toml`, it creates
+`<output_path>/translation_only/{checkpoints,final}` plus an empty file named
+`commit_id=<full-40-character-Git-ID>`. A mismatching marker prevents resume.
+`latest.pt` is a full epoch-boundary resume checkpoint; `previous.pt` is its
+optional predecessor. Model-only candidates are saved at the configured epoch
+interval.
+
+Each training seed creates a new dataset at `training_sets.path`. Raw stimuli
+are deleted as soon as their Reichardt bundles are complete, and the entire
+training cache is deleted after its epochs. The learning-rate schedule and
+optimizer continue across replacements. After all training, validation is
+generated once and evaluates every candidate without shuffling. The best
+normalized-RMSE candidate is promoted to `final/model.pt`; validation is then
+deleted unless requested otherwise. The persistent test set is generated or
+reused at `test_set.path` and evaluates only the final model. A recipe mismatch
+never silently overwrites that test set.
+
+`final/validation-results.json` records candidate selection and
+`final/test-results.json` records the final test measurement. Rerunning restarts
+only an interrupted epoch and otherwise resumes from the recorded training-set
+index and seed.
 
 ## Start or resume training
 
@@ -339,9 +381,10 @@ for in-process loading/debugging; evaluation
 accepts a `num_workers` argument. Programs calling these functions with workers
 must use a Python `if __name__ == '__main__':` entry point.
 
-Individual files are retained: the [pipeline benchmark](benchmarks/storage-20260910-final/REPORT.md)
-found four workers competitive with packed arrays on this machine. Recheck
-throughput on a full dataset before changing the file layout.
+The earlier [pipeline benchmark](benchmarks/storage-20260910-final/REPORT.md)
+found four workers competitive with individual files on this machine. Current
+Reichardt caches use memory-mapped stimulus bundles; recheck throughput on a
+full dataset when tuning bundle and worker counts.
 
 Run the correctness and pipeline tests with the project's Python environment:
 
@@ -352,10 +395,12 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ## Translation-only model baseline
 
 On `toward_translation`, `src/models/pure_translation.py` replaces the original
-regressor. It consumes `[B,C,1,X]` product maps and predicts `[dx,dz]` in scene
-units per frame step. Heading is `atan2(dx,dz)` (zero toward +Z, positive toward
-+X); translation distance per step is `hypot(dx,dz)`. Heading is undefined at
-zero translation. Speed in units per second additionally requires the step duration.
+regressor. It consumes `[B,C,1,X]` product maps and predicts `[dx,dz,rot]` in
+scene units per frame step and degrees per step. Current translation-only
+datasets target zero on `rot`. Heading is `atan2(dx,dz)` (zero toward +Z,
+positive toward +X); translation distance per step is `hypot(dx,dz)`. Heading
+is undefined at zero translation. Speed in units per second additionally
+requires the step duration.
 
 The default detector bank now includes every integer displacement from **-60
 through +60 pixels per frame step**. At 7200 pixels over 120 degrees, that is

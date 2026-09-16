@@ -57,7 +57,7 @@ class PureTranslationTests(unittest.TestCase):
         model = PureTranslationNet().eval()
         x = torch.rand(1, 484, 1, 7062)
         prediction = model(x)
-        self.assertEqual(prediction.shape, (1, 2))
+        self.assertEqual(prediction.shape, (1, 3))
         prediction.square().sum().backward()
         for parameter in model.parameters():
             self.assertIsNotNone(parameter.grad)
