@@ -9,8 +9,7 @@ import torch
 
 from features.dog_motion import DoGFilter
 from stimuli.generate_flow_xt_data import (
-    StimConfig, generate_flow_xt_stim,
-    generate_flow_xt_dataset, generate_and_precompute, generate_dog_dataset,
+    StimConfig, generate_flow_xt_stim, generate_dog_dataset,
 )
 
 
@@ -40,21 +39,6 @@ class OneStepStimulusTests(unittest.TestCase):
             metadata = json.loads((first_cache / 'dog.json').read_text())
             self.assertEqual(metadata['storage_format'], 'dog-contrast-bundles-v1')
 
-    def test_combined_generation_precomputes_sibling_cache(self):
-        with tempfile.TemporaryDirectory() as root, patch(
-                'stimuli.generate_flow_xt_data.precompute_dataset') as precompute:
-            raw, products = generate_and_precompute(
-                output_root=root, n_samples=1,
-                speed_range=(0.005, 0.005), heading_deg_range=(0, 0),
-                rot_deg_range=(0, 0), role='train', seed=4,
-                config=StimConfig(stim_wid_px=32, n_world_dots=4,
-                                  x_supersampling=1))
-
-            self.assertEqual(Path(raw).name, 'raw')
-            expected = Path(raw).parent / 'reichardt'
-            self.assertEqual(Path(products), expected)
-            precompute.assert_called_once_with(Path(raw), expected, stimulus_bundle_size=64)
-
     def test_direct_dog_cache_matches_byte_decoded_filter(self):
         intensities = torch.linspace(0, 1, 98, dtype=torch.float32).reshape(2, 49)
         with tempfile.TemporaryDirectory() as root, patch(
@@ -71,24 +55,19 @@ class OneStepStimulusTests(unittest.TestCase):
         expected = DoGFilter()(decoded)[0, 0]
         torch.testing.assert_close(saved, expected, rtol=0, atol=0)
 
-    def test_dataset_saves_one_pair_per_file(self):
+    def test_generation_writes_only_dog_bundles(self):
         for superimpose in (False, True):
             with self.subTest(superimpose=superimpose), tempfile.TemporaryDirectory() as root:
-                folder = generate_flow_xt_dataset(
+                cache = Path(generate_dog_dataset(
                     output_root=root, n_samples=2,
                     speed_range=(0.001, 0.002), heading_deg_range=(0, 1),
-                    rot_deg_range=(0, 0),
-                    role='train', seed=42,
+                    rot_deg_range=(0, 0), role='train', seed=42,
+                    dog_bundle_size=2,
                     config=StimConfig(stim_wid_px=128, n_world_dots=120,
-                                      x_supersampling=10, superimpose=superimpose))
-                files = list(Path(folder).rglob('*.pt'))
-                self.assertEqual(len(files), 2)
-                for path in files:
-                    pairs = torch.load(path, weights_only=True)
-                    self.assertEqual(pairs.shape, (1, 2, 128))
-                    self.assertEqual(pairs.dtype, torch.uint8)
-                    self.assertTrue(((pairs > 0) & (pairs < 255)).any())
-                metadata = json.loads((Path(folder) / 'generation.json').read_text())
+                                      x_supersampling=10, superimpose=superimpose)))
+                self.assertFalse(list(Path(root).rglob('*.pt')))
+                self.assertEqual(len(list((cache / 'train').glob('*.npy'))), 1)
+                metadata = json.loads((cache / 'dog.json').read_text())['stimulus_generation']
                 self.assertEqual(metadata['speed_range']['low_inclusive'], 0.001)
                 self.assertEqual(metadata['speed_range']['high_exclusive'], 0.002)
                 self.assertEqual(metadata['heading_deg_range']['convention'],
@@ -96,21 +75,19 @@ class OneStepStimulusTests(unittest.TestCase):
                 self.assertEqual(metadata['role'], 'train')
 
     def test_polar_sampling_avoids_zero_speed_and_obeys_heading_convention(self):
-        from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
-
         with tempfile.TemporaryDirectory() as root:
-            folder = generate_flow_xt_dataset(
+            cache = Path(generate_dog_dataset(
                 output_root=root, n_samples=40, speed_range=(0.001, 0.015),
                 heading_deg_range=(-180, 180), rot_deg_range=(0, 0),
-                role='train', seed=17,
+                role='train', seed=17, dog_bundle_size=40,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
-                                  x_supersampling=1))
-            self.assertIn('nspeed=1000000,15000000', Path(folder).parent.name)
-            self.assertIn('nheading=-180000000000,180000000000', Path(folder).parent.name)
-            for path in Path(folder, 'train').glob('*.pt'):
-                motion = parse_camera_motion_from_filename(path.name)
-                speed = np.hypot(motion['dx'], motion['dz'])
-                heading = np.degrees(np.arctan2(motion['dx'], motion['dz']))
+                                  x_supersampling=1)))
+            self.assertIn('nspeed=1000000,15000000', cache.parent.name)
+            self.assertIn('nheading=-180000000000,180000000000', cache.parent.name)
+            stored = np.load(next((cache / 'train').glob('*.npy')))
+            for dx, dz, _ in stored['target']:
+                speed = np.hypot(dx, dz)
+                heading = np.degrees(np.arctan2(dx, dz))
                 self.assertGreaterEqual(speed, 0.001 - 1e-9)
                 self.assertLess(speed, 0.015 + 1e-9)
                 self.assertGreaterEqual(heading, -180)
@@ -123,24 +100,20 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertAlmostEqual(np.cos(radians), expected_dz)
 
     def test_equal_range_endpoints_generate_fixed_values(self):
-        from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
-
         with tempfile.TemporaryDirectory() as root:
-            folder = generate_flow_xt_dataset(
+            cache = Path(generate_dog_dataset(
                 output_root=root, n_samples=3, speed_range=(0.005, 0.005),
                 heading_deg_range=(-90, -90), rot_deg_range=(0, 0),
-                role='train', seed=23,
+                role='train', seed=23, dog_bundle_size=3,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
-                                  x_supersampling=1))
-            self.assertIn('nspeed=5000000,5000000', Path(folder).parent.name)
-            self.assertIn('nheading=-90000000000,-90000000000', Path(folder).parent.name)
-            for path in Path(folder, 'train').glob('*.pt'):
-                motion = parse_camera_motion_from_filename(path.name)
-                self.assertEqual(motion['dx'], -0.005)
-                self.assertEqual(motion['dz'], 0)
-                self.assertEqual(motion['rot_deg'], 0)
+                                  x_supersampling=1)))
+            self.assertIn('nspeed=5000000,5000000', cache.parent.name)
+            self.assertIn('nheading=-90000000000,-90000000000', cache.parent.name)
+            targets = np.load(next((cache / 'train').glob('*.npy')))['target']
+            expected = np.asarray([[-.005, 0, 0]] * 3, dtype=np.float32)
+            np.testing.assert_array_equal(targets, expected)
 
-            metadata = json.loads((Path(folder) / 'generation.json').read_text())
+            metadata = json.loads((cache / 'dog.json').read_text())['stimulus_generation']
             self.assertEqual(metadata['speed_range']['value'], 0.005)
             self.assertEqual(metadata['speed_range']['sampling'], 'fixed')
             self.assertEqual(metadata['heading_deg_range']['value'], -90)
@@ -148,7 +121,7 @@ class OneStepStimulusTests(unittest.TestCase):
 
     def test_folder_polar_ranges_determine_component_ranges(self):
         from stimuli.load_flow_xt_data import (extract_ranges_from_foldername,
-                                            parse_camera_motion_from_filename)
+                                                stimulus_set_name)
 
         ranges = extract_ranges_from_foldername(
             'nspeed=5000000,5000000_'
@@ -167,9 +140,7 @@ class OneStepStimulusTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_ranges_from_foldername(
                 'nuspeed=5000000,5000000_nheading=0,0_nrot=0,0')
-        with self.assertRaises(ValueError):
-            parse_camera_motion_from_filename(
-                'flow_ndx=0_ndz=0_nrot=0_id=0.pt')
+        self.assertEqual(stimulus_set_name('/tmp/parameters/dog'), 'parameters')
 
     def test_rejects_zero_speed_and_invalid_heading_ranges(self):
         config = StimConfig(stim_wid_px=32, n_world_dots=4, x_supersampling=1)
@@ -180,12 +151,15 @@ class OneStepStimulusTests(unittest.TestCase):
                                      ((.001, .01), (-181, 180)),
                                      ((.001, .01), (-180, 181))]:
                 with self.subTest(speeds=speeds, headings=headings), self.assertRaises(ValueError):
-                    generate_flow_xt_dataset(
-                        root, 1, speeds, headings, (0, 0), role='train', seed=1,
-                        config=config)
+                    generate_dog_dataset(
+                        output_root=root, n_samples=1, speed_range=speeds,
+                        heading_deg_range=headings, rot_deg_range=(0, 0),
+                        role='train', seed=1, config=config)
             with self.assertRaisesRegex(ValueError, 'role must be'):
-                generate_flow_xt_dataset(root, 1, (.001, .01), (-180, 180),
-                                         (0, 0), role='mixed', seed=1, config=config)
+                generate_dog_dataset(
+                    output_root=root, n_samples=1, speed_range=(.001, .01),
+                    heading_deg_range=(-180, 180), rot_deg_range=(0, 0),
+                    role='mixed', seed=1, config=config)
 
     def test_default_supersampling_aligns_with_byte_levels(self):
         config = StimConfig(stim_wid_px=128, n_world_dots=120)
@@ -195,18 +169,6 @@ class OneStepStimulusTests(unittest.TestCase):
         # The rendered 1/255 levels survive storage, to float32 precision.
         torch.testing.assert_close(encoded.float() / 255, xt, rtol=0, atol=1e-7)
         self.assertTrue(((encoded > 0) & (encoded < 255)).any())
-
-    def test_viewer_uses_normalized_byte_intensities(self):
-        from stimuli.show_flow_xt_data import show_xt_sample
-        levels = torch.tensor([[[0, 1, 128, 255], [255, 128, 1, 0]]], dtype=torch.uint8)
-        expected = levels.squeeze(0).float().numpy() / 255
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'ndx=0_ndz=0_nrot=0_id=0.pt'
-            torch.save(levels, path)
-            with patch('stimuli.show_flow_xt_data.plt') as plot:
-                show_xt_sample(directory, 0)
-            np.testing.assert_allclose(plot.imshow.call_args.args[0], expected)
-            self.assertEqual(plot.imshow.call_args.kwargs['vmax'], 1)
 
     def test_zero_motion_preserves_dots_and_fractional_intensities(self):
         xt = generate_flow_xt_stim(

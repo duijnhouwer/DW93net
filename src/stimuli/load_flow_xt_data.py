@@ -5,7 +5,6 @@ Created on Fri May 23 14:22:29 2025
 @author: jduij
 """
 
-import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
@@ -13,85 +12,7 @@ from typing import Dict
 import re
 import json
 from pathlib import Path
-from features.dog_motion import DoGFilter, DoGMotionBank
-from stimuli.stimulus_io import decode_stimulus
-
-
-class FlowXtDataset(Dataset):
-    def __init__(self, folder):
-        self.folder = folder
-        self.files = sorted(f for f in os.listdir(folder) if f.endswith('.pt'))
-
-    def __len__(self):
-        return len(self.files)
-
-    def _decode_input(self, tensor, filename):
-        return decode_stimulus(tensor)
-
-    def __getitem__(self, idx):
-        filename = self.files[idx]
-        filepath = os.path.join(self.folder, filename)
-
-        input_tensor = torch.load(filepath, map_location="cpu", weights_only=True)
-        input_tensor = self._decode_input(input_tensor, filename)
-
-        cammot = parse_camera_motion_from_filename(filename)
-        label_tensor = torch.tensor([
-            cammot['dx'],
-            cammot['dz'],
-            cammot['rot_deg']
-        ], dtype=torch.float32)
-
-        return input_tensor, label_tensor
-
-
-class ReichardtDataset(FlowXtDataset):
-    """Load bundled maps, requiring identical detector semantics across datasets."""
-
-    def __init__(self, folder, expected_metadata=None, *, keep_half=False):
-        self.folder = folder
-        self.keep_half = keep_half
-        self._mapped = {}
-        index_path = Path(folder) / 'bundles.json'
-        if not index_path.exists():
-            raise ValueError(f'Reichardt cache requires bundled storage: missing {index_path}')
-        self.bundle_index = json.loads(index_path.read_text())
-        self.files = [entry[0] for entry in self.bundle_index]
-        metadata = json.loads((Path(folder).parent / "reichardt.json").read_text())
-        if metadata.get('storage_format') != 'npy-stimulus-bundles-v2':
-            raise ValueError('Unsupported Reichardt cache storage format')
-        bank = DoGMotionBank.from_metadata(metadata)
-        self.metadata = bank.metadata
-        if any(metadata.get(key) != value for key, value in self.metadata.items()):
-            raise ValueError("Unsupported Reichardt cache format")
-        if expected_metadata is not None and self.metadata != expected_metadata:
-            raise ValueError("Reichardt detector configuration does not match")
-        self.n_channels = bank.n_output_channels
-
-    def __getitem__(self, idx):
-        filename, bundle, row = self.bundle_index[idx]
-        if bundle not in self._mapped:
-            # Bound open mappings per worker; pages are shared by the OS cache.
-            if len(self._mapped) >= 4:
-                self._mapped.pop(next(iter(self._mapped)))
-            self._mapped[bundle] = np.load(Path(self.folder) / bundle, mmap_mode='r')
-        sample = self._mapped[bundle][row]
-        responses = torch.from_numpy(sample['reichardt_responses'].copy())
-        target = torch.from_numpy(sample['target'].copy())
-        if target.shape != (3,) or target.dtype != torch.float32 or not torch.isfinite(target).all():
-            raise ValueError(f'Invalid motion target in bundle: {filename}')
-        return self._decode_input(responses, filename), target
-
-    def __getstate__(self):
-        return dict(self.__dict__, _mapped={})
-
-    def _decode_input(self, responses, filename):
-        if (not isinstance(responses, torch.Tensor) or responses.ndim != 3
-                or responses.shape[0] != self.n_channels
-                or responses.shape[1] != 1 or responses.shape[2] < 1 or responses.dtype != torch.float16):
-            raise ValueError(f"Invalid Reichardt response tensor: {filename}")
-        # Finiteness is validated after float16 conversion by the cache writer.
-        return responses if self.keep_half else responses.float()
+from features.dog_motion import DoGFilter
 
 
 class DoGDataset(Dataset):
@@ -142,35 +63,6 @@ class DoGDataset(Dataset):
         return dict(self.__dict__, _mapped={})
 
 
-class MirroredReichardtDataset(Dataset):
-    """In-memory horizontal reflections of cached Reichardt maps."""
-
-    def __init__(self, dataset, dx_values):
-        self.dataset = dataset
-        self.dx_values = tuple(dx_values)
-        self.n_displacements = len(self.dx_values)
-        lookup = {dx: index for index, dx in enumerate(self.dx_values)}
-        if any(-dx not in lookup for dx in self.dx_values):
-            raise ValueError('Mirroring requires paired positive and negative displacements')
-        self.opposite_indices = torch.tensor(
-            [lookup[-dx] for dx in self.dx_values], dtype=torch.long)
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, index):
-        responses, target = self.dataset[index]
-        expected_channels = 4 * self.n_displacements
-        if responses.ndim != 3 or responses.shape[0] != expected_channels or responses.shape[1] != 1:
-            raise ValueError('Expected [4 * displacement_channels, 1, X] Reichardt responses')
-        groups = responses.reshape(4, self.n_displacements, 1, responses.shape[-1])
-        mirrored = groups.index_select(1, self.opposite_indices).flip(-1).reshape_as(responses)
-        mirrored_target = target.clone()
-        mirrored_target[0] = -mirrored_target[0]
-        mirrored_target[2] = -mirrored_target[2]  # Reflection reverses yaw too.
-        return mirrored, mirrored_target
-
-
 class MirroredDoGDataset(Dataset):
     """In-memory horizontal reflections of signed DoG contrasts."""
 
@@ -190,11 +82,6 @@ class MirroredDoGDataset(Dataset):
         return contrast.flip(-1), mirrored_target
 
 
-def with_mirrored_reichardt_training(dataset, dx_values):
-    """Return originals followed by their horizontal reflections."""
-    return ConcatDataset([dataset, MirroredReichardtDataset(dataset, dx_values)])
-
-
 def with_mirrored_dog_training(dataset):
     return ConcatDataset([dataset, MirroredDoGDataset(dataset)])
 
@@ -207,39 +94,6 @@ def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=
                       generator=generator,
                       pin_memory=torch.device(device).type == "cuda",
                       persistent_workers=num_workers > 0)
-
-
-def parse_camera_motion_from_filename(filename: str) -> Dict[str, float]:
-    """
-    Extract dx, dz, and rot_deg (in physical units) from filename.
-    Also detect if the filename contains '_superimposed'.
-    Expects the format: ndx=<int>_ndz=<int>_nrot=<int>_id=<int>[_superimposed].pt
-    where ndx/ndz are nano-unit translation deltas (scene units * 1e9) and nrot is the
-    rotation in nano-degrees (degrees * 1e9).
-
-    Example:
-        ndx=1234000000_ndz=0_nrot=-1234500000000_id=42_superimposed.pt
-
-    Returns:
-        Dictionary with keys:
-            - 'dx': translation in x (scene units)
-            - 'dz': translation in z (scene units)
-            - 'rot_deg': rotation in degrees
-            - 'superimposed': True if '_superimposed' is in the filename, else False
-    """
-    pattern = r"^ndx=(-?\d+)_ndz=(-?\d+)_nrot=(-?\d+)_id=\d+(?:_superimposed)?\.pt$"
-    match = re.fullmatch(pattern, filename)
-    if not match:
-        raise ValueError(f"Filename '{filename}' does not match expected pattern.")
-
-    ndx, ndz, nrot = match.groups()
-    return {
-        'dx': int(ndx) / 1e9,
-        'dz': int(ndz) / 1e9,
-        'rot_deg': int(nrot) / 1e9,
-        'superimposed': '_superimposed' in filename
-    }
-
 
 
 def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
@@ -285,9 +139,9 @@ def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
 
 
 def stimulus_set_name(root_folder):
-    """Parameter-set name containing a raw or Reichardt directory."""
+    """Parameter-set name containing a DoG cache directory."""
     root = Path(root_folder)
-    return root.parent.name if root.name in ('raw', 'reichardt', 'dog') else root.name
+    return root.parent.name if root.name == 'dog' else root.name
 
 
 def require_pure_translation_root(root_folder):

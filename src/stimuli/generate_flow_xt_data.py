@@ -16,7 +16,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from features.dog_motion import DoGFilter
 from stimuli.preprocessing_provenance import write_provenance, repository_state
-from stimuli.precompute_reichardt import precompute_dataset
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
@@ -38,7 +37,7 @@ class StimConfig:
             self.stim_wid_px = round(self.fov_deg * 60)
 
 
-def generate_flow_xt_dataset(
+def _generate_flow_xt_samples(
     output_root: str = None,
     n_samples: int = 100, # 100_000
     speed_range=(0.01, 0.01),
@@ -47,11 +46,10 @@ def generate_flow_xt_dataset(
     role: str = "train",
     seed: int = None,
     config: StimConfig = StimConfig(),
-    _sample_consumer=None,
-    _save_raw: bool = True,
-) -> str:
+    sample_consumer=None,
+) -> Path:
     """
-    Generate one role-specific dataset of two-frame, one-step XT flow tensors.
+    Generate one role-specific stream of two-frame, one-step XT flow tensors.
     Speed, heading, and rotation are each specified as a two-value range. Equal
     endpoints mean one fixed value; increasing endpoints define a half-open
     uniform distribution. Heading 0 degrees is forward (+Z), -90 is left (-X),
@@ -60,12 +58,11 @@ def generate_flow_xt_dataset(
 
     Each sample's resulting dx, dz and rot_deg are rounded to
     nano-units/nano-degrees FIRST. Those exact Cartesian values are rendered and
-    written to the filename, so the label always matches the stimulus. If
+    included in the sample identifier, so the label always matches the stimulus. If
     `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
-    clipping to [0, 1], preserving fractional antialiased intensities.
-    When raw saving is enabled, each file contains one uint8 pair with shape
-    [1, 2, X], scaled to 0..255, under the requested role directory.
+    clipping to [0, 1], preserving fractional antialiased intensities. Encoded
+    uint8 pairs are passed directly to ``sample_consumer`` and never saved.
     """
 
     if output_root is None:
@@ -113,10 +110,7 @@ def generate_flow_xt_dataset(
     )
     if config.superimpose:
         folder_name += "_superimposed"
-    output_folder = os.path.join(output_root, folder_name, "raw")
-
-    if _save_raw:
-        os.makedirs(os.path.join(output_folder, role), exist_ok=True)
+    dataset_root = Path(output_root, folder_name)
 
     def range_metadata(values, is_fixed, **extra):
         if is_fixed:
@@ -140,11 +134,6 @@ def generate_flow_xt_dataset(
             rot_deg_range, rot_is_fixed, units="degrees_per_frame_step"),
         "role": role, "seed": seed, "stimulus_config": vars(config),
     }
-    if _save_raw:
-        with open(os.path.join(output_folder, "generation.json"), "w") as metadata_file:
-            json.dump(generation_metadata, metadata_file, indent=2)
-            metadata_file.write("\n")
-
     rng = np.random.default_rng(seed)
 
     for i in range(n_samples):
@@ -193,28 +182,20 @@ def generate_flow_xt_dataset(
         # Preserve antialiased intensities; saturate overlapping flow layers.
         xt_tensor = sum(xt_tensor_list).clamp(0, 1).unsqueeze(0)  # [1, 2, X]
 
-        filename = f"ndx={ndx}_ndz={ndz}_nrot={nrot}_id={i}"
+        sample_id = f"ndx={ndx}_ndz={ndz}_nrot={nrot}_id={i}"
         if config.superimpose:
-            filename += "_superimposed"
-        filename += ".pt"
+            sample_id += "_superimposed"
 
         # Round rather than truncate fractional intensities. At 255x
         # supersampling the rendered levels align with the byte grayscale grid.
         encoded = (xt_tensor * 255).round().to(torch.uint8)
-        if _sample_consumer is not None:
-            _sample_consumer(Path(output_folder), generation_metadata, role,
-                             filename, encoded, (dx, dz, rot_deg))
-        if _save_raw:
-            filepath = os.path.join(output_folder, role, filename)
-            torch.save(encoded, filepath)
+        sample_consumer(dataset_root, generation_metadata, role, sample_id,
+                        encoded, (dx, dz, rot_deg))
 
         if i % 100 == 0:
-            action = "Saved" if _save_raw else "Generated"
-            print(f"{action} {role}/{filename}")
+            print(f"Generated {role}/{sample_id}")
 
-    if _save_raw:
-        print(f"\n✅ Done: {n_samples} samples saved to {output_folder}")
-    return output_folder
+    return dataset_root
 
 
 class _DogBundleWriter:
@@ -308,35 +289,20 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
         raise ValueError('dog_bundle_size must be a positive integer')
     writer = None
 
-    def consume(raw_folder, metadata, role, filename, encoded, target):
+    def consume(dataset_root, metadata, role, sample_id, encoded, target):
         nonlocal writer
         if writer is None:
-            writer = _DogBundleWriter(raw_folder.parent / 'dog', metadata, dog_bundle_size,
+            writer = _DogBundleWriter(dataset_root / 'dog', metadata, dog_bundle_size,
                                       DoGFilter(sigma_center=sigma_center,
                                                 sigma_surround=sigma_surround), role)
-        # Keep a readable stable identifier without implying that a per-sample
-        # .pt file exists in this cache.
-        writer.add(Path(filename).stem, encoded, target)
+        writer.add(sample_id, encoded, target)
 
-    raw_folder = Path(generate_flow_xt_dataset(
-        **generation_kwargs, _sample_consumer=consume, _save_raw=False)).resolve()
+    _generate_flow_xt_samples(**generation_kwargs, sample_consumer=consume)
     if writer is None:
         raise ValueError('Cannot create an empty DoG dataset')
     writer.finish()
     print(f"\n✅ Float32 signed DoG bundles saved to {writer.destination}")
     return str(writer.destination)
-
-
-def generate_and_precompute(*, precomputed_root=None, stimulus_bundle_size=64,
-                            **generation_kwargs):
-    """Generate raw XT stimuli, then cache their default DoG product maps."""
-    raw_folder = Path(generate_flow_xt_dataset(**generation_kwargs)).resolve()
-    product_folder = (raw_folder.parent / "reichardt" if precomputed_root is None
-                      else Path(precomputed_root).resolve() / raw_folder.parent.name / "reichardt")
-    precompute_dataset(raw_folder, product_folder,
-                       stimulus_bundle_size=stimulus_bundle_size)
-    print(f"\n✅ Precomputed DoG/Reichardt maps saved to {product_folder}")
-    return str(raw_folder), str(product_folder)
 
 
 

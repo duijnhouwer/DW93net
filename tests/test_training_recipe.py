@@ -118,13 +118,12 @@ class TrainingRecipeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not belong'):
                 module._initialize_output(recipe, 'translation_only', commit)
 
-    def test_generation_deletes_raw_and_reuses_exact_spec(self):
+    def test_generation_writes_only_dog_cache_and_reuses_exact_spec(self):
         stimuli = {'speed_range': [0.001, 0.006], 'heading_deg_range': [-180, 180],
                    'rot_deg_range': [0, 0], 'dog_bundle_size': 64}
         section = {'seed': 10, 'n_samples': 12, '_detector': DETECTOR}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'training'
-            raw = path / 'parameters' / 'raw'
             cache = path / 'parameters' / 'dog'
 
             def generate(**kwargs):
@@ -136,7 +135,7 @@ class TrainingRecipeTests(unittest.TestCase):
             with patch.object(module, 'generate_dog_dataset', side_effect=generate) as mocked:
                 self.assertEqual(module._prepare_dataset(
                     path, 'train', section, stimuli, persistent=False), cache)
-                self.assertFalse(raw.exists())
+                self.assertFalse(list(path.rglob('*.pt')))
                 self.assertEqual(module._prepare_dataset(
                     path, 'train', section, stimuli, persistent=False), cache)
             self.assertEqual(mocked.call_count, 1)

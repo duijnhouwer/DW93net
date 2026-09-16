@@ -260,8 +260,8 @@ X supersampling is **255**, so the rendered intensity steps align with the byte
 levels. Values are rounded to the nearest byte after summing and clipping any
 superimposed layers. Explicit supersampling overrides remain supported, with
 quantization to the same byte grid before DoG filtering. The byte tensor is
-decoded in memory and never written by the orchestrator. The standalone
-`generate_flow_xt_dataset` utility remains available for focused experiments.
+decoded in memory and never written. There is no raw Flow-XT dataset format or
+disk-backed compatibility path.
 
 Translation is sampled in polar coordinates. The defaults draw speed uniformly
 from the half-open interval `[0.001, 0.015)` scene units per frame step and
@@ -295,9 +295,6 @@ For radius `r`, `left=r+max(0,max(dx_values))` and
 `[len(dx_values),1,X-left-right]`. The defaults give `[121,1,7062]` at X=7200.
 Positions are anchored in the present frame's original pixel coordinates.
 Filtering, cached contrast, and online correlations use float32.
-
-For standalone preprocessing experiments, `python -m stimuli.precompute_reichardt`
-accepts separate raw-source and cache-destination paths.
 
 Generation preserves the requested role and stable sample identifiers, and publishes
 `dog.json` only after completion. Existing destinations are refused. The cache

@@ -96,8 +96,9 @@ conceptually into:
 2. A correlation bank that converts signed contrast to one signed product
    channel per configured displacement and owns the displacement metadata.
 
-The existing combined path will remain available initially as a numerical
-reference for tests and any standalone compatibility tools.
+The former combined cache path is removed rather than retained as a
+compatibility interface. Tests cover the separated DoG and correlation stages
+directly.
 
 The model currently reconstructs signed correlation from four nonnegative
 polarity products:
@@ -132,8 +133,8 @@ with the same seeded NumPy generator used today. For every sample it will:
 7. Add the contrast and target to the current in-memory bundle.
 8. Write the bundle when it reaches the configured bundle size or dataset end.
 
-No per-sample file is created. The standalone raw Flow-XT generator may remain
-for previews and focused experiments, but the orchestrator will not call it.
+No per-sample file is created, and the former raw Flow-XT generator and loader
+are removed. Focused experiments use the in-memory renderer directly.
 
 ## Loading and augmentation
 
@@ -201,14 +202,11 @@ The new cache and online correlation path must be used consistently by:
 
 ## Migration
 
-Existing `npy-stimulus-bundles-v2` product caches remain identifiable but are
-not silently interpreted as DoG caches. New recipe runs create
+There is no backward-compatibility or automatic-conversion path for existing
+`npy-stimulus-bundles-v2` product caches. New recipe runs create only
 `dog-contrast-bundles-v1` caches. Existing persistent managed test data must be
-explicitly regenerated when moving a recipe to the new cache format.
-
-No automatic conversion of large product caches is required. The legacy
-precompute path can remain temporarily as a regression reference and can be
-removed after the new end-to-end path is established.
+explicitly regenerated when moving a recipe to the new cache format. The old
+raw stimulus and precomputed-product loaders are removed.
 
 ## Verification
 
@@ -219,7 +217,7 @@ The refactor is complete when tests demonstrate that:
 - fixed seeds reproduce identical targets and float32 DoG bundles;
 - changing bundle size does not change sample values or order;
 - DoG bundles match the existing byte-decoded float32 DoG stage;
-- direct signed correlation matches the existing four-polarity algebra;
+- direct signed correlation matches an independent scalar product reference;
 - CPU and CUDA correlation agree within an explicit numerical tolerance;
 - mirrored contrast produces the expected spatial and target reflection;
 - cache and checkpoint metadata mismatches are rejected;

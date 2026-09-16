@@ -122,22 +122,12 @@ class PureTranslationNet(nn.Module):
     def forward(self, x):
         if x.ndim != 4 or x.shape[2] != 1 or x.shape[3] < 1:
             raise ValueError("Expected signed [B,D,1,X] Reichardt correlations")
-        if x.shape[1] == 4 * self.n_input_channels:
-            # Compatibility/reference path for the former four-polarity input.
-            signed = self.signed_correlation(x.squeeze(2))
-        elif x.shape[1] == self.n_input_channels:
-            signed = x.squeeze(2)
-        else:
+        if x.shape[1] != self.n_input_channels:
             raise ValueError("Expected one signed correlation channel per displacement")
+        signed = x.squeeze(2)
         local, contrast = self.v1(signed)
         # Negative correlation at +s is positive evidence at -s after subtraction.
         # Do not rectify cross-polarity subtraction before direction opponency.
         mt_input = torch.cat([self.mt_opponency(population)
                               for population in (local, contrast)], dim=1)
         return self.decoder(self.mst(self.mt(mt_input)))
-
-    @staticmethod
-    def signed_correlation(products):
-        """Reconstruct L0*L1 from the four nonnegative polarity-pair products."""
-        on_on, off_off, on_off, off_on = products.chunk(4, dim=1)
-        return on_on + off_off - on_off - off_on

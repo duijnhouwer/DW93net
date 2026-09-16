@@ -1,9 +1,9 @@
-"""Replay a generated flow dataset and plot true projected dot displacements.
+"""Replay a generated DoG cache and plot true projected dot displacements.
 
-The saved XT tensors no longer contain dot identities.  This script uses the
-generation seed to replay the exact stimuli, checks the replayed camera labels
-against the filenames, and measures dots whose centers are rendered in both
-frames.  Horizontal displacement is reported in output pixels per frame step.
+This script uses the generation seed to replay the exact stimuli, checks the
+replayed camera labels against bundle sample identifiers, and measures dots
+whose centers are rendered in both frames. Horizontal displacement is reported
+in output pixels per frame step.
 """
 
 import argparse
@@ -16,19 +16,21 @@ import numpy as np
 
 
 LABEL_RE = re.compile(
-    r"^ndx=(-?\d+)_ndz=(-?\d+)_nrot=(-?\d+)_id=(\d+)(?:_superimposed)?\.pt$"
+    r"^ndx=(-?\d+)_ndz=(-?\d+)_nrot=(-?\d+)_id=(\d+)(?:_superimposed)?$"
 )
 
 
 def saved_labels(dataset_root: Path) -> dict[int, tuple[int, int, int]]:
     labels = {}
-    for split in ("train", "validate", "test"):
-        for path in (dataset_root / split).glob("*.pt"):
-            match = LABEL_RE.search(path.name)
-            if match is None:
-                raise ValueError(f"Unrecognized stimulus filename: {path.name}")
-            ndx, ndz, nrot, sample_id = map(int, match.groups())
-            labels[sample_id] = (ndx, ndz, nrot)
+    indexes = list(dataset_root.glob('*/bundles.json'))
+    if len(indexes) != 1:
+        raise ValueError(f"Expected exactly one role index under {dataset_root}")
+    for sample_id, _, _ in json.loads(indexes[0].read_text()):
+        match = LABEL_RE.fullmatch(sample_id)
+        if match is None:
+            raise ValueError(f"Unrecognized sample identifier: {sample_id}")
+        ndx, ndz, nrot, numeric_id = map(int, match.groups())
+        labels[numeric_id] = (ndx, ndz, nrot)
     return labels
 
 
@@ -52,7 +54,7 @@ def rendered_x(positions: np.ndarray, config: dict) -> tuple[np.ndarray, np.ndar
 
 
 def analyze(dataset_root: Path, output_png: Path, output_json: Path) -> None:
-    metadata = json.loads((dataset_root / "generation.json").read_text())
+    metadata = json.loads((dataset_root / "dog.json").read_text())["stimulus_generation"]
     if metadata["stimulus_config"]["superimpose"]:
         raise ValueError("This replay currently supports non-superimposed stimuli only")
 
@@ -77,7 +79,6 @@ def analyze(dataset_root: Path, output_png: Path, output_json: Path) -> None:
     stimuli_by_bin = np.zeros(5, dtype=int)
 
     rng = np.random.default_rng(metadata["seed"])
-    rng.permutation(n_samples)  # The generator assigns splits before drawing stimuli.
 
     for sample_id in range(n_samples):
         while True:
