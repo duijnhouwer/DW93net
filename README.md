@@ -68,6 +68,35 @@ index and seed.
 
 ## Training behavior
 
+The committed recipe enables `[parallel_generation]`. While training runs on
+one set, a CPU-only subprocess generates the next in a sibling `training.next`
+directory. A successful worker exit and published dataset state are required
+before an atomic directory rename makes that set current. Set
+`enabled = false` for sequential generation. Omitted settings default to
+sequential operation for older recipes.
+
+`min_threads` (default 1) and `max_threads` (default 8) bound the generator's
+PyTorch threads and Linux CPU allocation. The generator runs at niceness 10
+and requests best-effort low I/O priority. Its CPU pool excludes a portion of
+the available CPUs for training; training itself keeps its existing affinity.
+BLAS and inter-op thread pools are limited to one. CPU affinity uses logical
+CPUs, not topology-aware physical-core allocation.
+
+Every 32 training batches, two consecutive windows with loader wait above 15%
+halve generator threads; four below 3% add one thread. Intermediate windows
+reset these streaks. The worker applies changes every 64 generated examples.
+At a set boundary, unfinished generation receives its maximum allocation.
+Allocation changes and boundary wait time are logged. Loader wait is a host
+timing proxy, not a measurement of GPU idle time; throughput should be compared
+against sequential operation on the target machine before tuning these limits.
+
+Completed staged data can be reused on restart when its recipe specification
+matches. Incomplete managed staging is removed on orderly failure or rebuilt
+on restart; a worker also stops if its training parent disappears. Existing
+unmanaged staging directories are never overwritten. As with the sequential
+runner, run only one orchestrator per output/dataset path. Allow disk space for
+two training sets during overlap.
+
 Adam and the plateau scheduler are configured in the recipe's `[learning_rate]`
 section. The scheduler monitors training loss; its history continues across
 training sets and survives restarts. Validation happens after training finishes.

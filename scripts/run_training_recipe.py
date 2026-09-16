@@ -15,6 +15,8 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
+sys.path.insert(0, str(ROOT / 'scripts'))
+from parallel_stimuli import Prefetch
 
 from models.pure_translation import PureTranslationNet
 from features.reichardt import ReichardtBank
@@ -26,7 +28,7 @@ from train.train_flow_xt_net import (
 
 TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', 'training_sets',
                   'validation_set', 'test_set', 'optimization', 'learning_rate',
-                  'checkpoints', 'evaluation'}
+                  'checkpoints', 'evaluation', 'parallel_generation'}
 STIMULI_KEYS = {'speed_range', 'heading_deg_range', 'rot_deg_range', 'fov_deg',
                  'near_exclusion_radius', 'n_world_dots', 'superimpose',
                  'x_supersampling', 'dog_bundle_size'}
@@ -152,6 +154,17 @@ def load_recipe(path):
     for key in ('start_seed', 'shuffle_seed'):
         _nonnegative_int(training.get(key), f'training_sets.{key}')
     training_path = _absolute_path(training.get('path'), 'training_sets.path')
+    parallel = recipe.get('parallel_generation', {})
+    if not isinstance(parallel, dict):
+        raise ValueError('parallel_generation must be a table')
+    _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads'}, 'parallel_generation')
+    if type(parallel.get('enabled', False)) is not bool:
+        raise ValueError('parallel_generation.enabled must be boolean')
+    for key in ('min_threads', 'max_threads'):
+        _positive_int(parallel.get(key, 1 if key == 'min_threads' else 8),
+                      f'parallel_generation.{key}')
+    if parallel.get('min_threads', 1) > parallel.get('max_threads', 8):
+        raise ValueError('parallel_generation.min_threads must not exceed max_threads')
 
     validation = _section(recipe, 'validation_set', FIXED_SET_KEYS |
                           {'keep_after_run', 'selection_metric'})
@@ -203,6 +216,8 @@ def load_recipe(path):
     if 'staging_path' in test:
         paths['test_set.staging_path'] = _absolute_path(test['staging_path'],
                                                         'test_set.staging_path')
+    if parallel.get('enabled', False):
+        paths['parallel_generation.staging'] = training_path.with_name(training_path.name + '.next')
     entries = list(paths.items())
     for i, (left_name, left) in enumerate(entries):
         for right_name, right in entries[i + 1:]:
@@ -279,7 +294,7 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _prepare_dataset(path, role, section, stimuli, *, persistent):
+def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callback=None):
     """Generate one role-only set containing only bundled signed DoG contrast."""
     path = Path(path).resolve()
     desired = {'version': 2, 'role': role, 'seed': section['seed'],
@@ -316,7 +331,8 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent):
         sigma_surround=detector['dog_sigma_surround_px'],
         n_samples=section['n_samples'], speed_range=stimuli['speed_range'],
         heading_deg_range=stimuli['heading_deg_range'], rot_deg_range=stimuli['rot_deg_range'],
-        role=role, seed=section['seed'], config=StimConfig(**config_values))
+        role=role, seed=section['seed'], config=StimConfig(**config_values),
+        **({'progress_callback': progress_callback} if progress_callback is not None else {}))
     cache = Path(cache).resolve()
     if path not in cache.parents:
         raise RuntimeError('Generator returned a path outside its managed dataset directory')
@@ -481,6 +497,16 @@ def _stage_test_set(test_path, staging_path):
 
 
 def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
+    recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
+    prefetch = Prefetch(load_recipe(recipe_path))
+    try:
+        return _run_recipe(recipe_path, root=root, commit=commit,
+                           require_clean=require_clean, prefetch=prefetch)
+    finally:
+        prefetch.close()
+
+
+def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch):
     """Execute or resume the one committed recipe in ``root/recipe``."""
     root = Path(root).resolve()
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
@@ -531,7 +557,10 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
                    '_detector': recipe['detector']}
         print(f'Preparing training set {set_index + 1}/{training["number_of_sets"]}, seed {seed}',
               flush=True)
+        prefetch.acquire(training_path, section)
         cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
+        if set_index + 1 < training['number_of_sets']:
+            prefetch.start(section | {'seed': seed + training['seed_increment']})
         optimization, lr, checkpoints = (recipe['optimization'], recipe['learning_rate'],
                                          recipe['checkpoints'])
         train_recipe_set(RecipeTrainingSettings(
@@ -548,7 +577,8 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
             mirror_train_stimuli=optimization['mirror_train_stimuli'],
             dx_values=tuple(range(recipe['detector']['displacement_min_px'],
                                   recipe['detector']['displacement_max_px'] + 1,
-                                  recipe['detector']['displacement_step_px']))))
+                                  recipe['detector']['displacement_step_px']))),
+            **({'progress_callback': prefetch.observe} if prefetch.enabled else {}))
         _safe_delete_managed(training_path)
         print(f'Training set {set_index + 1} complete and deleted', flush=True)
 

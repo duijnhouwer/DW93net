@@ -1,5 +1,15 @@
 # Parallel Stimulus Generation
 
+## Implementation status
+
+Implemented as an optional `[parallel_generation]` recipe section, enabled in
+the current recipe. See README's Training behavior section for the exact
+controller thresholds, resource controls, restart behavior, and limitations.
+The controller adjusts numerical-library threads and CPU affinity in one
+background process; it does not create a pool of independent stimulus workers.
+Loader wait is the feedback signal in this implementation. Direct GPU
+utilization sampling and completion-time prediction remain future refinements.
+
 ## Objective
 
 Generate the next training stimulus set while the GPU trains on the current

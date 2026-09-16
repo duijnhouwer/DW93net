@@ -228,6 +228,7 @@ x_supersampling = 4''')
             text = text.replace('profile_batches = 20', 'profile_batches = 0')
             text = text.replace('mirror_train_stimuli = true',
                                 'mirror_train_stimuli = false')
+            text += '\n[parallel_generation]\nenabled = true\nmin_threads = 1\nmax_threads = 2\n'
             path.write_text(text)
             module.run_recipe(path, root=root, commit='c' * 40)
             network = root / 'output' / 'smoke'

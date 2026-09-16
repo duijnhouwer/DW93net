@@ -72,7 +72,7 @@ def _normalized_motion_loss(prediction, target, scales):
                for index, scale in enumerate(scales))
 
 
-def train_recipe_set(cfg):
+def train_recipe_set(cfg, *, progress_callback=None):
     """Train one seeded dataset, resuming only at completed epoch boundaries."""
     require_pure_translation_root(cfg.root_folder)
     if type(cfg.training_set_index) is not int or cfg.training_set_index < 0:
@@ -147,10 +147,14 @@ def train_recipe_set(cfg):
         data_wait = 0.0
         gpu_events = []
         iterator = iter(train_loader)
+        window_start = time.perf_counter()
+        window_wait = 0.0
         for batch_index in range(len(train_loader)):
             wait_start = time.perf_counter()
             x, y = next(iterator)
-            data_wait += time.perf_counter() - wait_start
+            batch_wait = time.perf_counter() - wait_start
+            data_wait += batch_wait
+            window_wait += batch_wait
             events = None
             if device == 'cuda' and batch_index < cfg.profile_batches:
                 events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
@@ -171,6 +175,10 @@ def train_recipe_set(cfg):
             if events:
                 events[2].record()
                 gpu_events.append(events)
+            if progress_callback is not None and (batch_index + 1) % 32 == 0:
+                now = time.perf_counter()
+                progress_callback(window_wait / max(now - window_start, 1e-9))
+                window_start, window_wait = now, 0.0
 
         epoch_loss = train_loss_total.item() / len(train_dataset)
         previous_rate = optimizer.param_groups[0]['lr']

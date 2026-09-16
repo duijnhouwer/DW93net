@@ -283,7 +283,7 @@ class _DogBundleWriter:
 
 
 def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=3.,
-                         **generation_kwargs):
+                         progress_callback=None, **generation_kwargs):
     """Render stimuli in memory and persist only float32 signed DoG bundles."""
     if type(dog_bundle_size) is not int or dog_bundle_size < 1:
         raise ValueError('dog_bundle_size must be a positive integer')
@@ -296,6 +296,8 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
                                       DoGFilter(sigma_center=sigma_center,
                                                 sigma_surround=sigma_surround), role)
         writer.add(sample_id, encoded, target)
+        if progress_callback is not None:
+            progress_callback(writer.n_samples)
 
     _generate_flow_xt_samples(**generation_kwargs, sample_consumer=consume)
     if writer is None:
