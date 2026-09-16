@@ -13,6 +13,7 @@ import torch
 
 from stimuli.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
 from stimuli.precompute_reichardt import precompute_dataset
+from stimuli.load_flow_xt_data import ReichardtDataset
 
 
 def main():
@@ -31,11 +32,16 @@ def main():
     previews = root / 'previews'
     previews.mkdir()
     records = []
+    datasets = {split: ReichardtDataset(cache / split, keep_half=True)
+                for split in ('train', 'validate', 'test')}
     for raw_path in sorted(source.rglob('*.pt')):
         relative = raw_path.relative_to(source)
-        product_path = cache / relative
+        dataset = datasets[relative.parts[0]]
+        index = dataset.files.index(raw_path.name)
+        _, bundle, row = dataset.bundle_index[index]
+        product_path = cache / relative.parent / bundle
         raw = torch.load(raw_path, weights_only=True)
-        products = torch.load(product_path, weights_only=True)
+        products, target = dataset[index]
         assert raw.shape == (1, 2, 7200) and raw.dtype == torch.uint8
         assert products.shape == (484, 1, 7062) and products.dtype == torch.float16
         assert torch.isfinite(products).all() and (products >= 0).all()
@@ -62,8 +68,9 @@ def main():
         fig.savefig(preview, dpi=110)
         plt.close(fig)
         records.append(dict(raw=str(raw_path.relative_to(root)), products=str(product_path.relative_to(root)),
+                            bundle_row=row, target=target.tolist(),
                             preview=str(preview.relative_to(root)), raw_bytes=raw_path.stat().st_size,
-                            product_bytes=product_path.stat().st_size))
+                            product_bytes=products.numel() * products.element_size()))
     assert len(records) == 10
     (root / 'files.json').write_text(json.dumps(records, indent=2) + '\n')
     (root / 'README.md').write_text(
@@ -72,7 +79,8 @@ def main():
         'from [-180,180) degrees; yaw=0. Default 120-degree, '
         '7200-pixel stimuli, 1000 world dots, X supersampling 255. Splits: 8 train, '
         '1 validate, 1 test. See `generation.json` for exact settings.\n\n'
-        'Each raw `.pt`: uint8 [1,2,7200]. Each product `.pt`: float16 [484,1,7062]. '
+        'Each raw `.pt`: uint8 [1,2,7200]. Each bundled response: float16 [484,1,7062], '
+        'with a binary float32 [dx,dz,rot] target. '
         'Channel blocks: ON_ON 0–120, OFF_OFF 121–241, ON_OFF 242–362, '
         'OFF_ON 363–483. Within each block: dX=-60…+60.\n\n'
         'Products use luminance DoG sigma 1/3 pixels and all four polarity pairs. '

@@ -8,10 +8,9 @@ Created on Fri May 23 14:22:29 2025
 import os
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset, ConcatDataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset
 from typing import Dict
 import re
-import random
 import json
 from pathlib import Path
 from features.dog_motion import DoGMotionBank
@@ -214,47 +213,8 @@ def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
     }
 
 
-def subset_dataset(dataset, subset_cfg: dict):
-    """
-    Return a subset of a dataset using the given configuration.
-
-    Args:
-        dataset: a PyTorch Dataset instance
-        subset_cfg: dictionary with keys:
-            - 'n' (int): number of samples
-            - 'method' (str): 'first' or 'random'
-
-    Returns:
-        Subset or original dataset
-    """
-    if subset_cfg is None:
-        return dataset
-
-    n = subset_cfg.get("n", 0)
-    method = subset_cfg.get("method", "random")
-
-    if n <= 0 or n >= len(dataset):
-        return dataset
-
-    if method == "first":
-        indices = list(range(n))
-    elif method == "random":
-        indices = random.sample(range(len(dataset)), n)
-    else:
-        raise ValueError(f"Unknown subset method: {method}")
-
-    return Subset(dataset, indices)
-
-
-def require_pure_translation(dataset):
-    """Validate actual labels, including constant nonzero yaw folder ranges."""
-    for filename in dataset.files:
-        if parse_camera_motion_from_filename(filename)["rot_deg"] != 0:
-            raise ValueError(f"Pure translation requires zero yaw: {filename}")
-
-
 def stimulus_set_name(root_folder):
-    """Parameter-set name for a raw/reichardt directory (or a legacy root)."""
+    """Parameter-set name containing a raw or Reichardt directory."""
     root = Path(root_folder)
     return root.parent.name if root.name in ('raw', 'reichardt') else root.name
 

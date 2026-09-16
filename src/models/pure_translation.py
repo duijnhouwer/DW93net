@@ -77,8 +77,6 @@ class V1Motion(nn.Module):
 
 
 class PureTranslationNet(nn.Module):
-    architecture = "flow-v5-three-output-cross-polarity-v1-mt-mst"
-
     def __init__(self, dx_values=tuple(range(-60, 61))):
         super().__init__()
         # Explicit signed labels are required: channel count cannot identify

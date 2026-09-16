@@ -14,9 +14,7 @@ from stimuli.load_flow_xt_data import (FlowXtDataset, ReichardtDataset, Mirrored
                                        make_flow_loader)
 from stimuli.stimulus_io import decode_stimulus
 from models.pure_translation import PureTranslationNet
-from train.train_flow_xt_net import (RecipeTrainingSettings, Settings, train,
-                                     train_recipe_set)
-from train.test_flow_xt_net import run_flow_xt_model_on_test_data
+from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
 
 
 class ReichardtTests(unittest.TestCase):
@@ -242,55 +240,6 @@ class ReichardtTests(unittest.TestCase):
                    torch.full((2, 10), float('nan')), torch.ones(2, 10, dtype=torch.int64)]:
             with self.assertRaises(ValueError):
                 bank(xt)
-
-    def test_cache_training_resume_and_evaluation(self):
-        torch.set_num_threads(1)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'raw'
-            destination = (root /
-                           'nspeed=1000000000,1000000000_nheading=0,90000000000_nrot=0,0' / 'reichardt')
-            for split in ['train', 'validate', 'test']:
-                (source / split).mkdir(parents=True)
-                for i in range(2):
-                    torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8), source / split / f'ndx={i*1000000000}_ndz=0_nrot=0_id={i}.pt')
-            bank = DoGMotionBank([-1, 1])
-            precompute_dataset(source, destination, bank)
-            dataset = ReichardtDataset(destination / 'train')
-            maps, label = dataset[0]
-            raw = torch.load(source / 'train' / dataset.files[0], weights_only=True)
-            torch.testing.assert_close(maps, bank(decode_stimulus(raw)).half().float())
-            self.assertEqual(maps.dtype, torch.float32)
-            self.assertEqual(label.tolist(), [0, 0, 0])
-            with self.assertRaises(ValueError):
-                ReichardtDataset(destination / 'train', DoGMotionBank([1, -1]).metadata)
-            with self.assertRaises(FileExistsError):
-                precompute_dataset(source, destination, bank)
-            model = PureTranslationNet(dataset.metadata["dx_values"])
-            self.assertFalse(hasattr(model, 'pre'))
-            output = model(torch.stack([maps, maps]))
-            output.square().mean().backward()
-            self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
-            cfg = Settings(root_folder=str(destination), checkpoints_dir=str(root / 'checkpoints'),
-                           num_epochs=1, batch_size=2)
-            train(cfg)
-            self.assertFalse((root / 'checkpoints' / destination.parent.name / 'epoch_000001.pt').exists())
-            cfg.num_epochs = 2
-            train(cfg)
-            checkpoint = root / 'checkpoints' / destination.parent.name / '_latest.pt'
-            saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
-            self.assertEqual(saved['scheduler_state_dict']['last_epoch'], 2)
-            self.assertEqual(saved['scheduler_state_dict']['_last_lr'],
-                             [saved['optimizer_state_dict']['param_groups'][0]['lr']])
-            result = run_flow_xt_model_on_test_data(str(destination), str(checkpoint), 2)
-            self.assertEqual(result['preds'].shape, (2, 2))
-            self.assertTrue(torch.isfinite(torch.from_numpy(result['preds'])).all())
-            metadata_path = destination / 'reichardt.json'
-            metadata = json.loads(metadata_path.read_text())
-            metadata['dx_values'].reverse()
-            metadata_path.write_text(json.dumps(metadata))
-            with self.assertRaises(ValueError):
-                train(cfg)
 
     def test_recipe_training_continues_optimizer_across_seeded_sets(self):
         torch.set_num_threads(1)

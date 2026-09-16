@@ -188,6 +188,22 @@ x_supersampling = 4''')
             self.assertFalse((root / 'stimuli' / 'training').exists())
             self.assertFalse((root / 'stimuli' / 'validation').exists())
             self.assertTrue((root / 'stimuli' / 'test' / module.DATASET_STATE).is_file())
+            progress_spec = importlib.util.spec_from_file_location(
+                'evaluate_progress', module.ROOT / 'scripts' / 'evaluate_progress.py')
+            progress = importlib.util.module_from_spec(progress_spec)
+            progress_spec.loader.exec_module(progress)
+            test_path = root / 'stimuli' / 'test'
+            state = json.loads((test_path / module.DATASET_STATE).read_text())
+            report_path = root / 'reports'
+            args = ['evaluate_progress', '--checkpoints', str(network / 'checkpoints'),
+                    '--data', str(test_path / state['cache']), '--split', 'test',
+                    '--samples', '0', '--no-plots', '--output', str(report_path)]
+            with patch('sys.argv', args), patch.object(
+                    progress.subprocess, 'check_output', return_value='c' * 40):
+                progress.main()
+            report = next(report_path.glob('*/progress.md')).read_text()
+            self.assertIn('epoch-000001.pt', report)
+            self.assertIn('epoch-000002.pt', report)
 
 
 if __name__ == '__main__':

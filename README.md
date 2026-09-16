@@ -18,8 +18,8 @@ stimuli/<parameter-set>/
 ```
 
 Generation returns the `raw/` path; combined generation/preprocessing writes
-its sibling `reichardt/`. Training `Settings.root_folder` and evaluation
-`--data` point to `stimuli/<parameter-set>/reichardt/`.
+its sibling `reichardt/`. The orchestrator supplies this cache path to the trainer; evaluation
+`--data` points to `stimuli/<parameter-set>/reichardt/`.
 
 ## Unattended training recipes
 
@@ -34,7 +34,7 @@ currently disabled, so the recipe must specify
 `rot_deg_range = [0, 0]`; this trains the rotation output toward zero. The same
 topology can be retained when rotation experiments are enabled later.
 
-Edit the safe example stages, commit the recipe and all code changes, then run:
+Edit the recipe, commit the recipe and all code changes, then run:
 
 ```bash
 PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/run_training_recipe.py
@@ -63,39 +63,15 @@ never silently overwrites that test set.
 only an interrupted epoch and otherwise resumes from the recorded training-set
 index and seed.
 
-## Start or resume training
+## Training behavior
 
-Edit `Settings` in `src/train/train_flow_xt_net.py`, commit all repository
-changes, then run from the repository root:
-
-```bash
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python -m train.train_flow_xt_net
-```
-
-The terminal entry point refuses staged, unstaged, or untracked changes and
-accepts no parameter overrides. Generated stimuli, checkpoints, and evaluations
-are ignored by Git. Checkpoints use the commit date and full current commit ID,
-such as `20260911-<commit-id>`. With
-`Settings.from_scratch = False`, repeating the command resumes that commit's
-`_latest.pt`; a new commit uses a new directory. Even a documentation-only
-commit changes this identity. For a fresh run under the same commit, empty its
-checkpoint directory yourself first. Run only one training process at a time.
-The low-level `train(cfg)` function remains available for temporary test fixtures.
-
-`Settings.checkpoint_save_interval` controls numbered `epoch_*.pt` archives
-and defaults to 25. `_latest.pt` still saves after every epoch for resume, and
-`_best.pt` saves whenever validation improves.
-
-Adam starts at `Settings.learning_rate`. PyTorch's `ReduceLROnPlateau` watches
-validation RMSE and multiplies the rate by `learning_rate_factor` (0.5) after
-more than `learning_rate_patience` (10) consecutive epochs without significant
-improvement, down to `learning_rate_minimum` (1e-6). It uses PyTorch's default
-relative improvement threshold of 0.01%. Reductions are printed; checkpoints
-save the scheduler history and optimizer rate for resume. This does not stop
-training automatically. Both subset limits default to 0, meaning all examples.
+Adam and the plateau scheduler are configured in the recipe's `[learning_rate]`
+section. The scheduler monitors training loss; its history continues across
+training sets and survives restarts. Validation happens after training finishes.
+Run only one orchestrator per network output directory at a time.
 
 Training also presents an in-memory horizontal reflection of every Reichardt
-response by default (`Settings.mirror_train_stimuli = True`). It reverses the
+response by default (`optimization.mirror_train_stimuli = true`). It reverses the
 spatial and signed-displacement axes within each of the four polarity groups,
 and changes the motion target from `[dx, dz, rot]` to `[-dx, dz, -rot]`. Validation
 and test examples remain unchanged.
@@ -104,13 +80,13 @@ GPU feeding defaults to batches of 64 and CUDA float16 mixed precision (with
 float32 loss and gradient scaling). Cached products remain float16 through
 loading, augmentation, pinned memory, and transfer; conversion happens on the
 device. CPU training and evaluation continue to use float32 model computation.
-Set `Settings.mixed_precision = False` to compare numerical behavior. Larger
+Set `optimization.mixed_precision = false` to compare numerical behavior. Larger
 batches change optimizer updates per epoch, so compare validation quality as
 well as throughput; reduce `batch_size` if your run exceeds available VRAM.
 Scaler state is saved for resume.
 
 Each epoch reports samples/second and host time waiting for the loader. On CUDA,
-`Settings.profile_batches` (default 20; 0 disables it) samples transfer/cast and
+`optimization.profile_batches` (default 20; 0 disables it) samples transfer/cast and
 model/optimizer durations using GPU events. The first samples include warmup;
 use later epochs for comparisons. Loader wait can overlap queued GPU work and
 is not itself GPU idle time. Loss totals synchronize once per phase instead of
@@ -127,35 +103,27 @@ reduce file-opening overhead but do not compress the cache. The writer checks
 finite values after float16 conversion before publishing `reichardt.json`;
 loading checks shape/dtype without repeating a finite scan every epoch.
 
-To rebuild from existing raw stimuli, run preprocessing into a **new** destination:
-
-```bash
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python -m stimuli.precompute_reichardt \
-  stimuli/<parameter-set>/raw stimuli/<parameter-set>/reichardt-bundled --stimulus-bundle-size 64
-```
-
-After verifying the result, move the existing `reichardt` directory aside and
-rename `reichardt-bundled` to `reichardt` to retain the training/evaluation path
-convention. Non-bundled caches need rebuilding. Allow space
-for both caches during migration. No second GPU is required.
+The orchestrator generates raw stimuli and bundles automatically.
 
 ## Reusable training evaluation
 
 From the repository root, evaluate saved checkpoints with:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py
+/home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py \
+  --checkpoints /absolute/output/translation_only/checkpoints \
+  --data /absolute/validation/cache/parameter-set/reichardt
 ```
 
-The current experiment recovers translation vectors from one-step flow fields,
-with varying heading and fixed speed. Heading angular error is the primary
+The current experiment recovers translation vectors from one-step flow fields
+with recipe-defined heading and speed ranges. Heading angular error is the primary
 metric; speed and vector errors are tracked as well. Fixed-speed accuracy does
 not demonstrate recovery across different speeds. Rotation is deferred until
 simple translation recovery works.
 
 The command uses 256 seeded validation examples, CPU inference, and no worker
 processes by default. It saves a sample manifest, per-checkpoint JSON metrics,
-and a chronological `progress.md` report under `evaluations/`. Repeating the
+and a `progress.md` report ordered by global epoch under `evaluations/`. Repeating the
 command reuses results for unchanged checkpoints, data, and evaluation code.
 New or overwritten checkpoints are evaluated once; old cached records remain.
 Use `--samples 0` for the whole split, `--split test` for a final held-out
@@ -181,13 +149,14 @@ interactive plot windows when a graphical desktop is available. All plot axes
 start at zero and mean-error points have normal-approximation 95% confidence
 interval error bars. By default, heading is plotted in degrees while speed and
 vector-tip error are plotted as per-sample percentages. Add
-`--plot-heading-percent` (or the legacy alias `--plot-percent`) to also save
+`--plot-heading-percent` to also save
 heading percentage plots. The percentage definitions are, respectively,
 `100 * heading_error_deg / 180`, `100 * |speed_hat - speed| / speed`, and
 `100 * ||[dx_hat,dz_hat]-[dx,dz]|| / ||[dx,dz]||`.
 
-Legacy checkpoints may come from overlapping runs sharing filenames. Their
-save times and settings are recorded; epoch number alone is not a run identity.
+The report reads model-only candidates and requires their Git commit to match
+this checkout. Supply an existing validation cache; use `keep_after_run = true`
+in the recipe if you want it retained for these retrospective reports.
 
 **dw93net** stands for **Duffy & Wurtz (1993) network**. It is an artificial
 neural network experiment designed to test the *"compensation for eye rotation"*
@@ -345,18 +314,8 @@ Filtering and products use float32; cached products use float16. The lower-level
 `ReichardtBank` remains the product primitive; cache generation always uses
 `DoGMotionBank`.
 
-Preprocess the raw images to their new sibling directory. Training reads motion
-ranges from their shared parameter-set parent:
-
-```bash
-export PYTHONPATH=src
-python -m stimuli.precompute_reichardt \
-  stimuli/<parameter-set>/raw \
-  stimuli/<parameter-set>/reichardt
-
-# Set the cached dataset path and epoch count in Settings, then commit.
-python -m train.train_flow_xt_net
-```
+For standalone preprocessing experiments, `python -m stimuli.precompute_reichardt`
+accepts separate raw-source and cache-destination paths.
 
 Preprocessing preserves splits and label filenames, and writes `reichardt.json`
 with full preprocessing metadata only after completion. Existing destinations are
@@ -372,14 +331,11 @@ root for evaluation; start fresh when detector configurations change.
 
 Training uses range-normalized MSE on each example's motion prediction.
 
-Training, validation, and evaluation use **four background data-loader workers**.
-Workers persist across epochs; CUDA batches use pinned system RAM and
-non-blocking transfers. CPU runs do not pin memory. Product maps are converted
-to float32 in the loader, so float16 saves disk space and read bandwidth while
-model inputs and PCIe transfers remain float32. Set `Settings.num_workers = 0`
-for in-process loading/debugging; evaluation
-accepts a `num_workers` argument. Programs calling these functions with workers
-must use a Python `if __name__ == '__main__':` entry point.
+The recipe configures training and evaluation workers separately (eight by default).
+Training workers persist across epochs; CUDA batches use pinned RAM and
+non-blocking transfers. Training loads and transfers float16 products, then
+converts them on the device. Set `optimization.num_workers = 0` for in-process
+loading. Programs using workers need an `if __name__ == '__main__':` entry point.
 
 The earlier [pipeline benchmark](benchmarks/storage-20260910-final/REPORT.md)
 found four workers competitive with individual files on this machine. Current
@@ -440,9 +396,9 @@ dependent receptive fields. Its mechanisms and estimation accuracy need tests
 and ablations; speed scale still relies on the training distance distribution.
 
 Training and evaluation stop before loading files unless the dataset root
-explicitly specifies `nrot=0,0`; filename checks catch mislabeled samples.
-Checkpoints store detector metadata and the new architecture tag, preventing
-resume from earlier architectures; start fresh for this model and bank.
+explicitly specifies `nrot=0,0`.
+Checkpoints store detector metadata and the full Git commit ID. Resume requires
+the exact committed code and recipe used to create the network.
 Keep FOV, width, crop, and detector semantics fixed across splits. Pipeline
 tests verify implementation, not translation accuracy.
 
@@ -477,6 +433,5 @@ stored in `reichardt.json`. Git must be available with an existing HEAD commit.
 If repository files change during preprocessing, the run fails without publishing
 `reichardt.json`, so training cannot mistake the partial cache for a complete one.
 
-Use `--sigma-center` and `--sigma-surround` to override the pixel sigmas; the
-kernel radius is always `ceil(3*sigma_surround)`. Old raw-product caches and model
-checkpoints are incompatible: generate a new cache and train from scratch.
+Use `--sigma-center` and `--sigma-surround` to override the pixel sigmas in
+standalone preprocessing; the kernel radius is always `ceil(3*sigma_surround)`.

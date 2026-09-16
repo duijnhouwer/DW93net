@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from stimuli.load_flow_xt_data import ReichardtDataset, require_pure_translation
+from stimuli.load_flow_xt_data import ReichardtDataset, require_pure_translation_root
 from models.pure_translation import PureTranslationNet
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,7 +84,6 @@ def metrics(pred, target):
         'vector_tip_relative_mae_pct_ci95_high': relative_tip_ci_high,
         'vector_tip_median': float(np.median(tip_distance)),
         'vector_tip_p90': float(np.percentile(tip_distance, 90)),
-        # Retained for comparisons with reports produced before vector_tip_mae.
         'vector_rmse': float(np.sqrt(np.mean(tip_distance**2))),
         'true_speed_min': float(truth.min()), 'true_speed_max': float(truth.max()),
     }
@@ -308,8 +307,10 @@ def save_plots(rows, output_dir, heading_counts, speed_counts, *, heading_percen
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--checkpoints', type=Path, help='Default: sole stimulus directory under checkpoints/<commit date>-<current commit>')
-    parser.add_argument('--data', type=Path, help='Default: stimuli/<checkpoint directory name>/reichardt')
+    parser.add_argument('--checkpoints', type=Path, required=True,
+                        help='Recipe checkpoint directory containing candidates/')
+    parser.add_argument('--data', type=Path, required=True,
+                        help='Existing Reichardt cache root containing the selected split')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
     parser.add_argument('--epochs', nargs='+', type=int,
                         help='Evaluate only these epoch numbers; omit to evaluate every saved epoch')
@@ -329,7 +330,7 @@ def main():
                             help='Do not save PNG plots')
     parser.add_argument('--show-plots', action='store_true',
                         help='Open the saved plots in local interactive windows (implies --plots)')
-    parser.add_argument('--plot-heading-percent', '--plot-percent', dest='plot_heading_percent', action='store_true',
+    parser.add_argument('--plot-heading-percent', dest='plot_heading_percent', action='store_true',
                         help='Also save heading error as a percentage of the 180° maximum')
     parser.add_argument('--output', type=Path, default=ROOT / 'evaluations')
     parser.add_argument('--refresh', action='store_true')
@@ -341,28 +342,25 @@ def main():
     args.speed_bins = sorted(set(args.speed_bins))
     if args.show_plots:
         args.plots = True
-    if args.checkpoints is None:
-        commit = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
-        date = subprocess.check_output(
-            ['git', '-C', str(ROOT), 'show', '-s', '--format=%cd', '--date=format:%Y%m%d', commit], text=True).strip()
-        candidates = sorted((ROOT / 'checkpoints' / f'{date}-{commit}').glob('*/_latest.pt'))
-        if len(candidates) != 1:
-            parser.error('Specify --checkpoints (could not identify a unique checkpoint directory)')
-        args.checkpoints = candidates[0].parent
+    commit = subprocess.check_output(
+        ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
     args.checkpoints = args.checkpoints.resolve()
-    args.data = (args.data or ROOT / 'stimuli' / args.checkpoints.name / 'reichardt').resolve()
+    args.data = args.data.resolve()
+    require_pure_translation_root(args.data)
     dataset = ReichardtDataset(args.data / args.split)
-    require_pure_translation(dataset)
     if not len(dataset):
         parser.error('Dataset is empty')
     indices = np.random.default_rng(args.seed).permutation(len(dataset))
     indices = indices[:args.samples or len(dataset)].tolist()
     selected = [dataset.files[i] for i in indices]
+    bundles = sorted({dataset.bundle_index[i][1] for i in indices})
     manifest = {'schema': 1, 'data': str(args.data), 'split': args.split,
                 'seed': args.seed, 'files': selected, 'metadata': dataset.metadata,
                 'heading_bins': args.heading_bins, 'speed_bins': args.speed_bins,
-                'file_stats': [(f, (args.data / args.split / f).stat().st_size,
-                                (args.data / args.split / f).stat().st_mtime_ns) for f in selected],
+                'bundle_stats': [(f, (args.data / args.split / f).stat().st_size,
+                                  (args.data / args.split / f).stat().st_mtime_ns) for f in bundles],
+                'bundle_index': [dataset.bundle_index[i] for i in indices],
+                'git_commit': commit,
                 'code': fingerprint([Path(__file__).read_text(),
                     (ROOT / 'src/models/pure_translation.py').read_text(),
                     (ROOT / 'src/stimuli/load_flow_xt_data.py').read_text()]),
@@ -372,11 +370,10 @@ def main():
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     torch.set_num_threads(args.threads)
     rows = []
-    paths = sorted(args.checkpoints.glob('epoch_*.pt'))
+    paths = sorted((args.checkpoints / 'candidates').glob('epoch-*.pt'))
     if args.epochs is not None:
         requested = set(args.epochs)
-        paths = [path for path in paths if int(path.stem.removeprefix('epoch_')) in requested]
-    paths += [p for p in [args.checkpoints / '_best.pt', args.checkpoints / '_latest.pt'] if p.exists()]
+        paths = [path for path in paths if int(path.stem.removeprefix('epoch-')) in requested]
     if not paths:
         parser.error('No checkpoints found')
     for path in paths:
@@ -389,8 +386,8 @@ def main():
         else:
             print(f'{path.name}: evaluating {len(indices)} {args.split} examples on {args.device}', flush=True)
             checkpoint = torch.load(path, map_location='cpu', weights_only=True)
-            if checkpoint['architecture'] != PureTranslationNet.architecture or checkpoint['reichardt'] != dataset.metadata:
-                raise ValueError(f'Incompatible architecture/detectors: {path}')
+            if checkpoint['git_commit'] != commit or checkpoint['reichardt'] != dataset.metadata:
+                raise ValueError(f'Incompatible Git commit or detectors: {path}')
             model = PureTranslationNet(checkpoint['reichardt']['dx_values']).to(args.device).eval()
             model.load_state_dict(checkpoint['model_state_dict'])
             loader = torch.utils.data.DataLoader(torch.utils.data.Subset(dataset, indices),
@@ -403,9 +400,10 @@ def main():
             after = path.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 raise RuntimeError(f'Checkpoint changed during evaluation; rerun: {path}')
-            row = {'checkpoint': str(path), 'epoch': checkpoint['epoch'],
+            row = {'checkpoint': str(path), 'epoch': checkpoint['global_epoch'],
                    'saved_at': datetime.fromtimestamp(before.st_mtime, timezone.utc).isoformat(),
-                   'settings': checkpoint['settings']}
+                   'git_commit': checkpoint['git_commit'],
+                   'training_seed': checkpoint['training_seed']}
             prediction = np.concatenate(predictions)
             target = np.concatenate(targets)
             row['metrics'] = metrics(prediction, target)
@@ -417,11 +415,11 @@ def main():
             }
             saved.write_text(json.dumps(row, indent=2, allow_nan=False))
         rows.append(row)
-    rows.sort(key=lambda r: r['saved_at'])
+    rows.sort(key=lambda r: r['epoch'])
     report = ['# Translation progress', '',
               f'{len(indices)} fixed {args.split} examples; seed {args.seed}. Heading is primary.',
               'Speed and vector-tip errors are scene units per step. Vector-tip error is ||[dx,dz]-[dx_hat,dz_hat]||. Plot error bars are normal-approximation 95% confidence intervals of the mean. Fixed-speed results do not establish variable-speed recovery.',
-              'Ordered by save time. Legacy checkpoints may belong to overlapping runs; epoch numbers alone do not identify a run.', '',
+              'Ordered by global epoch within this recipe run.', '',
               '| Checkpoint | Epoch | Saved (UTC) | Heading MAE ° | Cosine similarity | Median ° | Within 15° % | Speed MAE % | Speed RMSE | Vector-tip MAE % | Vector-tip median |',
               '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for row in rows:

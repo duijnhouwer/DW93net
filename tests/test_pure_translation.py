@@ -1,11 +1,10 @@
 """Contract checks for the translation-only baseline, not accuracy claims."""
 import unittest
 from unittest.mock import patch
-from types import SimpleNamespace
 
 import torch
 
-from stimuli.load_flow_xt_data import require_pure_translation, require_pure_translation_root
+from stimuli.load_flow_xt_data import require_pure_translation_root
 from models.pure_translation import PureTranslationNet, LocalMotionOpponency, V1Motion
 
 
@@ -37,16 +36,16 @@ class PureTranslationTests(unittest.TestCase):
         self.assertGreater(contrast_a[0, 0, 60].item(), contrast_b[0, 0, 60].item())
 
     def test_yaw_bounds_stop_before_file_loading(self):
-        from train.train_flow_xt_net import train, Settings
-        from train.test_flow_xt_net import run_flow_xt_model_on_test_data
+        from train.train_flow_xt_net import train_recipe_set, RecipeTrainingSettings
 
         for suffix in ['nrot=-1,1', 'nrot=1,1', 'nrot=0,1', 'missing', 'nrot=bad']:
             root = '/nonexistent/nspeed=1,1_nheading=0,0_' + suffix
             with self.subTest(suffix=suffix), patch('torch.load') as load, patch('os.listdir') as listing:
                 with self.assertRaisesRegex(ValueError, 'stopping before loading files'):
-                    train(Settings(root_folder=root))
-                with self.assertRaisesRegex(ValueError, 'stopping before loading files'):
-                    run_flow_xt_model_on_test_data(root, '/nonexistent/checkpoint.pt')
+                    train_recipe_set(RecipeTrainingSettings(
+                        root_folder=root, checkpoint_dir='/nonexistent/checkpoints',
+                        git_commit='a' * 40, training_set_index=0, training_seed=1,
+                        epochs_per_set=1, shuffle_seed=2))
                 load.assert_not_called()
                 listing.assert_not_called()
         require_pure_translation_root(
@@ -72,13 +71,6 @@ class PureTranslationTests(unittest.TestCase):
         for shape in [(1, 3, 2, 10), (1, 2, 1, 10), (1, 3, 10), (1, 3, 1, 0)]:
             with self.subTest(shape=shape), self.assertRaises(ValueError):
                 model(torch.zeros(shape))
-
-    def test_reject_yaw_even_if_folder_range_would_be_zero(self):
-        for yaw in [1, -1, 3000000000]:
-            dataset = SimpleNamespace(files=[f'ndx=0_ndz=0_nrot={yaw}_id=0.pt'])
-            with self.assertRaisesRegex(ValueError, 'zero yaw'):
-                require_pure_translation(dataset)
-        require_pure_translation(SimpleNamespace(files=['ndx=1_ndz=2_nrot=0_id=0.pt']))
 
 
 if __name__ == '__main__':
