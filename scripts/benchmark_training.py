@@ -15,6 +15,8 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--amd-device', type=Path,
+                        help='AMD GPU sysfs PCI device directory for telemetry')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
@@ -52,12 +54,29 @@ def main():
                                         for line in Path('/proc/meminfo').read_text().splitlines()}
                 sample['diskstats'] = Path('/proc/diskstats').read_text()
                 try:
-                    result = subprocess.run(['nvidia-smi',
+                    if args.amd_device:
+                        device = args.amd_device
+                        hwmon = next((device / 'hwmon').glob('hwmon*'))
+                        def number(path):
+                            return float(path.read_text().strip())
+                        sample['gpu_rows'] = [[0, 'Radeon AI PRO R9700',
+                            number(device / 'gpu_busy_percent'), None,
+                            number(device / 'mem_info_vram_used') / 1048576,
+                            number(device / 'mem_info_vram_total') / 1048576,
+                            number(hwmon / 'power1_average') / 1000000,
+                            number(hwmon / 'temp1_input') / 1000]]
+                        sample['amd_temperatures_c'] = {
+                            p.with_name(p.name.replace('_input', '_label')).read_text().strip(): number(p)/1000
+                            for p in hwmon.glob('temp*_input')}
+                        result = None
+                    else:
+                        result = subprocess.run(['nvidia-smi',
                         '--query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu',
                         '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=5)
-                    sample['gpu_rows'] = list(csv.reader(result.stdout.splitlines()))
-                    if result.returncode:
-                        sample['gpu_error'] = result.stderr
+                    if result is not None:
+                        sample['gpu_rows'] = list(csv.reader(result.stdout.splitlines()))
+                        if result.returncode:
+                            sample['gpu_error'] = result.stderr
                 except (OSError, subprocess.TimeoutExpired) as error:
                     sample['gpu_error'] = str(error)
                 stream.write(json.dumps(sample) + '\n')
