@@ -1,8 +1,8 @@
 """Translation-only V1 -> MT -> MST inspired rate-network baseline.
 
-Input [B,C,1,X] contains cached DoG ON_ON, OFF_OFF, ON_OFF, OFF_ON products, not biological
-motion-energy measurements. At the default 7200 pixels / 120 degrees and spans
--60..60, C=484 and X=7062. Displacements are pixels per step, NOT deg/s.
+Input [B,C,1,X] contains signed DoG correlations calculated online from cached
+signed DoG contrast. At the default 7200 pixels / 120 degrees and spans
+-60..60, C=121 and X=7062. Displacements are pixels per step, NOT deg/s.
 Output [dx,dz,rot] uses scene distance per step for translation and degrees per
 step for yaw. Translation-only training targets zero on the rotation output.
 Heading=atan2(dx,dz), with 0 forward, -90 left and +90 right; speed per
@@ -82,7 +82,7 @@ class PureTranslationNet(nn.Module):
         # Explicit signed labels are required: channel count cannot identify
         # opponent pairs or distinguish custom/reordered detector banks.
         self.dx_values = ReichardtBank(dx_values).dx_values
-        self.n_input_channels = 4 * len(self.dx_values)
+        self.n_input_channels = len(self.dx_values)
         self.v1 = V1Motion()
         self.mt_opponency = LocalMotionOpponency(self.dx_values)
         self.mt = nn.Sequential(
@@ -120,10 +120,15 @@ class PureTranslationNet(nn.Module):
         self.decoder = nn.Linear(256, 3)
 
     def forward(self, x):
-        if (x.ndim != 4 or x.shape[1] != self.n_input_channels
-                or x.shape[2] != 1 or x.shape[3] < 1):
-            raise ValueError("Expected precomputed [B,C,1,X] Reichardt products")
-        signed = self.signed_correlation(x.squeeze(2))
+        if x.ndim != 4 or x.shape[2] != 1 or x.shape[3] < 1:
+            raise ValueError("Expected signed [B,D,1,X] Reichardt correlations")
+        if x.shape[1] == 4 * self.n_input_channels:
+            # Compatibility/reference path for the former four-polarity input.
+            signed = self.signed_correlation(x.squeeze(2))
+        elif x.shape[1] == self.n_input_channels:
+            signed = x.squeeze(2)
+        else:
+            raise ValueError("Expected one signed correlation channel per displacement")
         local, contrast = self.v1(signed)
         # Negative correlation at +s is positive evidence at -s after subtraction.
         # Do not rectify cross-polarity subtraction before direction opponency.

@@ -1,4 +1,4 @@
-"""Generate ten reproducible translation stimuli, four-polarity caches and PNG previews."""
+"""Generate ten reproducible signed DoG samples and online-correlation previews."""
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -7,13 +7,13 @@ import sys
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.colors import PowerNorm
+from matplotlib.colors import SymLogNorm
 import numpy as np
 import torch
 
-from stimuli.generate_flow_xt_data import StimConfig, generate_flow_xt_dataset
-from stimuli.precompute_reichardt import precompute_dataset
-from stimuli.load_flow_xt_data import ReichardtDataset
+from features.reichardt import ReichardtBank
+from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset
+from stimuli.load_flow_xt_data import DoGDataset
 
 
 def main():
@@ -22,75 +22,66 @@ def main():
     torch.set_num_threads(2)
     config = StimConfig()
     settings = dict(n_samples=10, seed=42, speed_range=[.001, .015],
-                    heading_deg_range=[-180, 180],
-                    rot_deg_range=[0, 0], split=[.8, .1, .1], config=asdict(config))
+                    heading_deg_range=[-180, 180], rot_deg_range=[0, 0],
+                    split=[.8, .1, .1], config=asdict(config))
     (root / 'generation.json').write_text(json.dumps(settings, indent=2) + '\n')
-    source = Path(generate_flow_xt_dataset(output_root=str(root),
-                                         **{**settings, 'config': config}))
-    cache = source.parent / 'reichardt'
-    metadata = precompute_dataset(source, cache)
+    cache = Path(generate_dog_dataset(
+        output_root=str(root), dog_bundle_size=4,
+        **{**settings, 'config': config}))
     previews = root / 'previews'
     previews.mkdir()
     records = []
-    datasets = {split: ReichardtDataset(cache / split, keep_half=True)
-                for split in ('train', 'validate', 'test')}
-    for raw_path in sorted(source.rglob('*.pt')):
-        relative = raw_path.relative_to(source)
-        dataset = datasets[relative.parts[0]]
-        index = dataset.files.index(raw_path.name)
-        _, bundle, row = dataset.bundle_index[index]
-        product_path = cache / relative.parent / bundle
-        raw = torch.load(raw_path, weights_only=True)
-        products, target = dataset[index]
-        assert raw.shape == (1, 2, 7200) and raw.dtype == torch.uint8
-        assert products.shape == (484, 1, 7062) and products.dtype == torch.float16
-        assert torch.isfinite(products).all() and (products >= 0).all()
-        # Display only: max across six neighboring X pixels keeps sparse responses
-        # visible. Stored tensors retain every original position and value.
-        raw_view = raw[0].numpy().reshape(2, 1200, 6).max(axis=-1)
-        maps = products[:, 0].float().numpy().reshape(4, 121, 1177, 6).max(axis=-1)
-        fig, axes = plt.subplots(5, 1, figsize=(15, 10), height_ratios=[.8, 2, 2, 2, 2],
-                                 constrained_layout=True)
-        axes[0].imshow(raw_view, cmap='gray', vmin=0, vmax=255, aspect='auto',
-                       extent=[0, 7200, 1.5, -.5], interpolation='nearest')
-        axes[0].set_yticks([0, 1], ['Frame 0', 'Frame 1'])
-        axes[0].set_title(raw_path.stem, fontsize=9)
-        norm = PowerNorm(gamma=.35, vmin=0, vmax=max(float(maps.max()), 1e-8))
-        for ax, values, name in zip(axes[1:], maps, metadata['polarity_order']):
-            shown = ax.imshow(values, origin='lower', aspect='auto', cmap='magma', norm=norm,
-                              extent=[68.5, 7130.5, -60.5, 60.5], interpolation='nearest')
-            ax.set_ylabel(name + '\ndX (px/step)')
-            ax.set_yticks([-60, -30, 0, 30, 60])
-        axes[-1].set_xlabel('Present-frame X coordinate (pixels)')
-        fig.colorbar(shown, ax=list(axes[1:]), label='Product magnitude (power display, gamma=0.35)', shrink=.8)
-        fig.suptitle('Four polarity pairs — display uses 6-pixel maxima; saved maps are full resolution', fontsize=12)
-        preview = previews / (raw_path.stem + '.png')
-        fig.savefig(preview, dpi=110)
-        plt.close(fig)
-        records.append(dict(raw=str(raw_path.relative_to(root)), products=str(product_path.relative_to(root)),
-                            bundle_row=row, target=target.tolist(),
-                            preview=str(preview.relative_to(root)), raw_bytes=raw_path.stat().st_size,
-                            product_bytes=products.numel() * products.element_size()))
+    bank = ReichardtBank()
+    for split in ('train', 'validate', 'test'):
+        dataset = DoGDataset(cache / split)
+        for index, sample_name in enumerate(dataset.files):
+            _, bundle, row = dataset.bundle_index[index]
+            contrast, target = dataset[index]
+            correlations = bank(contrast, validate=False)
+            assert contrast.shape == (2, 7182) and contrast.dtype == torch.float32
+            assert correlations.shape == (121, 1, 7062)
+            assert torch.isfinite(contrast).all() and torch.isfinite(correlations).all()
+
+            contrast_view = contrast.numpy().reshape(2, 1197, 6).mean(axis=-1)
+            maps = correlations[:, 0].numpy().reshape(121, 1177, 6).mean(axis=-1)
+            magnitude = max(float(np.abs(maps).max()), 1e-8)
+            fig, axes = plt.subplots(2, 1, figsize=(15, 7),
+                                     height_ratios=[1, 4], constrained_layout=True)
+            axes[0].imshow(contrast_view, cmap='coolwarm', aspect='auto',
+                           extent=[9, 7191, 1.5, -.5], interpolation='nearest')
+            axes[0].set_yticks([0, 1], ['Frame 0', 'Frame 1'])
+            axes[0].set_title(sample_name, fontsize=9)
+            shown = axes[1].imshow(
+                maps, origin='lower', aspect='auto', cmap='coolwarm',
+                norm=SymLogNorm(linthresh=magnitude / 1000, vmin=-magnitude, vmax=magnitude),
+                extent=[68.5, 7130.5, -60.5, 60.5], interpolation='nearest')
+            axes[1].set_ylabel('dX (pixels/step)')
+            axes[1].set_xlabel('Present-frame X coordinate (pixels)')
+            fig.colorbar(shown, ax=axes[1], label='Signed correlation')
+            preview = previews / (Path(sample_name).stem + '.png')
+            fig.savefig(preview, dpi=110)
+            plt.close(fig)
+            bundle_path = cache / split / bundle
+            records.append(dict(sample=sample_name,
+                                dog_bundle=str(bundle_path.relative_to(root)),
+                                bundle_row=row, target=target.tolist(),
+                                preview=str(preview.relative_to(root)),
+                                dog_bytes=contrast.numel() * contrast.element_size(),
+                                ephemeral_correlation_bytes=(
+                                    correlations.numel() * correlations.element_size())))
     assert len(records) == 10
     (root / 'files.json').write_text(json.dumps(records, indent=2) + '\n')
     (root / 'README.md').write_text(
-        '# Ten translation stimuli and their product maps\n\n'
+        '# Ten signed DoG stimuli and their online correlations\n\n'
         'Seed 42; speed sampled from [0.001,0.015) scene units per step and heading '
-        'from [-180,180) degrees; yaw=0. Default 120-degree, '
-        '7200-pixel stimuli, 1000 world dots, X supersampling 255. Splits: 8 train, '
-        '1 validate, 1 test. See `generation.json` for exact settings.\n\n'
-        'Each raw `.pt`: uint8 [1,2,7200]. Each bundled response: float16 [484,1,7062], '
-        'with a binary float32 [dx,dz,rot] target. '
-        'Channel blocks: ON_ON 0–120, OFF_OFF 121–241, ON_OFF 242–362, '
-        'OFF_ON 363–483. Within each block: dX=-60…+60.\n\n'
-        'Products use luminance DoG sigma 1/3 pixels and all four polarity pairs. '
-        'The product root contains `reichardt.json`, `inputs.json`, and `provenance/` '
-        'with commit, diff and source recovery archive. `files.json` links all files.\n\n'
-        'PNG previews show all four blocks. Display only: six-pixel maximum pooling '
-        'and a gamma=0.35 intensity scale expose sparse weak responses; a common '
-        'color scale is used within each preview. Saved tensors are unaltered.\n')
-    print(json.dumps(dict(root=str(root), metadata=str(cache / 'reichardt.json'),
-                         samples=len(records), product_bytes=sum(r['product_bytes'] for r in records),
+        'from [-180,180) degrees; yaw=0. Default 120-degree, 7200-pixel stimuli, '
+        '1000 world dots, X supersampling 255. Splits: 8 train, 1 validate, 1 test.\n\n'
+        'Only float32 signed DoG contrast `[2,7182]` and float32 targets are stored. '
+        'The signed `[-60,+60]` correlation maps are calculated in memory for each '
+        'preview and are not written to disk. `dog.json` and `provenance/` record '
+        'the cache semantics and recoverable source state.\n')
+    print(json.dumps(dict(root=str(root), metadata=str(cache / 'dog.json'),
+                         samples=len(records), dog_bytes=sum(r['dog_bytes'] for r in records),
                          first_preview=str(root / records[0]['preview'])), indent=2))
 
 

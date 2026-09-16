@@ -12,7 +12,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from stimuli.load_flow_xt_data import ReichardtDataset, require_pure_translation_root
+from features.reichardt import ReichardtBank
+from stimuli.load_flow_xt_data import DoGDataset, require_pure_translation_root
 from models.pure_translation import PureTranslationNet
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -310,7 +311,7 @@ def main():
     parser.add_argument('--checkpoints', type=Path, required=True,
                         help='Recipe checkpoint directory containing candidates/')
     parser.add_argument('--data', type=Path, required=True,
-                        help='Existing Reichardt cache root containing the selected split')
+                        help='Existing signed DoG cache root containing the selected split')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
     parser.add_argument('--epochs', nargs='+', type=int,
                         help='Evaluate only these epoch numbers; omit to evaluate every saved epoch')
@@ -347,7 +348,7 @@ def main():
     args.checkpoints = args.checkpoints.resolve()
     args.data = args.data.resolve()
     require_pure_translation_root(args.data)
-    dataset = ReichardtDataset(args.data / args.split)
+    dataset = DoGDataset(args.data / args.split)
     if not len(dataset):
         parser.error('Dataset is empty')
     indices = np.random.default_rng(args.seed).permutation(len(dataset))
@@ -363,7 +364,8 @@ def main():
                 'git_commit': commit,
                 'code': fingerprint([Path(__file__).read_text(),
                     (ROOT / 'src/models/pure_translation.py').read_text(),
-                    (ROOT / 'src/stimuli/load_flow_xt_data.py').read_text()]),
+                    (ROOT / 'src/stimuli/load_flow_xt_data.py').read_text(),
+                    (ROOT / 'src/features/reichardt.py').read_text()]),
                 'torch': torch.__version__, 'device': args.device}
     out = args.output / fingerprint(manifest)[:16]
     out.mkdir(parents=True, exist_ok=True)
@@ -386,16 +388,23 @@ def main():
         else:
             print(f'{path.name}: evaluating {len(indices)} {args.split} examples on {args.device}', flush=True)
             checkpoint = torch.load(path, map_location='cpu', weights_only=True)
-            if checkpoint['git_commit'] != commit or checkpoint['reichardt'] != dataset.metadata:
+            detector = checkpoint.get('detector')
+            if (checkpoint['git_commit'] != commit or not isinstance(detector, dict)
+                    or detector.get('dog') != dataset.metadata):
                 raise ValueError(f'Incompatible Git commit or detectors: {path}')
-            model = PureTranslationNet(checkpoint['reichardt']['dx_values']).to(args.device).eval()
+            bank = ReichardtBank(detector['correlation']['dx_values'])
+            if bank.metadata != detector['correlation']:
+                raise ValueError(f'Unsupported correlation configuration: {path}')
+            model = PureTranslationNet(bank.dx_values).to(args.device).eval()
             model.load_state_dict(checkpoint['model_state_dict'])
             loader = torch.utils.data.DataLoader(torch.utils.data.Subset(dataset, indices),
                                                 batch_size=args.batch_size, num_workers=0)
             predictions, targets = [], []
             with torch.inference_mode():
                 for x, y in loader:
-                    predictions.append(model(x.to(args.device))[:, :2].cpu().numpy())
+                    contrast = x.to(args.device)
+                    predictions.append(model(bank(contrast[:, None], validate=False))[:, :2]
+                                       .cpu().numpy())
                     targets.append(y[:, :2].numpy())
             after = path.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):

@@ -27,10 +27,13 @@ class ReichardtBank:
 
     @property
     def metadata(self):
-        return dict(format="reichardt-products-v2", dx_values=list(self.dx_values),
+        return dict(format="signed-reichardt-correlation-v1",
+                    dx_values=list(self.dx_values),
+                    displacement_units="pixels_per_frame_step",
+                    temporal_delay_steps=1,
                     crop="common-valid-present-anchor")
 
-    def __call__(self, xt):
+    def __call__(self, xt, *, validate=True):
         """Accept [2,X], [1,2,X], or [B,1,2,X]; return [C,1,X'] or batched."""
         batched = xt.ndim == 4
         if xt.ndim == 2:
@@ -39,7 +42,7 @@ class ReichardtBank:
             xt = xt[None]
         if xt.ndim != 4 or xt.shape[1] != 1 or xt.shape[2] != 2:
             raise ValueError("Expected [2,X], [1,2,X], or [B,1,2,X]")
-        if not xt.is_floating_point() or not torch.isfinite(xt).all():
+        if not xt.is_floating_point() or (validate and not torch.isfinite(xt).all()):
             raise ValueError("XT input must contain finite floating-point intensities")
         x0 = max(0, max(self.dx_values))
         x1 = xt.shape[-1] + min(0, min(self.dx_values))
@@ -50,6 +53,6 @@ class ReichardtBank:
             xt[:, :, 0:1, x0-dx:x1-dx] * now
             for dx in self.dx_values
         ], dim=1)
-        if not torch.isfinite(responses).all():
+        if validate and not torch.isfinite(responses).all():
             raise ValueError("Products overflowed; use a wider floating-point dtype")
         return responses if batched else responses[0]

@@ -11,7 +11,8 @@ from features.reichardt import ReichardtBank
 from features.dog_motion import DoGMotionBank
 from stimuli.precompute_reichardt import precompute_dataset
 from stimuli.load_flow_xt_data import (FlowXtDataset, ReichardtDataset, MirroredReichardtDataset,
-                                       make_flow_loader)
+                                       DoGDataset, MirroredDoGDataset, make_flow_loader)
+from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
 from stimuli.stimulus_io import decode_stimulus
 from models.pure_translation import PureTranslationNet
 from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
@@ -92,6 +93,23 @@ class ReichardtTests(unittest.TestCase):
         restored, restored_target = MirroredReichardtDataset([(mirrored, mirrored_target)], dx_values)[0]
         torch.testing.assert_close(restored, responses)
         torch.testing.assert_close(restored_target, target)
+
+    def test_mirrored_dog_reverses_space_dx_and_yaw(self):
+        contrast = torch.arange(2 * 5, dtype=torch.float32).reshape(2, 5)
+        target = torch.tensor([2.0, 3.0, 0.5])
+        mirrored, mirrored_target = MirroredDoGDataset([(contrast, target)])[0]
+        torch.testing.assert_close(mirrored, contrast.flip(-1))
+        torch.testing.assert_close(mirrored_target, torch.tensor([-2.0, 3.0, -0.5]))
+        torch.testing.assert_close(target, torch.tensor([2.0, 3.0, 0.5]))
+
+    def test_mirrored_dog_reverses_online_correlation_displacements(self):
+        torch.manual_seed(9)
+        contrast = torch.randn(2, 31)
+        mirrored, _ = MirroredDoGDataset([(contrast, torch.zeros(3))])[0]
+        bank = ReichardtBank([-3, 0, 3])
+        ordinary = bank(contrast)
+        reflected = bank(mirrored)
+        torch.testing.assert_close(reflected, ordinary.flip(0, 2))
     def test_default_bank_detects_fast_endpoints(self):
         bank = ReichardtBank()
         self.assertEqual(bank.dx_values, tuple(range(-60, 61)))
@@ -245,22 +263,17 @@ class ReichardtTests(unittest.TestCase):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / 'raw'
-            (source / 'train').mkdir(parents=True)
-            for i in range(2):
-                torch.save(torch.randint(0, 256, (1, 2, 49), dtype=torch.uint8),
-                           source / 'train' /
-                           f'ndx={i * 1000000000}_ndz=1000000000_nrot=0_id={i}.pt')
-            cache = (root /
-                     'nspeed=1000000000,2000000000_nheading=0,90000000000_nrot=0,0' /
-                     'reichardt')
-            precompute_dataset(source, cache, DoGMotionBank([-1, 1]))
+            cache = Path(generate_dog_dataset(
+                output_root=str(root), n_samples=2, speed_range=(1.0, 2.0),
+                heading_deg_range=(0, 90), rot_deg_range=(0, 0), split=(1, 0, 0),
+                seed=4, dog_bundle_size=2,
+                config=StimConfig(stim_wid_px=49, n_world_dots=10, x_supersampling=1)))
             checkpoints = root / 'checkpoints'
             common = dict(
                 root_folder=str(cache), checkpoint_dir=str(checkpoints),
                 git_commit='a' * 40, epochs_per_set=1, shuffle_seed=99,
                 batch_size=2, num_workers=0, profile_batches=0,
-                mirror_train_stimuli=False)
+                mirror_train_stimuli=False, dx_values=(-1, 1))
             train_recipe_set(RecipeTrainingSettings(
                 training_set_index=0, training_seed=1000, **common))
             train_recipe_set(RecipeTrainingSettings(

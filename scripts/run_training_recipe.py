@@ -17,18 +17,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 from models.pure_translation import PureTranslationNet
-from stimuli.generate_flow_xt_data import StimConfig, generate_and_precompute
-from stimuli.load_flow_xt_data import ReichardtDataset, make_flow_loader
+from features.reichardt import ReichardtBank
+from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset
+from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader
 from train.train_flow_xt_net import (
     RecipeTrainingSettings, _motion_scales, committed_revision, train_recipe_set,
 )
 
-TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'training_sets',
+TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', 'training_sets',
                   'validation_set', 'test_set', 'optimization', 'learning_rate',
                   'checkpoints', 'evaluation'}
 STIMULI_KEYS = {'speed_range', 'heading_deg_range', 'rot_deg_range', 'fov_deg',
                  'near_exclusion_radius', 'n_world_dots', 'superimpose',
-                 'x_supersampling', 'stimulus_bundle_size'}
+                 'x_supersampling', 'dog_bundle_size'}
+DETECTOR_KEYS = {'displacement_min_px', 'displacement_max_px', 'displacement_step_px',
+                 'dog_sigma_center_px', 'dog_sigma_surround_px'}
 TRAINING_KEYS = {'path', 'number_of_sets', 'samples_per_set', 'epochs_per_set',
                  'start_seed', 'seed_increment', 'shuffle_seed'}
 FIXED_SET_KEYS = {'path', 'seed', 'n_samples'}
@@ -114,7 +117,7 @@ def load_recipe(path):
         _range(stimuli[key], f'stimuli.{key}')
     if stimuli['rot_deg_range'] != [0, 0]:
         raise ValueError('stimuli.rot_deg_range must be [0, 0] while rotation is disabled')
-    _positive_int(stimuli.get('stimulus_bundle_size'), 'stimuli.stimulus_bundle_size')
+    _positive_int(stimuli.get('dog_bundle_size'), 'stimuli.dog_bundle_size')
     for key in ('n_world_dots', 'x_supersampling'):
         if key in stimuli:
             _positive_int(stimuli[key], f'stimuli.{key}')
@@ -123,6 +126,25 @@ def load_recipe(path):
             _number(stimuli[key], f'stimuli.{key}', positive=True)
     if 'superimpose' in stimuli and type(stimuli['superimpose']) is not bool:
         raise ValueError('stimuli.superimpose must be true or false')
+
+    detector = _section(recipe, 'detector', DETECTOR_KEYS)
+    for key in ('displacement_min_px', 'displacement_max_px'):
+        if type(detector.get(key)) is not int:
+            raise ValueError(f'detector.{key} must be an integer')
+    _positive_int(detector.get('displacement_step_px'), 'detector.displacement_step_px')
+    if detector['displacement_min_px'] > detector['displacement_max_px']:
+        raise ValueError('detector displacement range must be ordered')
+    dx_values = range(detector['displacement_min_px'], detector['displacement_max_px'] + 1,
+                      detector['displacement_step_px'])
+    dx_values = tuple(dx_values)
+    if not dx_values or dx_values[-1] != detector['displacement_max_px']:
+        raise ValueError('detector displacement step must land on displacement_max_px')
+    if 0 not in dx_values or any(-value not in dx_values for value in dx_values):
+        raise ValueError('detector displacements must contain zero and paired signs')
+    for key in ('dog_sigma_center_px', 'dog_sigma_surround_px'):
+        _number(detector.get(key), f'detector.{key}', positive=True)
+    if detector['dog_sigma_center_px'] >= detector['dog_sigma_surround_px']:
+        raise ValueError('detector DoG requires center sigma smaller than surround sigma')
 
     training = _section(recipe, 'training_sets', TRAINING_KEYS)
     for key in ('number_of_sets', 'samples_per_set', 'epochs_per_set', 'seed_increment'):
@@ -258,15 +280,16 @@ def _sha256(path):
 
 
 def _prepare_dataset(path, role, section, stimuli, *, persistent):
-    """Generate one role-only set, retaining only its bundled Reichardt data."""
+    """Generate one role-only set containing only bundled signed DoG contrast."""
     path = Path(path).resolve()
-    desired = {'version': 1, 'role': role, 'seed': section['seed'],
-               'n_samples': section['n_samples'], 'stimuli': stimuli}
+    desired = {'version': 2, 'role': role, 'seed': section['seed'],
+               'n_samples': section['n_samples'], 'stimuli': stimuli,
+               'detector': section['_detector']}
     state_path = path / DATASET_STATE
     if state_path.is_file():
         state = json.loads(state_path.read_text())
         cache = path / state['cache']
-        ready = ((cache / 'reichardt.json').is_file()
+        ready = ((cache / 'dog.json').is_file()
                  and (cache / role / 'bundles.json').is_file())
         if state.get('spec') == desired and ready:
             print(f'Reusing {role} set: {path}', flush=True)
@@ -287,16 +310,18 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent):
              'test': [0.0, 0.0, 1.0]}[role]
     config_values = {key: value for key, value in stimuli.items()
                      if key not in {'speed_range', 'heading_deg_range',
-                                    'rot_deg_range', 'stimulus_bundle_size'}}
-    raw, cache = generate_and_precompute(
-        output_root=str(path), stimulus_bundle_size=stimuli['stimulus_bundle_size'],
+                                    'rot_deg_range', 'dog_bundle_size'}}
+    detector = section['_detector']
+    cache = generate_dog_dataset(
+        output_root=str(path), dog_bundle_size=stimuli['dog_bundle_size'],
+        sigma_center=detector['dog_sigma_center_px'],
+        sigma_surround=detector['dog_sigma_surround_px'],
         n_samples=section['n_samples'], speed_range=stimuli['speed_range'],
         heading_deg_range=stimuli['heading_deg_range'], rot_deg_range=stimuli['rot_deg_range'],
         split=split, seed=section['seed'], config=StimConfig(**config_values))
-    raw, cache = Path(raw).resolve(), Path(cache).resolve()
-    if path not in raw.parents or path not in cache.parents:
+    cache = Path(cache).resolve()
+    if path not in cache.parents:
         raise RuntimeError('Generator returned a path outside its managed dataset directory')
-    shutil.rmtree(raw)
     _atomic_json(state_path, {'spec': desired, 'cache': str(cache.relative_to(path))})
     return cache
 
@@ -311,15 +336,19 @@ def _load_checkpoint(path, device):
 def evaluate_model(model_path, cache_root, role, evaluation, commit):
     """Evaluate a candidate/final model without shuffling or retaining predictions."""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    dataset = ReichardtDataset(Path(cache_root) / role)
+    dataset = DoGDataset(Path(cache_root) / role)
     loader = make_flow_loader(dataset, evaluation['batch_size'], device, shuffle=False,
                               num_workers=evaluation['num_workers'])
     checkpoint = _load_checkpoint(model_path, device)
     if checkpoint.get('git_commit') != commit:
         raise ValueError(f'Model Git commit does not match this run: {model_path}')
-    if checkpoint.get('reichardt') != dataset.metadata:
+    detector = checkpoint.get('detector')
+    if not isinstance(detector, dict) or detector.get('dog') != dataset.metadata:
         raise ValueError(f'Model detector configuration does not match {role} data')
-    model = PureTranslationNet(dataset.metadata['dx_values']).to(device)
+    correlation_bank = ReichardtBank(detector['correlation']['dx_values'])
+    if correlation_bank.metadata != detector['correlation']:
+        raise ValueError('Model correlation configuration is unsupported')
+    model = PureTranslationNet(correlation_bank.dx_values).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     scales = torch.tensor(_motion_scales(cache_root), device=device)
@@ -329,7 +358,7 @@ def evaluate_model(model_path, cache_root, role, evaluation, commit):
         for inputs, target in loader:
             inputs = inputs.to(device, non_blocking=True).float()
             target = target.to(device, non_blocking=True).float()
-            prediction = model(inputs).float()
+            prediction = model(correlation_bank(inputs[:, None], validate=False)).float()
             difference = prediction - target
             normalized_sq += ((difference / scales) ** 2).sum().item()
             target_speed = torch.linalg.vector_norm(target[:, :2], dim=1)
@@ -500,7 +529,8 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
             if training_path.exists() and (training_path / MANAGED_MARKER).is_file():
                 _safe_delete_managed(training_path)
             continue
-        section = {'seed': seed, 'n_samples': training['samples_per_set']}
+        section = {'seed': seed, 'n_samples': training['samples_per_set'],
+                   '_detector': recipe['detector']}
         print(f'Preparing training set {set_index + 1}/{training["number_of_sets"]}, seed {seed}',
               flush=True)
         cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
@@ -517,11 +547,15 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
             learning_rate=lr['initial'], learning_rate_factor=lr['factor'],
             learning_rate_patience=lr['patience_epochs'], learning_rate_minimum=lr['minimum'],
             learning_rate_threshold=lr['relative_improvement_threshold'],
-            mirror_train_stimuli=optimization['mirror_train_stimuli']))
+            mirror_train_stimuli=optimization['mirror_train_stimuli'],
+            dx_values=tuple(range(recipe['detector']['displacement_min_px'],
+                                  recipe['detector']['displacement_max_px'] + 1,
+                                  recipe['detector']['displacement_step_px']))))
         _safe_delete_managed(training_path)
         print(f'Training set {set_index + 1} complete and deleted', flush=True)
 
     validation = recipe['validation_set']
+    validation = validation | {'_detector': recipe['detector']}
     validation_path = Path(validation['path'])
     validation_cache = _prepare_dataset(validation_path, 'validate', validation,
                                         stimuli, persistent=False)
@@ -531,6 +565,7 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
         print('Validation set deleted after model selection', flush=True)
 
     test = recipe['test_set']
+    test = test | {'_detector': recipe['detector']}
     test_path = Path(test['path'])
     test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
     staged = bool(test.get('staging_path'))

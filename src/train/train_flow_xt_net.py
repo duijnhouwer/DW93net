@@ -9,10 +9,10 @@ import torch
 from dataclasses import dataclass, asdict
 
 from models.pure_translation import PureTranslationNet
-from stimuli.load_flow_xt_data import (ReichardtDataset, extract_ranges_from_foldername,
-                                   make_flow_loader,
-                                   require_pure_translation_root, stimulus_set_name,
-                                   with_mirrored_reichardt_training)
+from features.reichardt import ReichardtBank
+from stimuli.load_flow_xt_data import (DoGDataset, extract_ranges_from_foldername,
+                                       make_flow_loader, require_pure_translation_root,
+                                       stimulus_set_name, with_mirrored_dog_training)
 
 
 @dataclass
@@ -36,6 +36,7 @@ class RecipeTrainingSettings:
     learning_rate_minimum: float = 1e-6
     learning_rate_threshold: float = 1e-4
     mirror_train_stimuli: bool = True
+    dx_values: tuple = tuple(range(-60, 61))
 
 
 def _atomic_torch_save(value, path):
@@ -80,11 +81,13 @@ def train_recipe_set(cfg):
         if type(getattr(cfg, name)) is not int or getattr(cfg, name) < 1:
             raise ValueError(f'{name} must be a positive integer')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    train_cache = ReichardtDataset(Path(cfg.root_folder) / 'train', keep_half=True)
+    train_cache = DoGDataset(Path(cfg.root_folder) / 'train')
+    correlation_bank = ReichardtBank(cfg.dx_values)
+    detector_metadata = {'dog': train_cache.metadata,
+                         'correlation': correlation_bank.metadata}
     train_dataset = train_cache
     if cfg.mirror_train_stimuli:
-        train_dataset = with_mirrored_reichardt_training(
-            train_dataset, train_cache.metadata['dx_values'])
+        train_dataset = with_mirrored_dog_training(train_dataset)
         print(f'Mirrored training augmentation: {len(train_dataset):,} presentations per epoch')
     if not len(train_dataset):
         raise ValueError('Training dataset must be nonempty')
@@ -97,7 +100,7 @@ def train_recipe_set(cfg):
     torch.manual_seed(cfg.shuffle_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.shuffle_seed)
-    model = PureTranslationNet(train_cache.metadata['dx_values']).to(device)
+    model = PureTranslationNet(correlation_bank.dx_values).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
     amp_enabled = device == 'cuda' and cfg.mixed_precision
     scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)
@@ -114,7 +117,7 @@ def train_recipe_set(cfg):
         checkpoint = torch.load(latest_path, map_location=device, weights_only=True)
         if checkpoint.get('git_commit') != cfg.git_commit:
             raise ValueError('Checkpoint Git commit does not match the current run')
-        if checkpoint.get('reichardt') != train_cache.metadata:
+        if checkpoint.get('detector') != detector_metadata:
             raise ValueError('Checkpoint detector configuration does not match cache')
         previous_index = checkpoint['training_set_index']
         previous_epoch = checkpoint['epoch_within_set']
@@ -152,8 +155,9 @@ def train_recipe_set(cfg):
             if device == 'cuda' and batch_index < cfg.profile_batches:
                 events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 events[0].record()
-            x = x.to(device, non_blocking=True).float()
+            x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
+            x = correlation_bank(x[:, None], validate=False)
             if events:
                 events[1].record()
             optimizer.zero_grad(set_to_none=True)
@@ -181,7 +185,8 @@ def train_recipe_set(cfg):
         if gpu_events:
             transfer_ms = sum(a.elapsed_time(b) for a, b, c in gpu_events) / len(gpu_events)
             compute_ms = sum(b.elapsed_time(c) for a, b, c in gpu_events) / len(gpu_events)
-            print(f'GPU sampled {len(gpu_events)} batches: transfer/cast {transfer_ms:.2f}ms; '
+            print(f'GPU sampled {len(gpu_events)} batches: transfer/correlation '
+                  f'{transfer_ms:.2f}ms; '
                   f'forward/backward/optimizer {compute_ms:.2f}ms per batch', flush=True)
         if next_rate < previous_rate:
             print(f'Training-loss plateau: learning rate reduced to {next_rate:.6g}', flush=True)
@@ -195,8 +200,8 @@ def train_recipe_set(cfg):
             'epochs_per_set': cfg.epochs_per_set,
             'loss': epoch_loss,
             'learning_rate': next_rate,
-            'reichardt': train_cache.metadata,
-            'n_input_channels': train_cache.n_channels,
+            'detector': detector_metadata,
+            'n_input_channels': len(correlation_bank.dx_values),
             'model_state_dict': model.state_dict(),
         }
         checkpoint = common | {

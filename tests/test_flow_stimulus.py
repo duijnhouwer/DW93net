@@ -7,41 +7,38 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 
+from features.dog_motion import DoGFilter
 from stimuli.generate_flow_xt_data import (
     StimConfig, generate_flow_xt_stim,
-    generate_flow_xt_dataset, generate_and_precompute,
+    generate_flow_xt_dataset, generate_and_precompute, generate_dog_dataset,
 )
 
 
 class OneStepStimulusTests(unittest.TestCase):
-    def test_seed_reproduces_stimuli_targets_and_reichardt_bundles(self):
+    def test_seed_reproduces_direct_dog_bundles_without_raw_files(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             outputs = []
-            for root in (first, second):
-                outputs.append(generate_and_precompute(
+            for bundle_size, root in enumerate((first, second), 1):
+                outputs.append(generate_dog_dataset(
                     output_root=root, n_samples=3,
                     speed_range=(0.001, 0.006), heading_deg_range=(-180, 180),
                     rot_deg_range=(0, 0), split=(1, 0, 0), seed=12345,
-                    stimulus_bundle_size=2,
+                    dog_bundle_size=bundle_size,
                     config=StimConfig(stim_wid_px=180, n_world_dots=20,
                                       x_supersampling=4)))
-            first_raw, first_cache = map(Path, outputs[0])
-            second_raw, second_cache = map(Path, outputs[1])
-            first_files = sorted(first_raw.rglob('*.pt'))
-            second_files = sorted(second_raw.rglob('*.pt'))
-            self.assertEqual([path.relative_to(first_raw) for path in first_files],
-                             [path.relative_to(second_raw) for path in second_files])
-            for left, right in zip(first_files, second_files):
-                torch.testing.assert_close(torch.load(left, weights_only=True),
-                                           torch.load(right, weights_only=True),
-                                           rtol=0, atol=0)
-            from stimuli.load_flow_xt_data import ReichardtDataset
-            left = ReichardtDataset(first_cache / 'train', keep_half=True)
-            right = ReichardtDataset(second_cache / 'train', keep_half=True)
+            first_cache, second_cache = map(Path, outputs)
+            self.assertFalse(list(Path(first).rglob('*.pt')))
+            self.assertFalse(list(Path(second).rglob('*.pt')))
+            from stimuli.load_flow_xt_data import DoGDataset
+            left = DoGDataset(first_cache / 'train')
+            right = DoGDataset(second_cache / 'train')
             self.assertEqual(left.files, right.files)
             for index in range(len(left)):
                 torch.testing.assert_close(left[index][0], right[index][0], rtol=0, atol=0)
                 torch.testing.assert_close(left[index][1], right[index][1], rtol=0, atol=0)
+                self.assertEqual(left[index][0].dtype, torch.float32)
+            metadata = json.loads((first_cache / 'dog.json').read_text())
+            self.assertEqual(metadata['storage_format'], 'dog-contrast-bundles-v1')
 
     def test_combined_generation_precomputes_sibling_cache(self):
         with tempfile.TemporaryDirectory() as root, patch(
@@ -57,6 +54,22 @@ class OneStepStimulusTests(unittest.TestCase):
             expected = Path(raw).parent / 'reichardt'
             self.assertEqual(Path(products), expected)
             precompute.assert_called_once_with(Path(raw), expected, stimulus_bundle_size=64)
+
+    def test_direct_dog_cache_matches_byte_decoded_filter(self):
+        intensities = torch.linspace(0, 1, 98, dtype=torch.float32).reshape(2, 49)
+        with tempfile.TemporaryDirectory() as root, patch(
+                'stimuli.generate_flow_xt_data.generate_flow_xt_stim',
+                return_value=intensities):
+            cache = Path(generate_dog_dataset(
+                output_root=root, n_samples=1, split=(1, 0, 0), seed=42,
+                dog_bundle_size=1,
+                config=StimConfig(stim_wid_px=49, n_world_dots=4,
+                                  x_supersampling=1)))
+            from stimuli.load_flow_xt_data import DoGDataset
+            saved, _ = DoGDataset(cache / 'train')[0]
+        decoded = (intensities * 255).round().to(torch.uint8).float() / 255
+        expected = DoGFilter()(decoded)[0, 0]
+        torch.testing.assert_close(saved, expected, rtol=0, atol=0)
 
     def test_dataset_saves_one_pair_per_file(self):
         for superimpose in (False, True):

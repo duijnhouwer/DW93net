@@ -13,6 +13,10 @@ spec = importlib.util.spec_from_file_location(
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+DETECTOR = {'displacement_min_px': -60, 'displacement_max_px': 60,
+            'displacement_step_px': 1, 'dog_sigma_center_px': 1.0,
+            'dog_sigma_surround_px': 3.0}
+
 
 def recipe_text(root):
     return f'''
@@ -24,7 +28,13 @@ output_path = "{root}/output"
 speed_range = [0.001, 0.006]
 heading_deg_range = [-180, 180]
 rot_deg_range = [0, 0]
-stimulus_bundle_size = 64
+dog_bundle_size = 64
+[detector]
+displacement_min_px = -60
+displacement_max_px = 60
+displacement_step_px = 1
+dog_sigma_center_px = 1.0
+dog_sigma_surround_px = 3.0
 [training_sets]
 path = "{root}/stimuli/training"
 number_of_sets = 3
@@ -75,7 +85,7 @@ class TrainingRecipeTests(unittest.TestCase):
             path.write_text(recipe_text(directory))
             recipe = module.load_recipe(path)
             self.assertEqual(recipe['training_sets']['number_of_sets'], 3)
-            self.assertEqual(recipe['stimuli']['stimulus_bundle_size'], 64)
+            self.assertEqual(recipe['stimuli']['dog_bundle_size'], 64)
             path.write_text(recipe_text(directory).replace(
                 'rot_deg_range = [0, 0]', 'rot_deg_range = [-0.5, 0.5]'))
             with self.assertRaisesRegex(ValueError, 'rotation is disabled'):
@@ -110,21 +120,20 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_generation_deletes_raw_and_reuses_exact_spec(self):
         stimuli = {'speed_range': [0.001, 0.006], 'heading_deg_range': [-180, 180],
-                   'rot_deg_range': [0, 0], 'stimulus_bundle_size': 64}
-        section = {'seed': 10, 'n_samples': 12}
+                   'rot_deg_range': [0, 0], 'dog_bundle_size': 64}
+        section = {'seed': 10, 'n_samples': 12, '_detector': DETECTOR}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'training'
             raw = path / 'parameters' / 'raw'
-            cache = path / 'parameters' / 'reichardt'
+            cache = path / 'parameters' / 'dog'
 
             def generate(**kwargs):
-                raw.mkdir(parents=True)
                 (cache / 'train').mkdir(parents=True)
-                (cache / 'reichardt.json').write_text('{}')
+                (cache / 'dog.json').write_text('{}')
                 (cache / 'train' / 'bundles.json').write_text('[]')
-                return str(raw), str(cache)
+                return str(cache)
 
-            with patch.object(module, 'generate_and_precompute', side_effect=generate) as mocked:
+            with patch.object(module, 'generate_dog_dataset', side_effect=generate) as mocked:
                 self.assertEqual(module._prepare_dataset(
                     path, 'train', section, stimuli, persistent=False), cache)
                 self.assertFalse(raw.exists())
@@ -134,7 +143,7 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_persistent_test_set_is_never_replaced_on_mismatch(self):
         stimuli = {'speed_range': [0.001, 0.006], 'heading_deg_range': [-180, 180],
-                   'rot_deg_range': [0, 0], 'stimulus_bundle_size': 64}
+                   'rot_deg_range': [0, 0], 'dog_bundle_size': 64}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'test'
             path.mkdir()
@@ -142,7 +151,8 @@ class TrainingRecipeTests(unittest.TestCase):
             (path / module.DATASET_STATE).write_text(json.dumps({
                 'spec': {'wrong': True}, 'cache': 'missing'}))
             with self.assertRaisesRegex(ValueError, 'differs from the recipe'):
-                module._prepare_dataset(path, 'test', {'seed': 1, 'n_samples': 10},
+                module._prepare_dataset(path, 'test', {'seed': 1, 'n_samples': 10,
+                                                       '_detector': DETECTOR},
                                         stimuli, persistent=True)
             self.assertTrue(path.exists())
 
@@ -210,8 +220,8 @@ class TrainingRecipeTests(unittest.TestCase):
             text = text.replace('samples_per_set = 5000', 'samples_per_set = 2')
             text = text.replace('epochs_per_set = 10', 'epochs_per_set = 1')
             text = text.replace('n_samples = 1000', 'n_samples = 2')
-            text = text.replace('stimulus_bundle_size = 64', '''
-stimulus_bundle_size = 2
+            text = text.replace('dog_bundle_size = 64', '''
+dog_bundle_size = 2
 fov_deg = 3
 n_world_dots = 20
 x_supersampling = 4''')

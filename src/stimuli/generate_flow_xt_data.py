@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+from datetime import datetime, timezone
 
 # Support launching this file directly from an IDE's "Run" button.  In that
 # case Python puts src/stimuli (rather than src) on sys.path, so the top-level
@@ -13,6 +14,8 @@ import numpy as np
 import torch
 from dataclasses import dataclass, replace
 from pathlib import Path
+from features.dog_motion import DoGFilter
+from stimuli.preprocessing_provenance import write_provenance, repository_state
 from stimuli.precompute_reichardt import precompute_dataset
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
@@ -44,6 +47,8 @@ def generate_flow_xt_dataset(
     split=(0.8, 0.1, 0.1),
     seed: int = None,
     config: StimConfig = StimConfig(),
+    _sample_consumer=None,
+    _save_raw: bool = True,
 ) -> str:
     """
     Generates a dataset of two-frame, one-step XT flow tensors and saves them into train/validate/test subfolders.
@@ -112,9 +117,9 @@ def generate_flow_xt_dataset(
         folder_name += "_superimposed"
     output_folder = os.path.join(output_root, folder_name, "raw")
 
-    # Create subfolders
-    for sub in ["train", "validate", "test"]:
-        os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
+    if _save_raw:
+        for sub in ["train", "validate", "test"]:
+            os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
 
     def range_metadata(values, is_fixed, **extra):
         if is_fixed:
@@ -138,9 +143,10 @@ def generate_flow_xt_dataset(
             rot_deg_range, rot_is_fixed, units="degrees_per_frame_step"),
         "split": list(split), "seed": seed, "stimulus_config": vars(config),
     }
-    with open(os.path.join(output_folder, "generation.json"), "w") as metadata_file:
-        json.dump(generation_metadata, metadata_file, indent=2)
-        metadata_file.write("\n")
+    if _save_raw:
+        with open(os.path.join(output_folder, "generation.json"), "w") as metadata_file:
+            json.dump(generation_metadata, metadata_file, indent=2)
+            metadata_file.write("\n")
 
     rng = np.random.default_rng(seed)
 
@@ -211,17 +217,134 @@ def generate_flow_xt_dataset(
         filename += ".pt"
 
         split_name = split_map[i]
-        filepath = os.path.join(output_folder, split_name, filename)
-
         # Round rather than truncate fractional intensities. At 255x
         # supersampling the rendered levels align with the byte grayscale grid.
-        torch.save((xt_tensor * 255).round().to(torch.uint8), filepath)
+        encoded = (xt_tensor * 255).round().to(torch.uint8)
+        if _sample_consumer is not None:
+            _sample_consumer(Path(output_folder), generation_metadata, split_name,
+                             filename, encoded, (dx, dz, rot_deg))
+        if _save_raw:
+            filepath = os.path.join(output_folder, split_name, filename)
+            torch.save(encoded, filepath)
 
         if i % 100 == 0:
-            print(f"Saved {split_name}/{filename}")
+            action = "Saved" if _save_raw else "Generated"
+            print(f"{action} {split_name}/{filename}")
 
-    print(f"\n✅ Done: {n_samples} samples saved to {output_folder}")
+    if _save_raw:
+        print(f"\n✅ Done: {n_samples} samples saved to {output_folder}")
     return output_folder
+
+
+class _DogBundleWriter:
+    """Collect generated stimuli into float32 signed DoG cache bundles."""
+
+    def __init__(self, destination, generation_metadata, bundle_size, dog_filter):
+        self.destination = Path(destination).resolve()
+        self.generation_metadata = generation_metadata
+        self.bundle_size = bundle_size
+        self.dog_filter = dog_filter
+        self.destination.mkdir(parents=True, exist_ok=False)
+        self.started = datetime.now(timezone.utc).isoformat()
+        self.repo = Path(__file__).resolve().parents[2]
+        self.provenance, self.initial_state = write_provenance(self.destination, self.repo)
+        self.pending = {split: [] for split in ("train", "validate", "test")}
+        self.indexes = {split: [] for split in self.pending}
+        self.bundle_numbers = {split: 0 for split in self.pending}
+        self.raw_shape = None
+        self.contrast_shape = None
+        self.n_samples = 0
+
+    def add(self, split, filename, encoded, target):
+        if (encoded.dtype != torch.uint8 or encoded.ndim != 3
+                or encoded.shape[:2] != (1, 2)):
+            raise ValueError(f"Invalid generated XT tensor: {filename}")
+        raw_shape = list(encoded.shape[1:])
+        if self.raw_shape is None:
+            self.raw_shape = raw_shape
+        elif raw_shape != self.raw_shape:
+            raise ValueError(f"Inconsistent generated XT shape: {filename}")
+        contrast = self.dog_filter(encoded.float() / 255)[0, 0]
+        if not torch.isfinite(contrast).all():
+            raise ValueError(f"Nonfinite DoG contrast: {filename}")
+        if self.contrast_shape is None:
+            self.contrast_shape = list(contrast.shape)
+        elif list(contrast.shape) != self.contrast_shape:
+            raise ValueError(f"Inconsistent DoG contrast shape: {filename}")
+        self.pending[split].append((filename, contrast, target))
+        self.n_samples += 1
+        if len(self.pending[split]) >= self.bundle_size:
+            self.flush(split)
+
+    def flush(self, split):
+        pending = self.pending[split]
+        if not pending:
+            return
+        folder = self.destination / split
+        folder.mkdir(parents=True, exist_ok=True)
+        name = f'bundle-{self.bundle_numbers[split]:09d}.npy'
+        bundle = np.empty(len(pending), dtype=np.dtype([
+            ('dog_contrast', np.float32, tuple(self.contrast_shape)),
+            ('target', np.float32, (3,)),
+        ]))
+        bundle['dog_contrast'] = np.stack([value.numpy() for _, value, _ in pending])
+        bundle['target'] = np.asarray([target for _, _, target in pending], dtype=np.float32)
+        np.save(folder / name, bundle)
+        self.indexes[split].extend(
+            [filename, name, row] for row, (filename, _, _) in enumerate(pending))
+        pending.clear()
+        self.bundle_numbers[split] += 1
+
+    def finish(self):
+        for split in self.pending:
+            self.flush(split)
+            folder = self.destination / split
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / 'bundles.json').write_text(json.dumps(self.indexes[split]) + '\n')
+        if repository_state(self.repo, self.destination) != self.initial_state:
+            raise RuntimeError("Source changed during generation; cache left incomplete")
+        metadata = {
+            **self.dog_filter.metadata,
+            'storage_format': 'dog-contrast-bundles-v1',
+            'storage_dtype': 'torch.float32',
+            'finite_validated': True,
+            'created_utc': self.started,
+            'completed_utc': datetime.now(timezone.utc).isoformat(),
+            'n_samples': self.n_samples,
+            'raw_shape': self.raw_shape,
+            'contrast_shape': self.contrast_shape,
+            'input_encoding': 'uint8 / 255',
+            'stimulus_generation': self.generation_metadata,
+            'software': self.provenance,
+        }
+        (self.destination / 'dog.json').write_text(json.dumps(metadata, indent=2) + '\n')
+        return metadata
+
+
+def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=3.,
+                         **generation_kwargs):
+    """Render stimuli in memory and persist only float32 signed DoG bundles."""
+    if type(dog_bundle_size) is not int or dog_bundle_size < 1:
+        raise ValueError('dog_bundle_size must be a positive integer')
+    writer = None
+
+    def consume(raw_folder, metadata, split, filename, encoded, target):
+        nonlocal writer
+        if writer is None:
+            writer = _DogBundleWriter(raw_folder.parent / 'dog', metadata, dog_bundle_size,
+                                      DoGFilter(sigma_center=sigma_center,
+                                                sigma_surround=sigma_surround))
+        # Keep a readable stable identifier without implying that a per-sample
+        # .pt file exists in this cache.
+        writer.add(split, Path(filename).stem, encoded, target)
+
+    raw_folder = Path(generate_flow_xt_dataset(
+        **generation_kwargs, _sample_consumer=consume, _save_raw=False)).resolve()
+    if writer is None:
+        raise ValueError('Cannot create an empty DoG dataset')
+    writer.finish()
+    print(f"\n✅ Float32 signed DoG bundles saved to {writer.destination}")
+    return str(writer.destination)
 
 
 def generate_and_precompute(*, precomputed_root=None, stimulus_bundle_size=64,

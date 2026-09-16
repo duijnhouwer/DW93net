@@ -13,7 +13,7 @@ from typing import Dict
 import re
 import json
 from pathlib import Path
-from features.dog_motion import DoGMotionBank
+from features.dog_motion import DoGFilter, DoGMotionBank
 from stimuli.stimulus_io import decode_stimulus
 
 
@@ -94,6 +94,54 @@ class ReichardtDataset(FlowXtDataset):
         return responses if self.keep_half else responses.float()
 
 
+class DoGDataset(Dataset):
+    """Load memory-mapped float32 signed DoG contrast bundles."""
+
+    def __init__(self, folder, expected_metadata=None):
+        self.folder = Path(folder)
+        self._mapped = {}
+        index_path = self.folder / 'bundles.json'
+        if not index_path.exists():
+            raise ValueError(f'DoG cache requires bundled storage: missing {index_path}')
+        self.bundle_index = json.loads(index_path.read_text())
+        self.files = [entry[0] for entry in self.bundle_index]
+        metadata = json.loads((self.folder.parent / 'dog.json').read_text())
+        if metadata.get('storage_format') != 'dog-contrast-bundles-v1':
+            raise ValueError('Unsupported DoG cache storage format')
+        if (metadata.get('storage_dtype') != 'torch.float32'
+                or metadata.get('finite_validated') is not True
+                or not isinstance(metadata.get('contrast_shape'), list)
+                or len(metadata['contrast_shape']) != 2
+                or metadata['contrast_shape'][0] != 2):
+            raise ValueError('Invalid DoG cache storage metadata')
+        dog_filter = DoGFilter.from_metadata(metadata)
+        self.metadata = dog_filter.metadata
+        if expected_metadata is not None and self.metadata != expected_metadata:
+            raise ValueError('DoG filter configuration does not match')
+
+    def __len__(self):
+        return len(self.bundle_index)
+
+    def __getitem__(self, index):
+        filename, bundle, row = self.bundle_index[index]
+        if bundle not in self._mapped:
+            if len(self._mapped) >= 4:
+                self._mapped.pop(next(iter(self._mapped)))
+            self._mapped[bundle] = np.load(self.folder / bundle, mmap_mode='r')
+        sample = self._mapped[bundle][row]
+        contrast = torch.from_numpy(sample['dog_contrast'].copy())
+        target = torch.from_numpy(sample['target'].copy())
+        if (contrast.ndim != 2 or contrast.shape[0] != 2
+                or contrast.dtype != torch.float32):
+            raise ValueError(f'Invalid DoG contrast tensor: {filename}')
+        if target.shape != (3,) or target.dtype != torch.float32 or not torch.isfinite(target).all():
+            raise ValueError(f'Invalid motion target in bundle: {filename}')
+        return contrast, target
+
+    def __getstate__(self):
+        return dict(self.__dict__, _mapped={})
+
+
 class MirroredReichardtDataset(Dataset):
     """In-memory horizontal reflections of cached Reichardt maps."""
 
@@ -123,9 +171,32 @@ class MirroredReichardtDataset(Dataset):
         return mirrored, mirrored_target
 
 
+class MirroredDoGDataset(Dataset):
+    """In-memory horizontal reflections of signed DoG contrasts."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        contrast, target = self.dataset[index]
+        if contrast.ndim != 2 or contrast.shape[0] != 2:
+            raise ValueError('Expected signed DoG contrast shaped [2, X]')
+        mirrored_target = target.clone()
+        mirrored_target[0] = -mirrored_target[0]
+        mirrored_target[2] = -mirrored_target[2]
+        return contrast.flip(-1), mirrored_target
+
+
 def with_mirrored_reichardt_training(dataset, dx_values):
     """Return originals followed by their horizontal reflections."""
     return ConcatDataset([dataset, MirroredReichardtDataset(dataset, dx_values)])
+
+
+def with_mirrored_dog_training(dataset):
+    return ConcatDataset([dataset, MirroredDoGDataset(dataset)])
 
 
 def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4,
@@ -216,7 +287,7 @@ def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
 def stimulus_set_name(root_folder):
     """Parameter-set name containing a raw or Reichardt directory."""
     root = Path(root_folder)
-    return root.parent.name if root.name in ('raw', 'reichardt') else root.name
+    return root.parent.name if root.name in ('raw', 'reichardt', 'dog') else root.name
 
 
 def require_pure_translation_root(root_folder):

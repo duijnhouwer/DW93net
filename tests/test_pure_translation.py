@@ -54,7 +54,7 @@ class PureTranslationTests(unittest.TestCase):
     def test_full_resolution_backward_and_roundtrip(self):
         torch.manual_seed(10)
         model = PureTranslationNet().eval()
-        x = torch.rand(1, 484, 1, 7062)
+        x = torch.rand(1, 121, 1, 7062)
         prediction = model(x)
         self.assertEqual(prediction.shape, (1, 3))
         prediction.square().sum().backward()

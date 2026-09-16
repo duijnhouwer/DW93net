@@ -2,24 +2,24 @@
 
 ## Repository layout
 
-Generated input examples and precomputed detector maps are local experiment
+Generated signed DoG contrast bundles are local experiment
 data and are ignored by Git. Their absolute locations are configured by the
 committed recipe.
 `src/stimuli/` contains the code that generates, preprocesses, loads, and
 displays those inputs. A committed `recipe/<network-name>.toml` generates the
 datasets, trains one network, selects its final weights, and evaluates them.
 
-Each parameter set groups its original images and precomputed responses:
+Each parameter set contains the compact detector stage used by training:
 
 ```text
 stimuli/<parameter-set>/
-  raw/          # generation.json and train/, validate/, test/ images
-  reichardt/    # detector metadata, provenance, and matching split responses
+  dog/          # dog.json, provenance, and train/validate/test bundles
 ```
 
-Generation returns the `raw/` path; combined generation/preprocessing writes
-its sibling `reichardt/`. The orchestrator supplies this cache path to the trainer; evaluation
-`--data` points to `stimuli/<parameter-set>/reichardt/`.
+The orchestrator renders Flow-XT stimuli and applies the DoG filter in memory,
+then writes only float32 signed DoG bundles. Training and evaluation calculate
+the requested shifted correlations on the model device. Evaluation `--data`
+points to `stimuli/<parameter-set>/dog/`.
 
 ## Unattended training recipes
 
@@ -48,9 +48,9 @@ The runner requires a clean commit and CUDA by default. For a recipe named
 optional predecessor. Model-only candidates are saved at the configured epoch
 interval.
 
-Each training seed creates a new dataset at `training_sets.path`. Raw stimuli
-are deleted as soon as their Reichardt bundles are complete, and the entire
-training cache is deleted after its epochs. The learning-rate schedule and
+Each training seed creates a new DoG dataset at `training_sets.path` without
+writing intermediate Flow-XT files. The entire training cache is deleted after
+its epochs. The learning-rate schedule and
 optimizer continue across replacements. After all training, validation is
 generated once and evaluates every candidate without shuffling. The best
 normalized-RMSE candidate is promoted to `final/model.pt`; validation is then
@@ -73,40 +73,34 @@ section. The scheduler monitors training loss; its history continues across
 training sets and survives restarts. Validation happens after training finishes.
 Run only one orchestrator per network output directory at a time.
 
-Training also presents an in-memory horizontal reflection of every Reichardt
-response by default (`optimization.mirror_train_stimuli = true`). It reverses the
-spatial and signed-displacement axes within each of the four polarity groups,
-and changes the motion target from `[dx, dz, rot]` to `[-dx, dz, -rot]`. Validation
+Training also presents an in-memory horizontal reflection of every signed DoG
+contrast by default (`optimization.mirror_train_stimuli = true`). It reverses
+the spatial axis and changes the motion target from `[dx, dz, rot]` to
+`[-dx, dz, -rot]`; online correlation then produces the reversed displacement
+responses. Validation
 and test examples remain unchanged.
 
 GPU feeding defaults to batches of 64 and CUDA float16 mixed precision (with
-float32 loss and gradient scaling). Cached products remain float16 through
-loading, augmentation, pinned memory, and transfer; conversion happens on the
-device. CPU training and evaluation continue to use float32 model computation.
+float32 loss and gradient scaling). Cached signed DoG contrast remains float32
+through loading and transfer. Correlations are calculated in VRAM immediately
+before the model. CPU training and evaluation use the same float32 path.
 Set `optimization.mixed_precision = false` to compare numerical behavior. Larger
 batches change optimizer updates per epoch, so compare validation quality as
 well as throughput; reduce `batch_size` if your run exceeds available VRAM.
 Scaler state is saved for resume.
 
 Each epoch reports samples/second and host time waiting for the loader. On CUDA,
-`optimization.profile_batches` (default 20; 0 disables it) samples transfer/cast and
+`optimization.profile_batches` (default 20; 0 disables it) samples transfer/correlation and
 model/optimizer durations using GPU events. The first samples include warmup;
 use later epochs for comparisons. Loader wait can overlap queued GPU work and
 is not itself GPU idle time. Loss totals synchronize once per phase instead of
 once per batch, and the allocator cache is retained between epochs.
 
-Reichardt caches use memory-mapped NumPy stimulus bundles. The bundle size defaults
-to 64 and must be at least 1; a size of 1 stores one stimulus per bundle.
-`ReichardtDataset` reads only this bundled format. Each bundle stores
-`reichardt_responses` and their float32
-`[dx, dz, rot]` targets as binary fields, so the loader does not parse targets
-from filenames. Bundles preserve all four polarity groups and exact float16
-response values, avoiding a change to the model's input representation. They
-reduce file-opening overhead but do not compress the cache. The writer checks
-finite values after float16 conversion before publishing `reichardt.json`;
-loading checks shape/dtype without repeating a finite scan every epoch.
-
-The orchestrator generates raw stimuli and bundles automatically.
+DoG caches use memory-mapped NumPy bundles. `stimuli.dog_bundle_size` defaults
+to 64 and must be at least 1. `DoGDataset` reads this format. Each row stores a
+float32 signed contrast `[2,X]` and its float32 `[dx,dz,rot]` target; targets are
+never parsed from filenames. The writer validates finite values before
+publishing `dog.json`, and the loader validates shape and dtype.
 
 ## Reusable training evaluation
 
@@ -115,7 +109,7 @@ From the repository root, evaluate saved checkpoints with:
 ```bash
 /home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py \
   --checkpoints /absolute/output/translation_only/checkpoints \
-  --data /absolute/validation/cache/parameter-set/reichardt
+  --data /absolute/validation/cache/parameter-set/dog
 ```
 
 The current experiment recovers translation vectors from one-step flow fields
@@ -253,7 +247,7 @@ The scientific quantities above are represented in the code as follows:
 
 
 
-## Reichardt product preprocessing
+## DoG caching and online correlation
 
 Each stimulus is a pair of time bins: the initial dots and the same dots after
 one translation-and-rotation step. There are no dot lifetimes, replacements, or
@@ -261,14 +255,13 @@ boundary wrapping; X-only supersampling preserves fractional intensities.
 By default, `stim_wid_px = round(fov_deg * 60)` provides nominal one-arcminute
 angular sampling: a 120° FOV uses 7,200 pixels. An explicit `stim_wid_px`
 overrides this default, for example in small tests.
-`generate_flow_xt_dataset(..., n_samples=M)` saves M `.pt` files of shape
-`[1, 2, X]`, one stimulus per file, as **uint8 grayscale (0–255)**. Default
+The recipe pipeline renders each `[2,X]` Flow-XT stimulus in memory. Default
 X supersampling is **255**, so the rendered intensity steps align with the byte
 levels. Values are rounded to the nearest byte after summing and clipping any
 superimposed layers. Explicit supersampling overrides remain supported, with
-quantization to the same byte grid at save time. The renderer itself still
-returns float32 intensities in [0, 1]. Each file has newly sampled motion
-parameters and dot positions.
+quantization to the same byte grid before DoG filtering. The byte tensor is
+decoded in memory and never written by the orchestrator. The standalone
+`generate_flow_xt_dataset` utility remains available for focused experiments.
 
 Translation is sampled in polar coordinates. The defaults draw speed uniformly
 from the half-open interval `[0.001, 0.015)` scene units per frame step and
@@ -279,70 +272,50 @@ minimum avoids samples whose translation is zero or too close to zero to define
 a useful heading. Derived `dx` and `dz` are rounded to nano-units before both
 rendering and filename labeling.
 
-The generated folder name records speed, heading, conservative Cartesian
-component bounds, and rotation bounds. Its `generation.json` records the exact
-half-open interval semantics, seed, split, coordinate conversion, and stimulus
-configuration. When present, this document is copied into the preprocessed
-cache's `reichardt.json` as `stimulus_generation`.
-
-`FlowXtDataset`, preprocessing, and the sample viewer decode uint8 by dividing
-by 255 before using the intensities. Raw files must contain uint8 tensors;
-product files must contain float16 tensors.
+The generated folder name records speed, heading, and rotation bounds.
+`dog.json` records the exact half-open interval semantics, seed, split,
+coordinate conversion, and stimulus configuration.
 
 Preprocessing applies a **1D luminance DoG independently to each frame**:
 center sigma 1 pixel, surround sigma 3 pixels, kernel radius 9 pixels (19 taps).
 Both discrete Gaussians are separately normalized to unit sum. Filtering uses
 valid support, no padding, no temporal filtering, and no per-image rescaling.
-The signed contrast is split into `ON=relu(DoG)` and `OFF=relu(-DoG)`.
+The float32 signed contrast `[2,X-2r]` is stored directly. ON and OFF remain
+recoverable as `relu(contrast)` and `relu(-contrast)`.
 
-`DoGMotionBank(dx_values)` then computes `ON(0,x-s)*ON(1,x)` and
-`OFF(0,x-s)*OFF(1,x)`, plus `ON(0,x-s)*OFF(1,x)` and
-`OFF(0,x-s)*ON(1,x)`, for each signed displacement `s` and a fixed one-frame
-delay. Four nonnegative blocks are saved in order: ON–ON, OFF–OFF, ON–OFF,
-OFF–ON, each in the supplied span order. The first polarity is the first frame;
-the second polarity is the second frame.
-
-The model reconstructs signed correlation as `ON_ON + OFF_OFF - ON_OFF - OFF_ON`
-before local pooling and directional opponency. Negative responses are retained
-until opposite-direction subtraction and rectification. The suppressive surround
-uses absolute signed correlation to keep its denominator positive. These fixed
-interactions are a starting hypothesis; the separate cached blocks remain
-available for future divisive or learned cross-polarity interactions.
+For each training or evaluation batch, `ReichardtBank(dx_values)` computes the
+signed product `contrast(0,x-s)*contrast(1,x)` on the model device for every
+configured displacement `s`. This equals
+`ON_ON + OFF_OFF - ON_OFF - OFF_ON` algebraically, without allocating four
+redundant polarity blocks. Negative responses remain available until local
+opposite-direction suppression and rectification.
 
 For radius `r`, `left=r+max(0,max(dx_values))` and
 `right=r+max(0,-min(dx_values))`, a `[2,X]` or `[1,2,X]` stimulus produces
-`[4*len(dx_values),1,X-left-right]`. The defaults give `[484,1,7062]` at X=7200.
+`[len(dx_values),1,X-left-right]`. The defaults give `[121,1,7062]` at X=7200.
 Positions are anchored in the present frame's original pixel coordinates.
-Filtering and products use float32; cached products use float16. The lower-level
-`ReichardtBank` remains the product primitive; cache generation always uses
-`DoGMotionBank`.
+Filtering, cached contrast, and online correlations use float32.
 
 For standalone preprocessing experiments, `python -m stimuli.precompute_reichardt`
 accepts separate raw-source and cache-destination paths.
 
-Preprocessing preserves splits and label filenames, and writes `reichardt.json`
-with full preprocessing metadata only after completion. Existing destinations are
-refused. Products are computed from normalized intensities in float32 and stored
-as **float16**, with rounding and an overflow check. Regenerate caches when
-stimuli or detector settings change. The fixed-delay cache format is
-`dog-onoff-products-v2`.
-
-`ReichardtDataset` reads cached maps as float32. `PureTranslationNet` learns from these
-maps downstream of detection. Checkpoints retain detector metadata, and
-validation/evaluation reject mismatched configurations. Use the cached dataset
-root for evaluation; start fresh when detector configurations change.
+Generation preserves splits and stable sample identifiers, and publishes
+`dog.json` only after completion. Existing destinations are refused. The cache
+format is `dog-contrast-bundles-v1`. `DoGDataset` reads the contrast bundles;
+checkpoints retain both DoG and displacement metadata, and evaluation rejects
+incompatible caches.
 
 Training uses range-normalized MSE on each example's motion prediction.
 
 The recipe configures training and evaluation workers separately (eight by default).
 Training workers persist across epochs; CUDA batches use pinned RAM and
-non-blocking transfers. Training loads and transfers float16 products, then
-converts them on the device. Set `optimization.num_workers = 0` for in-process
+non-blocking transfers. Training loads and transfers float32 DoG contrast, then
+computes correlations on the device. Set `optimization.num_workers = 0` for in-process
 loading. Programs using workers need an `if __name__ == '__main__':` entry point.
 
 The earlier [pipeline benchmark](benchmarks/storage-20260910-final/REPORT.md)
 found four workers competitive with individual files on this machine. Current
-Reichardt caches use memory-mapped stimulus bundles; recheck throughput on a
+DoG caches use memory-mapped stimulus bundles; recheck throughput on a
 full dataset when tuning bundle and worker counts.
 
 Run the correctness and pipeline tests with the project's Python environment:
@@ -354,7 +327,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ## Translation-only model baseline
 
 On `toward_translation`, `src/models/pure_translation.py` replaces the original
-regressor. It consumes `[B,C,1,X]` product maps and predicts `[dx,dz,rot]` in
+regressor. It consumes `[B,D,1,X]` signed correlations and predicts `[dx,dz,rot]` in
 scene units per frame step and degrees per step. Current translation-only
 datasets target zero on `rot`. Heading is `atan2(dx,dz)` (zero toward +Z,
 positive toward +X); translation distance per step is `hypot(dx,dz)`. Heading
@@ -364,20 +337,18 @@ requires the step duration.
 The default detector bank now includes every integer displacement from **-60
 through +60 pixels per frame step**. At 7200 pixels over 120 degrees, that is
 approximately +/-1 degree per step; degrees/second additionally requires the
-frame duration. With DoG and four polarity pairs it produces `[484,1,7062]` maps: 6,836,016
-bytes of float16 payload per sample, excluding file overhead.
-Existing caches do not acquire new channels automatically: precompute from raw
-stimuli into a new destination using the default CLI settings. Raw stimuli do
-not need regeneration solely to change the detector bank. This extends the
-measurement range, not the camera-translation label ranges, and still cannot
-represent displacements outside +/-60.
+frame duration. Online correlation produces `[121,1,7062]` maps and discards
+them after the batch. Changing the displacement bank does not require new DoG
+stimuli, but it does define a different committed detector and checkpoint run.
+The configured range extends measurement capacity, not the camera-translation
+label ranges, and cannot represent displacements outside +/-60.
 
 The model has explicit V1, MT, and MST inspired stages:
 
-- **V1:** combine the four products into signed correlations; form local responses over 15 pixels
+- **V1:** form local signed-correlation responses over 15 pixels
   and a second population with a broader, same-channel absolute-correlation divisive surround (61
   pixels, semisaturation 0.03). These are functional rate approximations using
-  cached products, not a physiological motion-energy model.
+  online correlations, not a physiological motion-energy model.
 - **MT input:** subtract equal-magnitude opposite-direction responses and
   rectify locally, before larger spatial pooling. Zero-span evidence passes
   through. Pairing uses actual signed metadata, so both signs must be supplied.
@@ -411,11 +382,9 @@ and [Duffy & Wurtz (1991)](https://doi.org/10.1152/jn.1991.65.6.1329).
 
 ## Preprocessing provenance and recovery
 
-Every new cache root contains `reichardt.json`, recording DoG sigmas/support,
-normalization and boundary rules, polarity/displacement ordering, crop offsets,
-input/output shapes and dtypes, sample count, UTC start/end times, source path,
-and the full Git HEAD commit ID. `inputs.json` records each input's relative
-path and SHA-256 of the exact bytes loaded. The metadata records its hash too.
+Every new cache root contains `dog.json`, recording DoG sigmas/support,
+normalization and boundary rules, input/output shapes and dtypes, sample count,
+UTC start/end times, generation settings, and the full Git HEAD commit ID.
 
 The `provenance/` folder contains:
 
@@ -431,10 +400,10 @@ The `provenance/` folder contains:
 Extract the source archive into an **empty directory** to recover the code.
 The archive contains tracked and nonignored untracked files, excluding the
 current output directory; Git-ignored datasets/environments and Git history
-are not bundled. Dependencies are recorded, not packaged. Artifact hashes are
-stored in `reichardt.json`. Git must be available with an existing HEAD commit.
+are not bundled. Dependencies are recorded, not packaged. Artifact metadata is
+stored in `dog.json`. Git must be available with an existing HEAD commit.
 If repository files change during preprocessing, the run fails without publishing
-`reichardt.json`, so training cannot mistake the partial cache for a complete one.
+`dog.json`, so training cannot mistake the partial cache for a complete one.
 
 Use `--sigma-center` and `--sigma-surround` to override the pixel sigmas in
 standalone preprocessing; the kernel radius is always `ceil(3*sigma_surround)`.

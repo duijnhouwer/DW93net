@@ -14,7 +14,14 @@ near_exclusion_radius = 0.04
 n_world_dots = 1000
 superimpose = false
 x_supersampling = 255
-stimulus_bundle_size = 64
+dog_bundle_size = 64
+
+[detector]
+displacement_min_px = -60
+displacement_max_px = 60
+displacement_step_px = 1
+dog_sigma_center_px = 1.0
+dog_sigma_surround_px = 3.0
 
 [training_sets]
 path = "/home/jacob/Documents/dw93net_stimuli/training"
