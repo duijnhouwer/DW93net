@@ -22,7 +22,7 @@ class OneStepStimulusTests(unittest.TestCase):
                 outputs.append(generate_dog_dataset(
                     output_root=root, n_samples=3,
                     speed_range=(0.001, 0.006), heading_deg_range=(-180, 180),
-                    rot_deg_range=(0, 0), split=(1, 0, 0), seed=12345,
+                    rot_deg_range=(0, 0), role='train', seed=12345,
                     dog_bundle_size=bundle_size,
                     config=StimConfig(stim_wid_px=180, n_world_dots=20,
                                       x_supersampling=4)))
@@ -46,7 +46,7 @@ class OneStepStimulusTests(unittest.TestCase):
             raw, products = generate_and_precompute(
                 output_root=root, n_samples=1,
                 speed_range=(0.005, 0.005), heading_deg_range=(0, 0),
-                rot_deg_range=(0, 0), split=(1, 0, 0), seed=4,
+                rot_deg_range=(0, 0), role='train', seed=4,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
 
@@ -61,7 +61,7 @@ class OneStepStimulusTests(unittest.TestCase):
                 'stimuli.generate_flow_xt_data.generate_flow_xt_stim',
                 return_value=intensities):
             cache = Path(generate_dog_dataset(
-                output_root=root, n_samples=1, split=(1, 0, 0), seed=42,
+                output_root=root, n_samples=1, role='train', seed=42,
                 dog_bundle_size=1,
                 config=StimConfig(stim_wid_px=49, n_world_dots=4,
                                   x_supersampling=1)))
@@ -78,7 +78,7 @@ class OneStepStimulusTests(unittest.TestCase):
                     output_root=root, n_samples=2,
                     speed_range=(0.001, 0.002), heading_deg_range=(0, 1),
                     rot_deg_range=(0, 0),
-                    split=(1, 0, 0), seed=42,
+                    role='train', seed=42,
                     config=StimConfig(stim_wid_px=128, n_world_dots=120,
                                       x_supersampling=10, superimpose=superimpose))
                 files = list(Path(folder).rglob('*.pt'))
@@ -93,6 +93,7 @@ class OneStepStimulusTests(unittest.TestCase):
                 self.assertEqual(metadata['speed_range']['high_exclusive'], 0.002)
                 self.assertEqual(metadata['heading_deg_range']['convention'],
                                  '0=+Z_forward,-90=-X_left,+90=+X_right')
+                self.assertEqual(metadata['role'], 'train')
 
     def test_polar_sampling_avoids_zero_speed_and_obeys_heading_convention(self):
         from stimuli.load_flow_xt_data import parse_camera_motion_from_filename
@@ -101,7 +102,7 @@ class OneStepStimulusTests(unittest.TestCase):
             folder = generate_flow_xt_dataset(
                 output_root=root, n_samples=40, speed_range=(0.001, 0.015),
                 heading_deg_range=(-180, 180), rot_deg_range=(0, 0),
-                split=(1, 0, 0), seed=17,
+                role='train', seed=17,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
             self.assertIn('nspeed=1000000,15000000', Path(folder).parent.name)
@@ -128,7 +129,7 @@ class OneStepStimulusTests(unittest.TestCase):
             folder = generate_flow_xt_dataset(
                 output_root=root, n_samples=3, speed_range=(0.005, 0.005),
                 heading_deg_range=(-90, -90), rot_deg_range=(0, 0),
-                split=(1, 0, 0), seed=23,
+                role='train', seed=23,
                 config=StimConfig(stim_wid_px=32, n_world_dots=4,
                                   x_supersampling=1))
             self.assertIn('nspeed=5000000,5000000', Path(folder).parent.name)
@@ -179,8 +180,12 @@ class OneStepStimulusTests(unittest.TestCase):
                                      ((.001, .01), (-181, 180)),
                                      ((.001, .01), (-180, 181))]:
                 with self.subTest(speeds=speeds, headings=headings), self.assertRaises(ValueError):
-                    generate_flow_xt_dataset(root, 1, speeds, headings, (0, 0),
-                                             (1, 0, 0), 1, config)
+                    generate_flow_xt_dataset(
+                        root, 1, speeds, headings, (0, 0), role='train', seed=1,
+                        config=config)
+            with self.assertRaisesRegex(ValueError, 'role must be'):
+                generate_flow_xt_dataset(root, 1, (.001, .01), (-180, 180),
+                                         (0, 0), role='mixed', seed=1, config=config)
 
     def test_default_supersampling_aligns_with_byte_levels(self):
         config = StimConfig(stim_wid_px=128, n_world_dots=120)

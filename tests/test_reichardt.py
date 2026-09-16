@@ -129,7 +129,7 @@ class ReichardtTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 with patch('stimuli.generate_flow_xt_data.generate_flow_xt_stim', return_value=intensities):
                     folder = generate_flow_xt_dataset(
-                        output_root=directory, n_samples=1, split=(1, 0, 0), seed=42,
+                        output_root=directory, n_samples=1, role='train', seed=42,
                         config=StimConfig(superimpose=superimpose))
                 saved = torch.load(next((Path(folder) / 'train').glob('*.pt')), weights_only=True)
                 levels = [0, 51, 204, 255, 255] if superimpose else [0, 26, 102, 204, 255]
@@ -265,7 +265,7 @@ class ReichardtTests(unittest.TestCase):
             root = Path(directory)
             cache = Path(generate_dog_dataset(
                 output_root=str(root), n_samples=2, speed_range=(1.0, 2.0),
-                heading_deg_range=(0, 90), rot_deg_range=(0, 0), split=(1, 0, 0),
+                heading_deg_range=(0, 90), rot_deg_range=(0, 0), role='train',
                 seed=4, dog_bundle_size=2,
                 config=StimConfig(stim_wid_px=49, n_world_dots=10, x_supersampling=1)))
             checkpoints = root / 'checkpoints'

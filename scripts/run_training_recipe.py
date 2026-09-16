@@ -306,8 +306,6 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent):
             raise ValueError(f'Refusing to overwrite a nonempty unmanaged path: {path}')
     path.mkdir(parents=True, exist_ok=True)
     (path / MANAGED_MARKER).touch()
-    split = {'train': [1.0, 0.0, 0.0], 'validate': [0.0, 1.0, 0.0],
-             'test': [0.0, 0.0, 1.0]}[role]
     config_values = {key: value for key, value in stimuli.items()
                      if key not in {'speed_range', 'heading_deg_range',
                                     'rot_deg_range', 'dog_bundle_size'}}
@@ -318,7 +316,7 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent):
         sigma_surround=detector['dog_sigma_surround_px'],
         n_samples=section['n_samples'], speed_range=stimuli['speed_range'],
         heading_deg_range=stimuli['heading_deg_range'], rot_deg_range=stimuli['rot_deg_range'],
-        split=split, seed=section['seed'], config=StimConfig(**config_values))
+        role=role, seed=section['seed'], config=StimConfig(**config_values))
     cache = Path(cache).resolve()
     if path not in cache.parents:
         raise RuntimeError('Generator returned a path outside its managed dataset directory')

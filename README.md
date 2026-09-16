@@ -13,7 +13,7 @@ Each parameter set contains the compact detector stage used by training:
 
 ```text
 stimuli/<parameter-set>/
-  dog/          # dog.json, provenance, and train/validate/test bundles
+  dog/          # dog.json, provenance, and one train/validate/test role
 ```
 
 The orchestrator renders Flow-XT stimuli and applies the DoG filter in memory,
@@ -273,7 +273,7 @@ a useful heading. Derived `dx` and `dz` are rounded to nano-units before both
 rendering and filename labeling.
 
 The generated folder name records speed, heading, and rotation bounds.
-`dog.json` records the exact half-open interval semantics, seed, split,
+`dog.json` records the exact half-open interval semantics, seed, dataset role,
 coordinate conversion, and stimulus configuration.
 
 Preprocessing applies a **1D luminance DoG independently to each frame**:
@@ -299,7 +299,7 @@ Filtering, cached contrast, and online correlations use float32.
 For standalone preprocessing experiments, `python -m stimuli.precompute_reichardt`
 accepts separate raw-source and cache-destination paths.
 
-Generation preserves splits and stable sample identifiers, and publishes
+Generation preserves the requested role and stable sample identifiers, and publishes
 `dog.json` only after completion. Existing destinations are refused. The cache
 format is `dog-contrast-bundles-v1`. `DoGDataset` reads the contrast bundles;
 checkpoints retain both DoG and displacement metadata, and evaluation rejects
@@ -373,7 +373,7 @@ Training and evaluation stop before loading files unless the dataset root
 explicitly specifies `nrot=0,0`.
 Checkpoints store detector metadata and the full Git commit ID. Resume requires
 the exact committed code and recipe used to create the network.
-Keep FOV, width, crop, and detector semantics fixed across splits. Pipeline
+Keep FOV, width, crop, and detector semantics fixed across dataset roles. Pipeline
 tests verify implementation, not translation accuracy.
 
 Biological references: [Qian, Andersen & Adelson (1994)](https://doi.org/10.1523/JNEUROSCI.14-12-07381.1994),

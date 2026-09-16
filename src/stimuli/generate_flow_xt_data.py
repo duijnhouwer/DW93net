@@ -44,14 +44,14 @@ def generate_flow_xt_dataset(
     speed_range=(0.01, 0.01),
     heading_deg_range=(-180, 180),
     rot_deg_range=(-0.5, 0.5),
-    split=(0.8, 0.1, 0.1),
+    role: str = "train",
     seed: int = None,
     config: StimConfig = StimConfig(),
     _sample_consumer=None,
     _save_raw: bool = True,
 ) -> str:
     """
-    Generates a dataset of two-frame, one-step XT flow tensors and saves them into train/validate/test subfolders.
+    Generate one role-specific dataset of two-frame, one-step XT flow tensors.
     Speed, heading, and rotation are each specified as a two-value range. Equal
     endpoints mean one fixed value; increasing endpoints define a half-open
     uniform distribution. Heading 0 degrees is forward (+Z), -90 is left (-X),
@@ -64,7 +64,8 @@ def generate_flow_xt_dataset(
     `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities.
-    Each file contains one uint8 pair with shape [1, 2, X], scaled to 0..255.
+    When raw saving is enabled, each file contains one uint8 pair with shape
+    [1, 2, X], scaled to 0..255, under the requested role directory.
     """
 
     if output_root is None:
@@ -81,10 +82,6 @@ def generate_flow_xt_dataset(
             )
         return values, bool(values[0] == values[1])
 
-    def validate_split(split):
-        if not np.isclose(sum(split), 1.0):
-            raise ValueError(f"split must sum to 1. Got: {split}")
-
     speed_range, speed_is_fixed = validate_range('speed_range', speed_range)
     heading_deg_range, heading_is_fixed = validate_range(
         'heading_deg_range', heading_deg_range)
@@ -93,7 +90,8 @@ def generate_flow_xt_dataset(
         raise ValueError("speed_range must have a strictly positive lower bound")
     if heading_deg_range[0] < -180 or heading_deg_range[1] > 180:
         raise ValueError("heading_deg_range must lie within [-180, 180]")
-    validate_split(split)
+    if role not in {"train", "validate", "test"}:
+        raise ValueError(f"role must be train, validate, or test. Got: {role}")
 
     if seed is None:
         import time
@@ -118,8 +116,7 @@ def generate_flow_xt_dataset(
     output_folder = os.path.join(output_root, folder_name, "raw")
 
     if _save_raw:
-        for sub in ["train", "validate", "test"]:
-            os.makedirs(os.path.join(output_folder, sub), exist_ok=True)
+        os.makedirs(os.path.join(output_folder, role), exist_ok=True)
 
     def range_metadata(values, is_fixed, **extra):
         if is_fixed:
@@ -141,7 +138,7 @@ def generate_flow_xt_dataset(
         "conversion": {"dx": "speed*sin(heading)", "dz": "speed*cos(heading)"},
         "rot_deg_range": range_metadata(
             rot_deg_range, rot_is_fixed, units="degrees_per_frame_step"),
-        "split": list(split), "seed": seed, "stimulus_config": vars(config),
+        "role": role, "seed": seed, "stimulus_config": vars(config),
     }
     if _save_raw:
         with open(os.path.join(output_folder, "generation.json"), "w") as metadata_file:
@@ -149,21 +146,6 @@ def generate_flow_xt_dataset(
             metadata_file.write("\n")
 
     rng = np.random.default_rng(seed)
-
-    # Compute number of samples per split
-    n_train = int(n_samples * split[0])
-    n_validate = int(n_samples * split[1])
-    n_test = n_samples - n_train - n_validate
-    split_counts = [n_train, n_validate, n_test]
-    split_names = ["train", "validate", "test"]
-
-    # Prepare shuffled list of indices and assign split
-    indices = rng.permutation(n_samples)
-    split_map = np.empty(n_samples, dtype=object)
-    current = 0
-    for name, count in zip(split_names, split_counts):
-        split_map[indices[current:current + count]] = name
-        current += count
 
     for i in range(n_samples):
         # Component labels are quantized below. Resample the vanishingly thin
@@ -216,20 +198,19 @@ def generate_flow_xt_dataset(
             filename += "_superimposed"
         filename += ".pt"
 
-        split_name = split_map[i]
         # Round rather than truncate fractional intensities. At 255x
         # supersampling the rendered levels align with the byte grayscale grid.
         encoded = (xt_tensor * 255).round().to(torch.uint8)
         if _sample_consumer is not None:
-            _sample_consumer(Path(output_folder), generation_metadata, split_name,
+            _sample_consumer(Path(output_folder), generation_metadata, role,
                              filename, encoded, (dx, dz, rot_deg))
         if _save_raw:
-            filepath = os.path.join(output_folder, split_name, filename)
+            filepath = os.path.join(output_folder, role, filename)
             torch.save(encoded, filepath)
 
         if i % 100 == 0:
             action = "Saved" if _save_raw else "Generated"
-            print(f"{action} {split_name}/{filename}")
+            print(f"{action} {role}/{filename}")
 
     if _save_raw:
         print(f"\n✅ Done: {n_samples} samples saved to {output_folder}")
@@ -239,23 +220,24 @@ def generate_flow_xt_dataset(
 class _DogBundleWriter:
     """Collect generated stimuli into float32 signed DoG cache bundles."""
 
-    def __init__(self, destination, generation_metadata, bundle_size, dog_filter):
+    def __init__(self, destination, generation_metadata, bundle_size, dog_filter, role):
         self.destination = Path(destination).resolve()
         self.generation_metadata = generation_metadata
         self.bundle_size = bundle_size
         self.dog_filter = dog_filter
+        self.role = role
         self.destination.mkdir(parents=True, exist_ok=False)
         self.started = datetime.now(timezone.utc).isoformat()
         self.repo = Path(__file__).resolve().parents[2]
         self.provenance, self.initial_state = write_provenance(self.destination, self.repo)
-        self.pending = {split: [] for split in ("train", "validate", "test")}
-        self.indexes = {split: [] for split in self.pending}
-        self.bundle_numbers = {split: 0 for split in self.pending}
+        self.pending = []
+        self.index = []
+        self.bundle_number = 0
         self.raw_shape = None
         self.contrast_shape = None
         self.n_samples = 0
 
-    def add(self, split, filename, encoded, target):
+    def add(self, filename, encoded, target):
         if (encoded.dtype != torch.uint8 or encoded.ndim != 3
                 or encoded.shape[:2] != (1, 2)):
             raise ValueError(f"Invalid generated XT tensor: {filename}")
@@ -271,36 +253,34 @@ class _DogBundleWriter:
             self.contrast_shape = list(contrast.shape)
         elif list(contrast.shape) != self.contrast_shape:
             raise ValueError(f"Inconsistent DoG contrast shape: {filename}")
-        self.pending[split].append((filename, contrast, target))
+        self.pending.append((filename, contrast, target))
         self.n_samples += 1
-        if len(self.pending[split]) >= self.bundle_size:
-            self.flush(split)
+        if len(self.pending) >= self.bundle_size:
+            self.flush()
 
-    def flush(self, split):
-        pending = self.pending[split]
-        if not pending:
+    def flush(self):
+        if not self.pending:
             return
-        folder = self.destination / split
+        folder = self.destination / self.role
         folder.mkdir(parents=True, exist_ok=True)
-        name = f'bundle-{self.bundle_numbers[split]:09d}.npy'
-        bundle = np.empty(len(pending), dtype=np.dtype([
+        name = f'bundle-{self.bundle_number:09d}.npy'
+        bundle = np.empty(len(self.pending), dtype=np.dtype([
             ('dog_contrast', np.float32, tuple(self.contrast_shape)),
             ('target', np.float32, (3,)),
         ]))
-        bundle['dog_contrast'] = np.stack([value.numpy() for _, value, _ in pending])
-        bundle['target'] = np.asarray([target for _, _, target in pending], dtype=np.float32)
+        bundle['dog_contrast'] = np.stack([value.numpy() for _, value, _ in self.pending])
+        bundle['target'] = np.asarray([target for _, _, target in self.pending], dtype=np.float32)
         np.save(folder / name, bundle)
-        self.indexes[split].extend(
-            [filename, name, row] for row, (filename, _, _) in enumerate(pending))
-        pending.clear()
-        self.bundle_numbers[split] += 1
+        self.index.extend(
+            [filename, name, row] for row, (filename, _, _) in enumerate(self.pending))
+        self.pending.clear()
+        self.bundle_number += 1
 
     def finish(self):
-        for split in self.pending:
-            self.flush(split)
-            folder = self.destination / split
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / 'bundles.json').write_text(json.dumps(self.indexes[split]) + '\n')
+        self.flush()
+        folder = self.destination / self.role
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'bundles.json').write_text(json.dumps(self.index) + '\n')
         if repository_state(self.repo, self.destination) != self.initial_state:
             raise RuntimeError("Source changed during generation; cache left incomplete")
         metadata = {
@@ -328,15 +308,15 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
         raise ValueError('dog_bundle_size must be a positive integer')
     writer = None
 
-    def consume(raw_folder, metadata, split, filename, encoded, target):
+    def consume(raw_folder, metadata, role, filename, encoded, target):
         nonlocal writer
         if writer is None:
             writer = _DogBundleWriter(raw_folder.parent / 'dog', metadata, dog_bundle_size,
                                       DoGFilter(sigma_center=sigma_center,
-                                                sigma_surround=sigma_surround))
+                                                sigma_surround=sigma_surround), role)
         # Keep a readable stable identifier without implying that a per-sample
         # .pt file exists in this cache.
-        writer.add(split, Path(filename).stem, encoded, target)
+        writer.add(Path(filename).stem, encoded, target)
 
     raw_folder = Path(generate_flow_xt_dataset(
         **generation_kwargs, _sample_consumer=consume, _save_raw=False)).resolve()
@@ -479,10 +459,10 @@ def generate_flow_xt_stim(
 
 
 if __name__ == "__main__":
-    generate_and_precompute(
+    generate_dog_dataset(
         n_samples=100_000,
         speed_range=(0.001, 0.006),
         rot_deg_range=(0, 0),
-        split=(0.8, 0.1, 0.1),
+        role="train",
         config=StimConfig(superimpose=False),
     )

@@ -48,7 +48,7 @@ memory-mapped signed DoG bundle
 - Do not add resumable stimulus generation. An interrupted managed dataset is
   incomplete and is regenerated from its seed, as in the current orchestrator.
 - Retain atomic publication: completion metadata is written only after every
-  expected bundle and split index has been written successfully.
+  expected bundle and the role index have been written successfully.
 - Keep validation progress resumption independent of this refactor.
 
 ## Cache format
@@ -59,15 +59,15 @@ The new cache format will be named `dog-contrast-bundles-v1`. A cache contains:
 dog/
   dog.json
   provenance/
-  train/
+  <role>/
     bundle-000000000.npy
     ...
     bundles.json
-  validate/
-    ...
-  test/
-    ...
 ```
+
+Each generation call creates exactly one role (`train`, `validate`, or `test`).
+The recipe orchestrator invokes those calls independently at the appropriate
+stage of the run.
 
 Each structured NumPy bundle has two fields:
 
@@ -130,7 +130,7 @@ with the same seeded NumPy generator used today. For every sample it will:
 5. Apply the DoG filter in float32.
 6. Validate shape and finiteness.
 7. Add the contrast and target to the current in-memory bundle.
-8. Write the bundle when it reaches the configured bundle size or split end.
+8. Write the bundle when it reaches the configured bundle size or dataset end.
 
 No per-sample file is created. The standalone raw Flow-XT generator may remain
 for previews and focused experiments, but the orchestrator will not call it.
