@@ -25,7 +25,7 @@ dog_sigma_surround_px = 3.0
 
 [training_sets]
 path = "/home/jacob/Documents/dw93net_stimuli/training"
-number_of_sets = 1
+number_of_sets = 2
 samples_per_set = 5000
 epochs_per_set = 2
 start_seed = 1000
