@@ -40,7 +40,7 @@ DETECTOR_KEYS = {'displacement_min_px', 'displacement_max_px', 'displacement_ste
 TRAINING_KEYS = {'path', 'number_of_sets', 'samples_per_set', 'epochs_per_set',
                  'start_seed', 'seed_increment', 'shuffle_seed'}
 FIXED_SET_KEYS = {'path', 'seed', 'n_samples'}
-OPTIMIZATION_KEYS = {'batch_size', 'mixed_precision', 'profile_batches', 'num_workers',
+OPTIMIZATION_KEYS = {'batch_size', 'allow_amp', 'allow_tp32', 'profile_batches', 'num_workers',
                      'mirror_train_stimuli'}
 LEARNING_RATE_KEYS = {'initial', 'scheduler', 'monitor', 'factor', 'patience_epochs',
                       'minimum', 'relative_improvement_threshold',
@@ -201,7 +201,7 @@ def load_recipe(path):
     _positive_int(optimization.get('batch_size'), 'optimization.batch_size')
     for key in ('profile_batches', 'num_workers'):
         _nonnegative_int(optimization.get(key), f'optimization.{key}')
-    for key in ('mixed_precision', 'mirror_train_stimuli'):
+    for key in ('allow_amp', 'allow_tp32', 'mirror_train_stimuli'):
         if type(optimization.get(key)) is not bool:
             raise ValueError(f'optimization.{key} must be true or false')
 
@@ -569,7 +569,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             epochs_per_set=training['epochs_per_set'], shuffle_seed=training['shuffle_seed'],
             candidate_interval_epochs=checkpoints['candidate_interval_epochs'],
             keep_previous_resumable=checkpoints['keep_previous_resumable'],
-            batch_size=optimization['batch_size'], mixed_precision=optimization['mixed_precision'],
+            batch_size=optimization['batch_size'], allow_amp=optimization['allow_amp'],
+            allow_tp32=optimization['allow_tp32'],
             profile_batches=optimization['profile_batches'], num_workers=optimization['num_workers'],
             learning_rate=lr['initial'], learning_rate_factor=lr['factor'],
             learning_rate_patience=lr['patience_epochs'], learning_rate_minimum=lr['minimum'],

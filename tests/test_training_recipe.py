@@ -55,7 +55,8 @@ seed = 3000
 n_samples = 1000
 [optimization]
 batch_size = 64
-mixed_precision = true
+allow_amp = true
+allow_tp32 = true
 profile_batches = 20
 num_workers = 0
 mirror_train_stimuli = true
@@ -80,7 +81,7 @@ shuffle = false
 
 def candidate_checkpoint(commit, epoch=1):
     from checkpoints import SCHEMA
-    return dict(schema=SCHEMA, kind='candidate',
+    return dict(schema=SCHEMA, kind='candidate', allow_amp=True, allow_tp32=True,
                 data_contract={}, git_commit=commit, global_epoch=epoch,
                 training_set_index=0, training_seed=1, epoch_within_set=epoch,
                 epochs_per_set=epoch, training_loss=.1, learning_rate=.001,
@@ -88,6 +89,31 @@ def candidate_checkpoint(commit, epoch=1):
 
 
 class TrainingRecipeTests(unittest.TestCase):
+    def test_precision_options_are_required_booleans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            for key in ('allow_amp', 'allow_tp32'):
+                for value in ('true', 'false', '1', '"true"'):
+                    path.write_text(recipe_text(directory).replace(f'{key} = true', f'{key} = {value}'))
+                    if value in ('true', 'false'):
+                        self.assertEqual(module.load_recipe(path)['optimization'][key], value == 'true')
+                    else:
+                        with self.assertRaisesRegex(ValueError, key):
+                            module.load_recipe(path)
+
+    def test_tf32_switch_controls_matmul_and_convolution(self):
+        from precision import configure_tf32
+        matmul = torch.backends.cuda.matmul.fp32_precision
+        conv = torch.backends.cudnn.conv.fp32_precision
+        try:
+            for enabled, expected in ((False, 'ieee'), (True, 'tf32')):
+                configure_tf32(enabled)
+                self.assertEqual(torch.backends.cuda.matmul.fp32_precision, expected)
+                self.assertEqual(torch.backends.cudnn.conv.fp32_precision, expected)
+        finally:
+            torch.backends.cuda.matmul.fp32_precision = matmul
+            torch.backends.cudnn.conv.fp32_precision = conv
+
     def test_speed_bounds_must_be_representable_in_float32(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'recipe.toml'

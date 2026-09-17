@@ -13,6 +13,7 @@ from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader, with_mirrored_dog_training
 from stimuli.metadata import require_pure_translation_root, motion_scales, data_contract
 from checkpoints import SCHEMA, load_checkpoint
+from precision import configure_tf32
 from run_revision import committed_revision
 
 
@@ -30,7 +31,8 @@ class RecipeTrainingSettings:
     candidate_interval_epochs: int = 1
     keep_previous_resumable: bool = True
     batch_size: int = 64
-    mixed_precision: bool = True
+    allow_amp: bool = True
+    allow_tp32: bool = True
     profile_batches: int = 20
     num_workers: int = 8
     learning_rate: float = 1e-3
@@ -74,6 +76,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
         if type(getattr(cfg, name)) is not int or getattr(cfg, name) < 1:
             raise ValueError(f'{name} must be a positive integer')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    configure_tf32(cfg.allow_tp32)
     train_cache = DoGDataset(Path(cfg.root_folder) / 'train')
     correlation_bank = ReichardtBank(cfg.dx_values)
     detector_metadata = {'dog': train_cache.metadata,
@@ -98,7 +101,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
         torch.cuda.manual_seed_all(cfg.shuffle_seed)
     model = PureTranslationNet(correlation_bank.dx_values).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-    amp_enabled = device == 'cuda' and cfg.mixed_precision
+    amp_enabled = device == 'cuda' and cfg.allow_amp
     scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=cfg.learning_rate_factor,
@@ -202,6 +205,8 @@ def train_recipe_set(cfg, *, progress_callback=None):
             print(f'Training-loss plateau: learning rate reduced to {next_rate:.6g}', flush=True)
 
         common = {
+            'allow_tp32': cfg.allow_tp32,
+            'allow_amp': cfg.allow_amp,
             'schema': SCHEMA, 'data_contract': contract,
             'git_commit': cfg.git_commit,
             'global_epoch': global_epoch,

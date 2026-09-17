@@ -49,7 +49,9 @@ n_samples = 10000
 
 [optimization]
 batch_size = 64
-mixed_precision = false
+# Enable AMP for exploratory training; disable to compare without AMP.
+allow_amp = true
+allow_tp32 = true
 profile_batches = 20
 num_workers = 8
 mirror_train_stimuli = true

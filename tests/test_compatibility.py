@@ -62,7 +62,7 @@ class CompatibilityTests(unittest.TestCase):
             self.assertEqual(motion_scales(renamed), scales)
             cfg = RecipeTrainingSettings(root_folder=str(renamed), checkpoint_dir=str(root / 'checkpoints'),
                 git_commit='a' * 40, training_set_index=0, training_seed=4, epochs_per_set=1,
-                shuffle_seed=9, num_workers=0, batch_size=2, mixed_precision=False,
+                shuffle_seed=9, num_workers=0, batch_size=2, allow_amp=False,
                 mirror_train_stimuli=False, dx_values=(-1, 0, 1))
             latest = train_recipe_set(cfg)
             checkpoint = load_checkpoint(latest, resume=True, expected_commit='a' * 40)

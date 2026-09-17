@@ -85,7 +85,7 @@ class NonfiniteTests(unittest.TestCase):
                 root_folder=cache, checkpoint_dir=str(root / 'checkpoints'),
                 git_commit='a' * 40, training_set_index=0, training_seed=4,
                 epochs_per_set=1, shuffle_seed=99, batch_size=2, num_workers=0,
-                mixed_precision=False, mirror_train_stimuli=False, dx_values=(-1, 0, 1))
+                allow_amp=False, mirror_train_stimuli=False, dx_values=(-1, 0, 1))
             latest = engine.train_recipe_set(cfg)
             original = latest.read_bytes()
             loss = engine._normalized_motion_loss

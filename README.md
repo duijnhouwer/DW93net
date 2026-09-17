@@ -131,7 +131,9 @@ GPU feeding defaults to batches of 64 and CUDA float16 mixed precision (with
 float32 loss and gradient scaling). Cached signed DoG contrast remains float32
 through loading and transfer. Correlations are calculated in VRAM immediately
 before the model. CPU training and evaluation use the same float32 path.
-Set `optimization.mixed_precision = false` to compare numerical behavior. Larger
+`optimization.allow_amp` enables training AMP. `optimization.allow_tp32` controls
+TF32 matrix multiplication and convolution during training and evaluation.
+Both are currently true. Set both false for full float32 arithmetic. Larger
 batches change optimizer updates per epoch, so compare validation quality as
 well as throughput; reduce `batch_size` if your run exceeds available VRAM.
 Scaler state is saved for resume.
