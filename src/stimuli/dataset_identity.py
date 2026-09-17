@@ -1,24 +1,15 @@
-"""Cheap source identity and structural validation for managed DoG caches."""
+"""Exact run commit/settings and structural validation for managed DoG caches."""
 
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 from stimuli.metadata import DATA_SCHEMA
-
-
-def generation_identity():
-    # Keep this list aligned with the renderer's local implementation dependencies.
-    # Training/model changes must not invalidate an otherwise identical dataset.
-    root = Path(__file__).resolve().parents[1]
-    names = ('stimuli/generate_flow_xt_data.py', 'features/dog_motion.py', 'stimuli/metadata.py')
-    return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in names}
+from run_revision import revision
 
 
 def dataset_spec(role, section, stimuli):
-    return {'version': 4, 'generation_identity': generation_identity(),
+    return {'version': 5, 'git_commit': section.get('_git_commit') or revision(),
             'role': role, 'seed': section['seed'], 'n_samples': section['n_samples'],
             'stimuli': stimuli, 'dog': {key: section['_detector'][key] for key in
                 ('dog_sigma_center_px', 'dog_sigma_surround_px')}}
@@ -80,6 +71,5 @@ def storage_manifest(cache, role, n_samples):
             bundles[name] = {'n_samples': len(array), 'size_bytes': size}
         finally:
             del array
-    return {'dog_sha256': hashlib.sha256(metadata_bytes).hexdigest(),
-            'index_sha256': hashlib.sha256(index_bytes).hexdigest(),
+    return {'metadata': metadata,
             'bundles': bundles}

@@ -51,9 +51,12 @@ users, or standalone tools that do not acquire it.
 The runner requires a clean commit and CUDA by default. For a recipe named
 `translation_only.toml`, it creates
 `<output_path>/translation_only/{checkpoints,final,provenance}` plus `run.json`.
-The manifest records the original Git commit, recipe, and relevant training-code
-fingerprints. Resume requires the same recipe and training implementation, not
-the same Git commit. Documentation-only commits are compatible.
+The manifest records the exact Git commit and recipe. Resume requires that same
+commit and a clean working tree. Do not edit the repository while a run is active.
+Before each dataset generation (including background generation), training-set
+boundary, validation, and final testing, the runner checks for staged, unstaged,
+and nonignored untracked changes and verifies that HEAD has not moved. Any change
+stops the run with ERROR. Even documentation-only commits require a new run.
 `latest.pt` is a full epoch-boundary resume checkpoint; `previous.pt` is its
 optional predecessor. Model-only candidates are saved at the configured epoch
 interval and at the last scheduled epoch.
@@ -74,11 +77,12 @@ never silently overwrites that test set.
 
 Validation progress is atomically saved after every candidate in
 `final/validation-progress.json`. If the runner is interrupted, it verifies each
-checkpoint fingerprint and resumes at the first candidate that still needs
-evaluation. `final/validation-results.json` records completed candidate selection and
+checkpoint's Git commit and resumes at the first candidate that still needs
+evaluation. Completed candidates belong to this run and must not be manually
+replaced. `final/validation-results.json` records completed candidate selection and
 `final/test-results.json` records the final test measurement. Rerunning restarts
 only an interrupted epoch and otherwise resumes from the recorded training-set
-index and seed.
+index and seed. Final testing is recomputed each time selection finishes.
 
 ## Training behavior
 
@@ -163,9 +167,8 @@ simple translation recovery works.
 
 The command uses 256 seeded validation examples, CPU inference, and no worker
 processes by default. It saves a sample manifest, per-checkpoint JSON metrics,
-and a `progress.md` report ordered by global epoch under `evaluations/`. Repeating the
-command reuses results for unchanged checkpoints, data, and evaluation code.
-New or overwritten checkpoints are evaluated once; old cached records remain.
+and a `progress.md` report ordered by global epoch under `evaluations/`. Each
+invocation recomputes the requested checkpoints in a new dated report directory.
 Use `--samples 0` for the whole split, `--split test` for a final held-out
 assessment, or `--help` for explicit dataset/checkpoint paths and other options.
 Changing sample size or seed creates a separate comparison set. Reports include
@@ -195,9 +198,8 @@ heading percentage plots. The percentage definitions are, respectively,
 `100 * ||[dx_hat,dz_hat]-[dx,dz]|| / ||[dx,dz]||`.
 
 The report reads model-only candidates and validates the current checkpoint
-schema, inference-code fingerprints, DoG settings, geometry, and generation
-identity. Git commits are recorded for both checkpoint and evaluator, not used
-as a compatibility gate. Inference does not require unchanged optimizer code. Supply an existing validation cache; use `keep_after_run = true`
+schema, matching Git commit, DoG settings, and geometry. Run the report from a
+clean checkout of the checkpoint's exact commit. Supply an existing validation cache; use `keep_after_run = true`
 in the recipe if you want it retained for these retrospective reports.
 
 **dw93net** stands for **Duffy & Wurtz (1993) network**. It is an artificial
@@ -419,10 +421,10 @@ and ablations; speed scale still relies on the training distance distribution.
 
 Training and evaluation require structured metadata specifying zero yaw.
 Checkpoints use one current schema with mandatory fields (including scaler state
-for resume); older schemas are rejected. Compatibility rules and the explicit
-source-file lists live in `src/checkpoints.py`. These conservative fingerprints
-also invalidate on comments inside relevant source modules. They are not a proof
-of semantic equivalence; update the lists when introducing new dependencies.
+for resume); older schemas are rejected. `src/checkpoints.py` checks structure
+and the exact Git commit. There are no per-file source fingerprints or selective
+code-compatibility rules. Existing runs from the previous schema must be used
+with their original code; new runs use the rigid commit policy.
 Keep FOV, width, crop, and detector semantics fixed across dataset roles. Pipeline
 tests verify implementation, not translation accuracy.
 
@@ -434,7 +436,7 @@ and [Duffy & Wurtz (1991)](https://doi.org/10.1152/jn.1991.65.6.1329).
 
 Every new cache root contains `dog.json`, recording DoG sigmas/support,
 normalization and boundary rules, input/output shapes and dtypes, sample count,
-UTC start/end times, generation settings, code fingerprints, and a reference to
+UTC start/end times, generation settings, Git commit, and a reference to
 the run's source snapshot. A recipe run captures source and environment once in
 `<output_path>/<network>/provenance/`; all datasets, including background-generated
 sets, reference it. Standalone generation captures once at its output root.
@@ -447,7 +449,6 @@ The run's `provenance/` folder contains:
 - `source.tar.gz`: a standalone snapshot of the working repository files,
   including nonignored untracked source. It does not require the base commit
   to reconstruct the working source.
-- `source-manifest.json`: archived file hashes and permissions.
 - `environment.json`: Python/platform details and installed package versions.
 - `RESTORE.md`: recovery instructions and archive scope.
 
@@ -456,9 +457,10 @@ The archive contains tracked and nonignored untracked files, excluding the
 current output directory; Git-ignored datasets/environments and Git history
 are not bundled. Dependencies are recorded, not packaged. Artifact metadata is
 stored in `dog.json`. Git must be available with an existing HEAD commit.
-If generation implementation files change during generation, the run fails without
-publishing `dog.json`. Dataset identity includes only cached DoG parameters, not
-the online displacement bank. Structural manifest validation checks every bundle
+Recipe runs check Git at set boundaries and before generation, training, validation,
+and testing. Keep the repository untouched throughout the run. Dataset reuse
+requires the same commit, seed, role, sample count, stimulus and DoG settings.
+Structural manifest validation checks every bundle
 header, row count, shape, dtype, and file size without scanning the full payload.
 
 DoG kernels are cached per device and computed in float32 after float64 kernel

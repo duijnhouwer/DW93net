@@ -1,11 +1,9 @@
 """Reusable translation checkpoint evaluation; run with --help for options."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import sys
-import subprocess
 from datetime import datetime, timezone
 
 import numpy as np
@@ -14,14 +12,12 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from stimuli.load_flow_xt_data import DoGDataset
 from stimuli.metadata import require_pure_translation_root
-from checkpoints import load_checkpoint, code_identity, INFERENCE_SOURCES
+from checkpoints import load_checkpoint
+from run_revision import committed_revision
 from evaluation import metrics, binned_metrics, inference_batches
 
 ROOT = Path(__file__).resolve().parents[1]
 
-
-def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 def bin_description(dimension, bin_data):
@@ -178,7 +174,7 @@ def main():
     parser.add_argument('--plot-heading-percent', dest='plot_heading_percent', action='store_true',
                         help='Also save heading error as a percentage of the 180° maximum')
     parser.add_argument('--output', type=Path, default=ROOT / 'evaluations')
-    parser.add_argument('--refresh', action='store_true')
+    parser.add_argument('--refresh', action='store_true', help='Accepted for compatibility; evaluation always recomputes')
     args = parser.parse_args()
     if (args.samples < 0 or args.batch_size < 1 or args.threads < 1
             or any(count < 1 for count in args.heading_bins + args.speed_bins)):
@@ -187,8 +183,7 @@ def main():
     args.speed_bins = sorted(set(args.speed_bins))
     if args.show_plots:
         args.plots = True
-    commit = subprocess.check_output(
-        ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
+    commit = committed_revision(ROOT)
     args.checkpoints = args.checkpoints.resolve()
     args.data = args.data.resolve()
     require_pure_translation_root(args.data)
@@ -206,10 +201,9 @@ def main():
                                   (args.data / args.split / f).stat().st_mtime_ns) for f in bundles],
                 'bundle_index': [dataset.bundle_index[i] for i in indices],
                 'git_commit': commit,
-                'code': code_identity(INFERENCE_SOURCES + ('src/evaluation.py',
-                                                          'scripts/evaluate_progress.py')),
                 'torch': torch.__version__, 'device': args.device}
-    out = args.output / fingerprint(manifest)[:16]
+    out = (args.output / args.checkpoints.parent.name / commit[:12] /
+           datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     out.mkdir(parents=True, exist_ok=True)
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     torch.set_num_threads(args.threads)
@@ -222,36 +216,35 @@ def main():
         parser.error('No checkpoints found')
     for path in paths:
         before = path.stat()
-        identity = fingerprint({'path': str(path), 'size': before.st_size, 'mtime': before.st_mtime_ns})
-        saved = out / (identity + '.json')
-        if saved.exists() and not args.refresh:
-            row = json.loads(saved.read_text())
-            print(f'{path.name}: cached', flush=True)
-        else:
-            print(f'{path.name}: evaluating {len(indices)} {args.split} examples on {args.device}', flush=True)
-            checkpoint = load_checkpoint(path)
-            predictions, targets = [], []
-            for prediction, target in inference_batches(checkpoint, dataset, device=args.device,
-                    batch_size=args.batch_size, indices=indices):
-                predictions.append(prediction[:, :2])
-                targets.append(target[:, :2])
-            after = path.stat()
-            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                raise RuntimeError(f'Checkpoint changed during evaluation; rerun: {path}')
-            row = {'checkpoint': str(path), 'epoch': checkpoint['global_epoch'],
-                   'saved_at': datetime.fromtimestamp(before.st_mtime, timezone.utc).isoformat(),
-                   'git_commit': checkpoint['git_commit'], 'evaluator_git_commit': commit,
-                   'training_seed': checkpoint['training_seed']}
-            prediction = np.concatenate(predictions)
-            target = np.concatenate(targets)
-            row['metrics'] = metrics(prediction, target)
-            row['breakdowns'] = {
-                'heading': binned_metrics(prediction, target, dimension='heading',
-                                          bin_counts=args.heading_bins),
-                'speed': binned_metrics(prediction, target, dimension='speed',
-                                        bin_counts=args.speed_bins),
-            }
-            saved.write_text(json.dumps(row, indent=2, allow_nan=False))
+        print(f'{path.name}: evaluating {len(indices)} {args.split} examples on {args.device}', flush=True)
+        committed_revision(ROOT, commit)
+        checkpoint = load_checkpoint(path, expected_commit=commit)
+        predictions, targets = [], []
+        for prediction, target in inference_batches(checkpoint, dataset, device=args.device,
+                batch_size=args.batch_size, indices=indices):
+            predictions.append(prediction[:, :2])
+            targets.append(target[:, :2])
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError(f'Checkpoint changed during evaluation; rerun: {path}')
+        row = {'checkpoint': str(path), 'epoch': checkpoint['global_epoch'],
+               'saved_at': datetime.fromtimestamp(before.st_mtime, timezone.utc).isoformat(),
+               'git_commit': checkpoint['git_commit'], 'evaluator_git_commit': commit,
+               'training_seed': checkpoint['training_seed']}
+        prediction = np.concatenate(predictions)
+        target = np.concatenate(targets)
+        row['metrics'] = metrics(prediction, target)
+        row['breakdowns'] = {
+            'heading': binned_metrics(prediction, target, dimension='heading',
+                                      bin_counts=args.heading_bins),
+            'speed': binned_metrics(prediction, target, dimension='speed',
+                                    bin_counts=args.speed_bins),
+        }
+        committed_revision(ROOT, commit)
+        saved = out / (path.stem + '.json')
+        temporary = saved.with_suffix('.json.tmp')
+        temporary.write_text(json.dumps(row, indent=2, allow_nan=False))
+        temporary.replace(saved)
         rows.append(row)
     rows.sort(key=lambda r: r['epoch'])
     report = ['# Translation progress', '',

@@ -17,7 +17,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from features.dog_motion import DoGFilter
 from stimuli.preprocessing_provenance import capture_provenance
-from stimuli.dataset_identity import generation_identity
 from stimuli.metadata import DATA_SCHEMA
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
@@ -221,7 +220,6 @@ class _DogBundleWriter:
         self.destination.mkdir(parents=True, exist_ok=False)
         self.started = datetime.now(timezone.utc).isoformat()
         self.provenance = provenance
-        self.initial_identity = generation_identity()
         self.pending = []
         self.index = []
         self.bundle_number = 0
@@ -277,12 +275,10 @@ class _DogBundleWriter:
         folder = self.destination / self.role
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'bundles.json').write_text(json.dumps(self.index) + '\n')
-        if generation_identity() != self.initial_identity:
-            raise RuntimeError("Source changed during generation; cache left incomplete")
         metadata = {
             **self.dog_filter.metadata,
             'storage_format': DATA_SCHEMA,
-            'generation_identity': self.initial_identity,
+            'git_commit': self.provenance['git_commit'],
             'storage_dtype': 'torch.float32',
             'finite_validated': True,
             'created_utc': self.started,

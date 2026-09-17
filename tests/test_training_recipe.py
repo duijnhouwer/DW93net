@@ -79,8 +79,8 @@ shuffle = false
 
 
 def candidate_checkpoint(commit, epoch=1):
-    from checkpoints import SCHEMA, compatibility
-    return dict(schema=SCHEMA, kind='candidate', compatibility=compatibility(),
+    from checkpoints import SCHEMA
+    return dict(schema=SCHEMA, kind='candidate',
                 data_contract={}, git_commit=commit, global_epoch=epoch,
                 training_set_index=0, training_seed=1, epoch_within_set=epoch,
                 epochs_per_set=epoch, training_loss=.1, learning_rate=.001,
@@ -176,17 +176,19 @@ class TrainingRecipeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'absolute path'):
                 module.load_recipe(path)
 
-    def test_output_uses_compatibility_not_commit_equality(self):
+    def test_output_requires_same_commit(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
             output.mkdir()
             recipe = {'network': {'output_path': str(output)}}
             checkpoints, final = module._initialize_output(recipe, 'translation_only', 'a' * 40)
-            self.assertEqual(module._initialize_output(recipe, 'translation_only', 'b' * 40),
+            self.assertEqual(module._initialize_output(recipe, 'translation_only', 'a' * 40),
                              (checkpoints, final))
             manifest = json.loads((checkpoints.parent / 'run.json').read_text())
-            self.assertEqual(manifest['origin_git_commit'], 'a' * 40)
-            with self.assertRaisesRegex(ValueError, 'incompatible'):
+            self.assertEqual(manifest['git_commit'], 'a' * 40)
+            with self.assertRaisesRegex(ValueError, 'Git commit'):
+                module._initialize_output(recipe, 'translation_only', 'b' * 40)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
                 module._initialize_output(recipe | {'changed': True}, 'translation_only', 'b' * 40)
 
     def test_generation_writes_only_dog_cache_and_reuses_exact_spec(self):
@@ -309,7 +311,7 @@ class TrainingRecipeTests(unittest.TestCase):
             with patch.object(torch.cuda, 'is_available', return_value=False):
                 with patch.object(training_engine, '_save_latest', side_effect=interrupt_after_checkpoint):
                     with self.assertRaisesRegex(RuntimeError, 'Simulated interruption'):
-                        module.run_recipe(path, root=root, commit='c' * 40)
+                        module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
                 training_path = root / 'stimuli' / 'training'
                 state = json.loads((training_path / module.DATASET_STATE).read_text())
                 self.assertEqual(state['spec']['seed'], 4001)
@@ -326,7 +328,7 @@ class TrainingRecipeTests(unittest.TestCase):
 
                 with patch.object(module, 'generate_dog_dataset', wraps=module.generate_dog_dataset) as generate:
                     with patch.object(module, 'train_recipe_set', side_effect=verify_reused_data) as train:
-                        module.run_recipe(path, root=root, commit='c' * 40)
+                        module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
                     self.assertEqual(train.call_count, 1)
                     self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
                                      ['validate', 'test'])
@@ -358,7 +360,7 @@ x_supersampling = 4''')
                                 'mirror_train_stimuli = false')
             text += '\n[parallel_generation]\nenabled = true\nmin_threads = 1\nmax_threads = 2\n'
             path.write_text(text)
-            module.run_recipe(path, root=root, commit='c' * 40)
+            module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             network = root / 'output' / 'smoke'
             self.assertTrue((network / 'run.json').is_file())
             self.assertEqual(len(list(root.rglob('source.tar.gz'))), 1)
@@ -380,9 +382,9 @@ x_supersampling = 4''')
                     '--data', str(test_path / state['cache']), '--split', 'test',
                     '--samples', '0', '--no-plots', '--output', str(report_path)]
             with patch('sys.argv', args), patch.object(
-                    progress.subprocess, 'check_output', return_value='c' * 40):
+                    progress, 'committed_revision', return_value='c' * 40):
                 progress.main()
-            report = next(report_path.glob('*/progress.md')).read_text()
+            report = next(report_path.rglob('progress.md')).read_text()
             self.assertIn('epoch-000001.pt', report)
             self.assertIn('epoch-000002.pt', report)
 

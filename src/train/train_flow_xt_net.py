@@ -3,7 +3,6 @@
 import os
 import math
 import shutil
-import subprocess
 import time
 from pathlib import Path
 import torch
@@ -13,7 +12,8 @@ from models.pure_translation import PureTranslationNet
 from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader, with_mirrored_dog_training
 from stimuli.metadata import require_pure_translation_root, motion_scales, data_contract
-from checkpoints import SCHEMA, compatibility, load_checkpoint
+from checkpoints import SCHEMA, load_checkpoint
+from run_revision import committed_revision
 
 
 
@@ -86,7 +86,6 @@ def train_recipe_set(cfg, *, progress_callback=None):
         raise ValueError('Training dataset must be nonempty')
     scales = motion_scales(cfg.root_folder)
     contract = data_contract(train_cache.storage_metadata)
-    compatible = compatibility()
     shuffle_generator = torch.Generator()
     worker_generator = torch.Generator().manual_seed(cfg.shuffle_seed)
     train_loader = make_flow_loader(
@@ -111,7 +110,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
     candidates_dir = checkpoint_dir / 'candidates'
     start_epoch = 0
     if latest_path.exists():
-        checkpoint = load_checkpoint(latest_path, device, resume=True)
+        checkpoint = load_checkpoint(latest_path, device, resume=True, expected_commit=cfg.git_commit)
         if checkpoint['data_contract'] != contract:
             raise ValueError('Checkpoint dataset geometry or generation code does not match')
         if checkpoint.get('detector') != detector_metadata:
@@ -203,7 +202,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
             print(f'Training-loss plateau: learning rate reduced to {next_rate:.6g}', flush=True)
 
         common = {
-            'schema': SCHEMA, 'compatibility': compatible, 'data_contract': contract,
+            'schema': SCHEMA, 'data_contract': contract,
             'git_commit': cfg.git_commit,
             'global_epoch': global_epoch,
             'training_set_index': cfg.training_set_index,
@@ -235,13 +234,3 @@ def train_recipe_set(cfg, *, progress_callback=None):
         _save_latest(checkpoint, latest_path, cfg.keep_previous_resumable)
 
     return latest_path
-
-
-def committed_revision(root):
-    """Reject staged, unstaged, and untracked changes before terminal training."""
-    status = subprocess.check_output(
-        ['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=all'], text=True)
-    if status.strip():
-        raise SystemExit('Commit your repository changes before training:\n' + status)
-    return subprocess.check_output(
-        ['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()

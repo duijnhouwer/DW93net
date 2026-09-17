@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from test_training_recipe import module, DETECTOR
-from stimuli.dataset_identity import storage_manifest, generation_identity
+from stimuli.dataset_identity import storage_manifest
 
 
 class DatasetIdentityTests(unittest.TestCase):
@@ -43,13 +43,9 @@ class DatasetIdentityTests(unittest.TestCase):
                                        self.stimuli, persistent=persistent)
 
     def test_identity_and_reuse(self):
-        identity = generation_identity()
-        self.assertEqual(set(identity), {'stimuli/generate_flow_xt_data.py', 'features/dog_motion.py',
-                                         'stimuli/metadata.py'})
         self.assertEqual(self.prepare(), self.cache)
         self.assertEqual(self.generator.call_count, 1)
-        with patch('stimuli.dataset_identity.generation_identity', return_value={'changed': 'hash'}), \
-                patch.object(module, 'generation_identity', return_value={'changed': 'hash'}):
+        with patch('stimuli.dataset_identity.revision', return_value='b' * 40):
             with self.assertRaisesRegex(ValueError, 'Persistent'):
                 self.prepare()
             self.assertTrue((self.folder / 'bundle.npy').exists())

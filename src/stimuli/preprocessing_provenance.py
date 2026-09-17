@@ -1,5 +1,4 @@
 """Self-contained Git-visible working source snapshot for a preprocessing run."""
-import hashlib
 import importlib.metadata
 import io
 import json
@@ -69,9 +68,6 @@ def write_provenance(destination, repo, *, exclude=None):
             info = tarfile.TarInfo(name)
             info.size, info.mode = len(content), mode
             archive.addfile(info, io.BytesIO(content))
-    manifest = {name: dict(sha256=hashlib.sha256(content).hexdigest(), mode=mode)
-                for name, (content, mode) in files.items()}
-    (out / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     environment = dict(python=platform.python_version(), platform=platform.platform(),
                        packages={dist.metadata['Name']: dist.version
                                  for dist in importlib.metadata.distributions() if dist.metadata['Name']})
@@ -82,12 +78,11 @@ def write_provenance(destination, repo, *, exclude=None):
         'Do not overlay an existing checkout: files deleted at capture time are absent.\n\n'
         f'Base Git commit: `{commit}`. `working-tree.patch` records tracked staged and '
         'unstaged changes relative to HEAD (binary changes included); it does not contain '
-        'untracked files, which are in the archive. `source-manifest.json` records file hashes '
-        'and modes. `environment.json` records installed package versions, not bundled dependencies.\n\n'
+        'untracked files, which are in the archive. '
+        '`environment.json` records installed package versions, not bundled dependencies.\n\n'
         'Scope: tracked and nonignored untracked repository files, excluding this output '
         'directory. Git-ignored datasets, virtual environments and other ignored files are '
         'not bundled. Git history is not bundled.\n')
-    artifacts = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir()}
     return dict(git_commit=commit, tracked_changes=bool(diff),
-                directory='provenance', artifacts_sha256=artifacts,
+                directory='provenance',
                 snapshot_scope='tracked and nonignored untracked working-tree files'), state

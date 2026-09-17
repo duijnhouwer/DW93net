@@ -76,4 +76,4 @@ def data_contract(metadata):
     """Input meaning required by a model; ranges/seed/sample count may vary."""
     return {'schema': metadata['storage_format'],
             'geometry': metadata['stimulus_generation']['stimulus_config'],
-            'generation_identity': metadata['generation_identity']}
+            'git_commit': metadata['git_commit']}

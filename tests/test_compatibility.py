@@ -22,21 +22,6 @@ from test_training_recipe import module, DETECTOR
 
 
 class CompatibilityTests(unittest.TestCase):
-    def test_documentation_is_not_a_compatibility_dependency(self):
-        import checkpoints
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in checkpoints.TRAINING_SOURCES:
-                path = root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('implementation')
-            with patch.object(checkpoints, 'ROOT', root):
-                original = checkpoints.compatibility()
-                (root / 'README.md').write_text('new documentation')
-                self.assertEqual(original, checkpoints.compatibility())
-                (root / 'src/models/pure_translation.py').write_text('changed model')
-                self.assertNotEqual(original, checkpoints.compatibility())
-
     def test_online_bank_changes_do_not_invalidate_dog_cache(self):
         section = dict(seed=1, n_samples=2, _detector=DETECTOR)
         original = dataset_spec('train', section, {})
@@ -80,13 +65,12 @@ class CompatibilityTests(unittest.TestCase):
                 shuffle_seed=9, num_workers=0, batch_size=2, mixed_precision=False,
                 mirror_train_stimuli=False, dx_values=(-1, 0, 1))
             latest = train_recipe_set(cfg)
-            checkpoint = load_checkpoint(latest, resume=True)
-            # Git is provenance, not the compatibility decision.
-            train_recipe_set(replace(cfg, git_commit='b' * 40))
-            result = module.evaluate_model(latest, renamed, 'train',
-                                           dict(batch_size=2, num_workers=0), 'b' * 40)
-            self.assertEqual(result['checkpoint_git_commit'], 'a' * 40)
-            self.assertEqual(result['evaluator_git_commit'], 'b' * 40)
+            checkpoint = load_checkpoint(latest, resume=True, expected_commit='a' * 40)
+            with self.assertRaisesRegex(ValueError, 'Git commit'):
+                train_recipe_set(replace(cfg, git_commit='b' * 40))
+            with self.assertRaisesRegex(ValueError, 'Git commit'):
+                module.evaluate_model(latest, renamed, 'train',
+                                      dict(batch_size=2, num_workers=0), 'b' * 40)
             dataset = DoGDataset(renamed / 'train')
             batches = list(inference_batches(checkpoint, dataset, device='cpu', batch_size=2))
             summary = summary_metrics(iter(batches), scales)
@@ -96,21 +80,11 @@ class CompatibilityTests(unittest.TestCase):
             self.assertAlmostEqual(summary['heading_mae_deg'], detailed['heading_mae_deg'])
             self.assertAlmostEqual(summary['translation_speed_mae'], detailed['speed_mae'])
             self.assertAlmostEqual(summary['translation_vector_tip_mae'], detailed['vector_tip_mae'])
-            for field in ('scaler_state_dict', 'compatibility', 'schema', 'data_contract'):
+            for field in ('scaler_state_dict', 'git_commit', 'schema', 'data_contract'):
                 invalid = copy.deepcopy(checkpoint)
                 del invalid[field]
                 with self.subTest(field=field), self.assertRaises(ValueError):
-                    validate_checkpoint(invalid, resume=True)
-            for field in ('model_schema', 'data_schema', 'inference_code'):
-                invalid = copy.deepcopy(checkpoint)
-                invalid['compatibility'][field] = 'changed'
-                with self.subTest(field=field), self.assertRaises(ValueError):
-                    validate_checkpoint(invalid)
-            invalid = copy.deepcopy(checkpoint)
-            invalid['compatibility']['training_code'] = {}
-            validate_checkpoint(invalid)  # Inference is independent of optimizer code.
-            with self.assertRaises(ValueError):
-                validate_checkpoint(invalid, resume=True)
+                    validate_checkpoint(invalid, resume=True, expected_commit='a' * 40)
             invalid = copy.deepcopy(checkpoint)
             invalid['data_contract']['geometry']['fov_deg'] = 99
             with self.assertRaisesRegex(ValueError, 'geometry'):

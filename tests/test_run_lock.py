@@ -67,7 +67,7 @@ class RunLockTests(unittest.TestCase):
         with run_lock(), patch.object(module, '_run_recipe') as run, \
                 patch.object(module, 'Prefetch') as prefetch:
             with self.assertRaisesRegex(RuntimeError, 'Another recipe run'):
-                module.run_recipe(path)
+                module.run_recipe(path, require_clean=False)
             run.assert_not_called()
             prefetch.assert_not_called()
 
@@ -83,7 +83,7 @@ class RunLockTests(unittest.TestCase):
                 patch.object(module, 'Prefetch') as prefetch:
             prefetch.return_value.close.side_effect = check_locked
             with self.assertRaisesRegex(ValueError, 'failed'):
-                module.run_recipe(path)
+                module.run_recipe(path, require_clean=False)
             prefetch.return_value.close.assert_called_once()
             self.assertTrue(prefetch.call_args.kwargs['lock_fds'])
         with run_lock():

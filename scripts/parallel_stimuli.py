@@ -51,6 +51,9 @@ class Prefetch:
             return
         if self.process is not None:
             raise RuntimeError('A generation job is already running')
+        if section.get('_repo_root'):
+            from run_revision import committed_revision
+            committed_revision(section['_repo_root'], section['_git_commit'])
         section = section | {'_provenance': self.provenance}
         self.owns_stage = True
         self.temporary = tempfile.TemporaryDirectory(prefix='dw93net-prefetch-')

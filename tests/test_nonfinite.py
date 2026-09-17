@@ -57,13 +57,14 @@ class NonfiniteTests(unittest.TestCase):
                     candidates.mkdir(parents=True)
                     final.mkdir()
                     candidate = candidates / 'epoch-000001.pt'
-                    torch.save({'git_commit': commit, 'model_state_dict': {}}, candidate)
+                    from test_training_recipe import candidate_checkpoint
+                    torch.save(candidate_checkpoint(commit), candidate)
                     invalid = METRICS | {'normalized_rmse': value}
                     if cached:
                         (final / 'validation-progress.json').write_text(json.dumps(dict(
-                            version=2, evaluation_code=module.code_identity(module.TRAINING_SOURCES), selection_metric='normalized_rmse',
+                            version=3, git_commit=commit, selection_metric='normalized_rmse',
                             evaluation=recipe['evaluation'], candidates=[invalid | dict(
-                                candidate=candidate.name, checkpoint_sha256=module._sha256(candidate))])))
+                                candidate=candidate.name)])))
                     with patch.object(module, 'evaluate_model', return_value=invalid) as evaluate:
                         with self.assertRaisesRegex(ValueError, 'normalized_rmse must be finite'):
                             module._select_final(root / 'checkpoints', final, root / 'validation', recipe, commit)

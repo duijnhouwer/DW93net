@@ -1,6 +1,5 @@
 """Run the repository's single committed training recipe."""
 
-import hashlib
 import json
 import math
 import os
@@ -19,12 +18,12 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from parallel_stimuli import Prefetch
 from run_lock import run_lock
 
-from checkpoints import load_checkpoint, code_identity, TRAINING_SOURCES
+from checkpoints import load_checkpoint
 from evaluation import inference_batches, summary_metrics
 from stimuli.metadata import motion_scales
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset, validate_speed_float32
-from stimuli.dataset_identity import dataset_spec, generation_identity, storage_manifest
+from stimuli.dataset_identity import dataset_spec, storage_manifest
 from stimuli.load_flow_xt_data import DoGDataset
 from train.train_flow_xt_net import (
     RecipeTrainingSettings, committed_revision, train_recipe_set,
@@ -269,17 +268,17 @@ def _initialize_output(recipe, network_name, commit):
     if not output_root.is_dir() or not os.access(output_root, os.W_OK):
         raise ValueError(f'output_path must already exist and be writable: {output_root}')
     network_dir = output_root / network_name
-    expected = {'recipe': recipe, 'training_code': code_identity(TRAINING_SOURCES)}
+    expected = {'recipe': recipe, 'git_commit': commit}
     manifest = network_dir / 'run.json'
     if network_dir.exists():
         if not manifest.is_file():
             raise ValueError(f'Output has no current run manifest: {network_dir}')
         saved = json.loads(manifest.read_text())
         if any(saved.get(key) != value for key, value in expected.items()):
-            raise ValueError(f'Output recipe or training implementation is incompatible: {network_dir}')
+            raise ValueError(f'Output recipe or Git commit does not match: {network_dir}')
     else:
         network_dir.mkdir()
-        _atomic_json(manifest, expected | {'origin_git_commit': commit})
+        _atomic_json(manifest, expected)
     checkpoint_dir, final_dir = network_dir / 'checkpoints', network_dir / 'final'
     checkpoint_dir.mkdir(exist_ok=True)
     final_dir.mkdir(exist_ok=True)
@@ -307,17 +306,10 @@ def _atomic_torch_save(value, path):
     os.replace(temporary, path)
 
 
-def _sha256(path):
-    """Return a stable identity for a checkpoint that may be replaced on resume."""
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callback=None):
     """Generate one role-only set containing only bundled signed DoG contrast."""
+    if section.get('_repo_root'):
+        committed_revision(section['_repo_root'], section['_git_commit'])
     path = Path(path).resolve()
     desired = dataset_spec(role, section, stimuli)
     state_path = path / DATASET_STATE
@@ -362,8 +354,6 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
     if path not in cache.parents:
         raise RuntimeError('Generator returned a path outside its managed dataset directory')
     storage = storage_manifest(cache, role, section['n_samples'])
-    if generation_identity() != desired['generation_identity']:
-        raise RuntimeError('Generation implementation changed while preparing dataset')
     _atomic_json(state_path, {'spec': desired, 'cache': str(cache.relative_to(path)),
                               'storage': storage})
     return cache
@@ -383,7 +373,7 @@ def evaluate_model(model_path, cache_root, role, evaluation, commit):
     """Evaluate a candidate/final model without shuffling or retaining predictions."""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dataset = DoGDataset(Path(cache_root) / role)
-    checkpoint = load_checkpoint(model_path, device)
+    checkpoint = load_checkpoint(model_path, device, expected_commit=commit)
     batches = inference_batches(checkpoint, dataset, device=device,
                                 batch_size=evaluation['batch_size'],
                                 num_workers=evaluation['num_workers'])
@@ -400,9 +390,9 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
 
     # Validation can take much longer than training when every epoch is a
     # candidate. Publish each result independently so an interruption resumes
-    # at the first unevaluated (or subsequently replaced) checkpoint.
+    # at the first unevaluated checkpoint. Completed candidates are immutable.
     progress_path = final_dir / 'validation-progress.json'
-    context = {'version': 2, 'evaluation_code': code_identity(TRAINING_SOURCES),
+    context = {'version': 3, 'git_commit': commit,
                'selection_metric': 'normalized_rmse',
                'evaluation': recipe['evaluation']}
     progress = {**context, 'complete': False, 'candidates': []}
@@ -416,8 +406,7 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     saved_by_name = {}
     for result in progress['candidates']:
         if (not isinstance(result, dict) or
-                not isinstance(result.get('candidate'), str) or
-                not isinstance(result.get('checkpoint_sha256'), str)):
+                not isinstance(result.get('candidate'), str)):
             raise ValueError('Saved validation progress has an invalid candidate result')
         if result['candidate'] in saved_by_name:
             raise ValueError('Saved validation progress has duplicate candidate results')
@@ -426,9 +415,9 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
 
     results = []
     for index, candidate in enumerate(candidates, 1):
-        fingerprint = _sha256(candidate)
+        load_checkpoint(candidate, 'cpu', expected_commit=commit)
         saved = saved_by_name.get(candidate.name)
-        if saved is not None and saved['checkpoint_sha256'] == fingerprint:
+        if saved is not None:
             print(f'Validation already complete {index}/{len(candidates)}: {candidate.name}',
                   flush=True)
             result = saved
@@ -437,11 +426,9 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
             metrics = evaluate_model(candidate, validation_cache, 'validate',
                                      recipe['evaluation'], commit)
             _validate_metrics(metrics, f'Candidate {candidate.name}')
-            result = {'candidate': candidate.name,
-                      'checkpoint_sha256': fingerprint, **metrics}
+            result = {'candidate': candidate.name, **metrics}
             saved_by_name[candidate.name] = result
-            # Preserve candidate order and any results for later candidates;
-            # they remain reusable if a previously evaluated file changed.
+            # Preserve candidate order and results already completed in this run.
             progress['candidates'] = sorted(
                 saved_by_name.values(), key=lambda item: item['candidate'])
             progress['complete'] = False
@@ -453,8 +440,7 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     _atomic_json(final_dir / 'validation-results.json', {
         'git_commit': commit, 'selection_metric': 'normalized_rmse',
         'selected': best['candidate'], 'selected_value': best['normalized_rmse'],
-        'candidates': [{key: value for key, value in result.items()
-                        if key != 'checkpoint_sha256'} for result in results]})
+        'candidates': results})
     progress['candidates'] = results
     progress['complete'] = True
     progress['selected'] = best['candidate']
@@ -463,12 +449,12 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     model_path = final_dir / 'model.pt'
     promote = True
     if model_path.is_file():
-        existing = load_checkpoint(model_path, 'cpu')
+        existing = load_checkpoint(model_path, 'cpu', expected_commit=commit)
         existing_value = existing['validation']['normalized_rmse']
         _number(existing_value, f'{model_path} validation.normalized_rmse', nonnegative=True)
         promote = best['normalized_rmse'] < existing_value
     if promote:
-        selected = load_checkpoint(checkpoint_dir / 'candidates' / best['candidate'], 'cpu')
+        selected = load_checkpoint(checkpoint_dir / 'candidates' / best['candidate'], 'cpu', expected_commit=commit)
         selected['validation'] = {'candidate': best['candidate'],
                                   'normalized_rmse': best['normalized_rmse']}
         _atomic_torch_save(selected, model_path)
@@ -495,6 +481,9 @@ def _stage_test_set(test_path, staging_path):
 
 
 def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
+    # Capture the commit before reading the recipe or importing it in a child.
+    if require_clean:
+        commit = committed_revision(root, commit)
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
     recipe = load_recipe(recipe_path)
     with run_lock() as lock_fds:
@@ -521,6 +510,15 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             ['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('Git commit must be the full 40-character lowercase ID')
+
+    def check_repository():
+        if require_clean:
+            committed_revision(root, commit)
+
+    check_repository()
+    run_fields = {'_git_commit': commit}
+    if require_clean:
+        run_fields['_repo_root'] = str(root)
     network_name = recipe_path.stem
     checkpoint_dir, final_dir = _initialize_output(recipe, network_name, commit)
     provenance = capture_provenance(checkpoint_dir.parent, ROOT)
@@ -530,10 +528,11 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     stimuli, training = recipe['stimuli'], recipe['training_sets']
     latest_path = checkpoint_dir / 'latest.pt'
     for set_index in range(training['number_of_sets']):
+        check_repository()
         seed = training['start_seed'] + set_index * training['seed_increment']
         complete = False
         if latest_path.is_file():
-            latest = load_checkpoint(latest_path, 'cpu', resume=True)
+            latest = load_checkpoint(latest_path, 'cpu', resume=True, expected_commit=commit)
             latest_index = latest['training_set_index']
             if not 0 <= latest_index < training['number_of_sets']:
                 raise ValueError('Latest checkpoint has an invalid training-set index')
@@ -553,11 +552,12 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             # is checked by _prepare_dataset when that set is reached.
             continue
         section = {'seed': seed, 'n_samples': training['samples_per_set'],
-                   '_detector': recipe['detector'], '_provenance': provenance}
+                   '_detector': recipe['detector'], '_provenance': provenance, **run_fields}
         print(f'Preparing training set {set_index + 1}/{training["number_of_sets"]}, seed {seed}',
               flush=True)
         prefetch.acquire(training_path, section)
         cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
+        check_repository()
         if set_index + 1 < training['number_of_sets']:
             prefetch.start(section | {'seed': seed + training['seed_increment']})
         optimization, lr, checkpoints = (recipe['optimization'], recipe['learning_rate'],
@@ -579,6 +579,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
                                   recipe['detector']['displacement_max_px'] + 1,
                                   recipe['detector']['displacement_step_px']))),
             **({'progress_callback': prefetch.observe} if prefetch.enabled else {}))
+        check_repository()
         _safe_delete_managed(training_path)
         print(f'Training set {set_index + 1} complete and deleted', flush=True)
 
@@ -588,17 +589,21 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     if training_path.exists() and (training_path / MANAGED_MARKER).is_file():
         _safe_delete_managed(training_path)
 
-    validation = recipe['validation_set']
+    check_repository()
+    validation = recipe['validation_set'] | run_fields
     validation = validation | {'_detector': recipe['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
     validation_cache = _prepare_dataset(validation_path, 'validate', validation,
                                         stimuli, persistent=False)
-    promoted = _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit)
+    check_repository()
+    _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit)
+    check_repository()
     if not validation.get('keep_after_run', False):
         _safe_delete_managed(validation_path)
         print('Validation set deleted after model selection', flush=True)
 
-    test = recipe['test_set']
+    check_repository()
+    test = recipe['test_set'] | run_fields
     test = test | {'_detector': recipe['detector'], '_provenance': provenance}
     test_path = Path(test['path'])
     test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
@@ -606,14 +611,12 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     if staged:
         test_cache = _stage_test_set(test_path, test['staging_path'])
     results_path = final_dir / 'test-results.json'
-    if promoted or not results_path.is_file():
-        print('Testing final model', flush=True)
-        metrics = evaluate_model(final_dir / 'model.pt', test_cache, 'test',
-                                 recipe['evaluation'], commit)
-        _atomic_json(results_path, {'git_commit': commit, **metrics})
-    else:
-        _validate_metrics(json.loads(results_path.read_text()), f'Cached test results {results_path}')
-        print('Final model is unchanged; retaining its existing test results', flush=True)
+    check_repository()
+    print('Testing final model', flush=True)
+    metrics = evaluate_model(final_dir / 'model.pt', test_cache, 'test',
+                             recipe['evaluation'], commit)
+    check_repository()
+    _atomic_json(results_path, {'git_commit': commit, **metrics})
     if staged:
         _safe_delete_managed(Path(test['staging_path']))
         print('Staged test copy deleted', flush=True)
