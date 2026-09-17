@@ -90,6 +90,34 @@ def candidate_checkpoint(commit, epoch=1):
 
 
 class TrainingRecipeTests(unittest.TestCase):
+    def test_final_test_cache_requires_exact_model_and_dataset_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'test-results.json'
+            metrics = dict(n_samples=2, normalized_rmse=1.0,
+                           translation_speed_mae=1.0, translation_vector_tip_mae=1.0,
+                           rotation_mae_deg=1.0, heading_mae_deg=None)
+            identity = dict(model_sha256='a' * 64, dataset_sha256='b' * 64,
+                            evaluation={'batch_size': 2}, evaluator_git_commit='c' * 40,
+                            split='test')
+            module._atomic_json(path, {'version': 1, 'identity': identity, 'metrics': metrics})
+            self.assertEqual(module._cached_test_result(path, identity), metrics)
+            for key in ('model_sha256', 'dataset_sha256'):
+                changed = identity | {key: 'd' * 64}
+                self.assertIsNone(module._cached_test_result(path, changed))
+            module._atomic_json(path, metrics)  # Old, unidentified result format.
+            self.assertIsNone(module._cached_test_result(path, identity))
+
+    def test_dataset_hash_includes_tensor_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            (cache / 'test').mkdir()
+            (cache / 'dog.json').write_bytes(b'metadata')
+            bundle = cache / 'test' / 'bundle.npy'
+            bundle.write_bytes(b'payload-one')
+            original = module._dataset_sha256(cache, 'test')
+            bundle.write_bytes(b'payload-two')
+            self.assertNotEqual(module._dataset_sha256(cache, 'test'), original)
+
     def test_removed_test_staging_option_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'recipe.toml'
@@ -426,8 +454,12 @@ x_supersampling = 4''')
                         'heading_relative_mae_pct', 'heading_cosine_error_pct',
                         'evaluation_duration_s', 'global_epoch', 'dataset', 'metric_definitions'):
                 self.assertIn(key, measurement)
-            for filename in ('validation-progress.json', 'validation-results.json', 'test-results.json'):
+            for filename in ('validation-progress.json', 'validation-results.json'):
                 self.assertFalse((network / 'final' / filename).exists())
+            saved_test = json.loads((network / 'final' / 'test-results.json').read_text())
+            self.assertEqual(saved_test['version'], 1)
+            self.assertEqual(set(saved_test['identity']), {
+                'model_sha256', 'dataset_sha256', 'evaluation', 'evaluator_git_commit', 'split'})
             for filename in ('precision-fallback.json', 'numerical-failure.json'):
                 self.assertFalse((network / 'checkpoints' / filename).exists())
             self.assertFalse((root / 'stimuli' / 'training').exists())

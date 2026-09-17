@@ -1,5 +1,6 @@
 """Run the repository's single committed training recipe."""
 
+import hashlib
 import json
 import math
 import os
@@ -306,6 +307,45 @@ def _atomic_torch_save(value, path):
     os.replace(temporary, path)
 
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _dataset_sha256(cache_root, role):
+    """Hash the exact metadata, index, and tensor payloads used for evaluation."""
+    cache_root = Path(cache_root).resolve()
+    paths = [cache_root / 'dog.json', *sorted((cache_root / role).glob('*'))]
+    digest = hashlib.sha256()
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f'Invalid evaluation dataset file: {path}')
+        relative = path.relative_to(cache_root).as_posix().encode()
+        digest.update(len(relative).to_bytes(8, 'big'))
+        digest.update(relative)
+        digest.update(bytes.fromhex(_sha256_file(path)))
+    return digest.hexdigest()
+
+
+def _cached_test_result(path, identity):
+    """Return metrics only for a complete cache with an exact evaluation identity."""
+    try:
+        saved = json.loads(Path(path).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(saved, dict) or saved.get('version') != 1
+            or saved.get('identity') != identity or not isinstance(saved.get('metrics'), dict)):
+        return None
+    try:
+        _validate_metrics(saved['metrics'], 'cached test evaluation')
+    except (ValueError, TypeError):
+        return None
+    return saved['metrics']
+
+
 def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callback=None):
     """Generate one role-only set containing only bundled signed DoG contrast."""
     if section.get('_repo_root'):
@@ -582,11 +622,25 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     test_path = Path(test['path'])
     test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
     check_repository()
-    print('Testing final model', flush=True)
-    metrics = evaluate_model(final_dir / 'model.pt', test_cache, 'test',
-                             recipe['evaluation'], commit)
+    model_path = final_dir / 'model.pt'
+    results_path = final_dir / 'test-results.json'
+    identity = {'model_sha256': _sha256_file(model_path),
+                'dataset_sha256': _dataset_sha256(test_cache, 'test'),
+                'evaluation': recipe['evaluation'], 'evaluator_git_commit': commit,
+                'split': 'test'}
     check_repository()
-    log.append('test_result', git_commit=commit,
+    metrics = _cached_test_result(results_path, identity)
+    reused = metrics is not None
+    if reused:
+        print('Reusing final test result', flush=True)
+    else:
+        print('Testing final model', flush=True)
+        metrics = evaluate_model(model_path, test_cache, 'test', recipe['evaluation'], commit)
+        check_repository()
+        _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
+    log.append('test_result', git_commit=commit, cached=reused,
+               model_sha256=identity['model_sha256'],
+               dataset_sha256=identity['dataset_sha256'],
                model_path=str(final_dir / 'model.pt'), metrics=metrics)
     print(f'Test performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
     print('Training recipe complete.', flush=True)
