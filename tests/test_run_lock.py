@@ -72,6 +72,7 @@ class RunLockTests(unittest.TestCase):
             prefetch.assert_not_called()
 
     def test_runner_cleanup_occurs_before_release(self):
+        (self.root / 'output').mkdir()
         path = self.root / 'recipe.toml'
         path.write_text(recipe_text(self.root))
 

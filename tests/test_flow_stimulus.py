@@ -15,6 +15,37 @@ from stimuli.generate_flow_xt_data import (
 
 
 class OneStepStimulusTests(unittest.TestCase):
+    def test_dog_order_matches_direct_reference_and_preserves_labels(self):
+        from dataclasses import replace
+        from stimuli.load_flow_xt_data import DoGDataset
+        from stimuli.metadata import data_contract
+        torch.set_num_threads(1)
+        config = StimConfig(stim_wid_px=49, n_world_dots=20, x_supersampling=7)
+        with tempfile.TemporaryDirectory() as directory:
+            datasets = []
+            for post in (True, False):
+                cfg = replace(config, apply_dog_filter_post_downsample=post)
+                cache = generate_dog_dataset(output_root=str(Path(directory) / str(post)),
+                    n_samples=2, seed=42, config=cfg, dog_bundle_size=2,
+                    speed_range=(.001, .006), heading_deg_range=(-180, 180), rot_deg_range=(0, 0), role='train')
+                datasets.append(DoGDataset(Path(cache) / 'train'))
+                rng = np.random.default_rng(42)
+                for i in range(2):
+                    dx, dz, yaw = sample_motion(rng, (.001, .006), (-180, 180), (0, 0))
+                    raw = generate_flow_xt_stim([dx, dz], yaw, cfg, rng, downsample=post)
+                    factor = 1 if post else 7
+                    expected = DoGFilter(sigma_center=factor, sigma_surround=3*factor)(raw)[0, 0]
+                    if not post:
+                        expected = expected.reshape(2, 31, 7).mean(dim=-1)
+                    saved, label = datasets[-1][i]
+                    torch.testing.assert_close(saved, expected, atol=1e-6, rtol=1e-5)
+                    self.assertEqual(saved.shape, (2, 31))
+                    self.assertEqual(saved.dtype, torch.float32)
+            for i in range(2):
+                torch.testing.assert_close(datasets[0][i][1], datasets[1][i][1], rtol=0, atol=0)
+            self.assertNotEqual(data_contract(datasets[0].storage_metadata),
+                                data_contract(datasets[1].storage_metadata))
+
     def test_fov_bounds(self):
         for fov in (0.001, 120, 240, 360):
             self.assertEqual(StimConfig(fov_deg=fov).fov_deg, fov)
@@ -129,7 +160,7 @@ class OneStepStimulusTests(unittest.TestCase):
             metadata = json.loads((first_cache / 'dog.json').read_text())
             self.assertEqual(metadata['storage_format'], 'dog-contrast-bundles-v2')
 
-    def test_direct_dog_cache_matches_byte_decoded_filter(self):
+    def test_direct_dog_cache_preserves_float32_intensities(self):
         intensities = torch.linspace(0, 1, 98, dtype=torch.float32).reshape(2, 49)
         with tempfile.TemporaryDirectory() as root, patch(
                 'stimuli.generate_flow_xt_data.generate_flow_xt_stim',
@@ -142,8 +173,27 @@ class OneStepStimulusTests(unittest.TestCase):
             from stimuli.load_flow_xt_data import DoGDataset
             saved, _ = DoGDataset(cache / 'train')[0]
         decoded = (intensities * 255).round().to(torch.uint8).float() / 255
-        expected = DoGFilter()(decoded)[0, 0]
+        expected = DoGFilter()(intensities)[0, 0]
         torch.testing.assert_close(saved, expected, rtol=0, atol=0)
+        self.assertFalse(torch.equal(saved, DoGFilter()(decoded)[0, 0]))
+
+    def test_supersampling_above_255_preserves_sub_byte_levels_through_generation(self):
+        config = StimConfig(stim_wid_px=49, n_world_dots=20, x_supersampling=1024)
+        observed = []
+        render = generate_flow_xt_stim
+        def record(**kwargs):
+            frames = render(**kwargs)
+            observed.append(frames)
+            return frames
+        received = []
+        with patch('stimuli.generate_flow_xt_data.generate_flow_xt_stim', side_effect=record):
+            _generate_flow_xt_samples(n_samples=2, seed=42, config=config,
+                rot_deg_range=(0, 0), sample_consumer=lambda *args: received.append(args[-2]))
+        for raw, frames in zip(observed, received):
+            self.assertEqual(frames.dtype, torch.float32)
+            torch.testing.assert_close(frames[0], raw, rtol=0, atol=0)
+            quantized = (raw * 255).round() / 255
+            self.assertTrue(torch.any(raw != quantized))
 
     def test_generation_writes_only_dog_bundles(self):
         for superimpose in (False, True):

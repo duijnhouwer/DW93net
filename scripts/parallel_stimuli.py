@@ -34,6 +34,7 @@ class Prefetch:
         self.recipe = recipe
         self.lock_fds = lock_fds
         self.provenance = None
+        self.log_run_id = None
         self.settings = recipe.get('parallel_generation', {})
         self.enabled = self.settings.get('enabled', False)
         self.stage = Path(recipe['training_sets']['path']).with_name(
@@ -62,6 +63,9 @@ class Prefetch:
         self._write_control(self.throttle.threads)
         self.request.write_text(json.dumps(dict(
             path=str(self.stage), section=section, stimuli=self.recipe['stimuli'],
+            log_run_id=self.log_run_id,
+            log_path=(str(Path(self.recipe['network']['output_path']) / 'training_log.jsonl')
+                      if 'network' in self.recipe else None),
             cpus=self.cpus, control=str(self.control), parent_pid=os.getpid())))
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = ''
@@ -146,6 +150,17 @@ class Prefetch:
 
 def worker(request_path):
     request = json.loads(Path(request_path).read_text())
+    from contextlib import nullcontext
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+    from training_log import training_log
+    with (training_log(request['log_path'], request.get('log_run_id'))
+          if request.get('log_path') else nullcontext()):
+        print(f'Background generation starting: seed {request["section"]["seed"]}', flush=True)
+        _worker(request)
+        print('Background generation complete', flush=True)
+
+
+def _worker(request):
     if hasattr(os, 'nice'):
         os.nice(10)
     if request['cpus'] and hasattr(os, 'sched_setaffinity'):

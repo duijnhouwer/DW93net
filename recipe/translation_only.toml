@@ -15,6 +15,7 @@ n_world_dots = 1000
 superimpose = false
 x_supersampling = 255
 dog_bundle_size = 64
+apply_dog_filter_post_downsample = true
 
 [detector]
 displacement_min_px = -60
@@ -37,15 +38,12 @@ shuffle_seed = 7000
 path = "/home/jacob/Documents/dw93net_stimuli/validation"
 seed = 2000
 n_samples = 2000
-keep_after_run = false
-selection_metric = "normalized_rmse"
+selection_metric = "validation_loss"
 
 [test_set]
 path = "/home/jacob/Documents/dw93net_stimuli/test"
 seed = 3000
 n_samples = 10000
-# Optional: copy the persistent test set to a faster disk before evaluation.
-# staging_path = "/fast-ssd/dw93net-test-staging"
 
 [optimization]
 batch_size = 64
@@ -64,7 +62,7 @@ max_threads = 8
 [learning_rate]
 initial = 0.001
 scheduler = "reduce_on_plateau"
-monitor = "training_loss"
+monitor = "validation_loss"
 factor = 0.5
 patience_epochs = 10
 minimum = 0.000001

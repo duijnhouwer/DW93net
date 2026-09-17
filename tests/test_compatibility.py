@@ -17,7 +17,8 @@ from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
 from stimuli.load_flow_xt_data import DoGDataset
 from stimuli.metadata import motion_scales
 from stimuli.preprocessing_provenance import capture_provenance
-from train.train_flow_xt_net import train_recipe_set, RecipeTrainingSettings
+from train.train_flow_xt_net import RecipeTrainingSettings
+from training_helpers import train_recipe_set
 from test_training_recipe import module, DETECTOR
 
 

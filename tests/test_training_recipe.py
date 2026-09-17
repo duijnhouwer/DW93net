@@ -47,8 +47,7 @@ shuffle_seed = 7000
 path = "{root}/stimuli/validation"
 seed = 2000
 n_samples = 1000
-keep_after_run = false
-selection_metric = "normalized_rmse"
+selection_metric = "validation_loss"
 [test_set]
 path = "{root}/stimuli/test"
 seed = 3000
@@ -63,7 +62,7 @@ mirror_train_stimuli = true
 [learning_rate]
 initial = 0.001
 scheduler = "reduce_on_plateau"
-monitor = "training_loss"
+monitor = "validation_loss"
 factor = 0.5
 patience_epochs = 10
 minimum = 0.000001
@@ -85,10 +84,33 @@ def candidate_checkpoint(commit, epoch=1):
                 data_contract={}, git_commit=commit, global_epoch=epoch,
                 training_set_index=0, training_seed=1, epoch_within_set=epoch,
                 epochs_per_set=epoch, training_loss=.1, learning_rate=.001,
+                validation={}, validation_loss=1., best_validation_loss=1.,
+                best_candidate='epoch-000001.pt', stop_reason=None,
                 detector={}, n_input_channels=3, model_state_dict={})
 
 
 class TrainingRecipeTests(unittest.TestCase):
+    def test_removed_test_staging_option_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            path.write_text(recipe_text(directory).replace(
+                '[test_set]', f'[test_set]\nstaging_path = "{directory}/staged-test"'))
+            with self.assertRaisesRegex(ValueError, 'Unknown test_set field.*staging_path'):
+                module.load_recipe(path)
+
+    def test_dog_order_option_is_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            for value in ('true', 'false', '1', '"false"'):
+                path.write_text(recipe_text(directory).replace('[stimuli]',
+                    f'[stimuli]\napply_dog_filter_post_downsample = {value}'))
+                if value in ('true', 'false'):
+                    self.assertEqual(module.load_recipe(path)['stimuli']['apply_dog_filter_post_downsample'],
+                                     value == 'true')
+                else:
+                    with self.assertRaisesRegex(ValueError, 'apply_dog_filter_post_downsample'):
+                        module.load_recipe(path)
+
     def test_precision_options_are_required_booleans(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'recipe.toml'
@@ -270,11 +292,8 @@ class TrainingRecipeTests(unittest.TestCase):
             module._safe_delete_managed(path)
             self.assertFalse(path.exists())
 
-    def test_candidate_validation_resumes_after_last_saved_result(self):
+    def test_final_selection_uses_committed_best_not_last_or_orphan_candidate(self):
         commit = 'a' * 40
-        metric = {'n_samples': 2, 'translation_speed_mae': 0.1,
-                  'translation_vector_tip_mae': 0.2, 'rotation_mae_deg': 0.0,
-                  'heading_mae_deg': 1.0}
         recipe = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -285,31 +304,16 @@ class TrainingRecipeTests(unittest.TestCase):
             for epoch in range(1, 4):
                 torch.save(candidate_checkpoint(commit, epoch), candidates / f'epoch-{epoch:06d}.pt')
 
-            first = {**metric, 'normalized_rmse': 3.0}
-            with patch.object(module, 'evaluate_model',
-                              side_effect=[first, RuntimeError('interrupted')]) as evaluate:
-                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
-                    module._select_final(root / 'checkpoints', final, root / 'validation',
-                                         recipe, commit)
-                self.assertEqual(evaluate.call_count, 2)
-            progress = json.loads((final / 'validation-progress.json').read_text())
-            self.assertFalse(progress['complete'])
-            self.assertEqual([row['candidate'] for row in progress['candidates']],
-                             ['epoch-000001.pt'])
-
-            remaining = [{**metric, 'normalized_rmse': 2.0},
-                         {**metric, 'normalized_rmse': 1.0}]
-            with patch.object(module, 'evaluate_model', side_effect=remaining) as evaluate:
-                promoted = module._select_final(root / 'checkpoints', final,
-                                                root / 'validation', recipe, commit)
-                self.assertEqual(evaluate.call_count, 2)
-            self.assertTrue(promoted)
-            progress = json.loads((final / 'validation-progress.json').read_text())
-            self.assertTrue(progress['complete'])
-            self.assertEqual(progress['selected'], 'epoch-000003.pt')
-            results = json.loads((final / 'validation-results.json').read_text())
-            self.assertEqual(len(results['candidates']), 3)
-            self.assertNotIn('checkpoint_sha256', results['candidates'][0])
+            latest = candidate_checkpoint(commit, 2) | dict(kind='resume',
+                optimizer_state_dict={}, scaler_state_dict={}, scheduler_state_dict={}, settings={})
+            torch.save(latest, root / 'checkpoints' / 'latest.pt')
+            with patch.object(module, 'evaluate_model') as evaluate:
+                module._select_final(root / 'checkpoints', final, recipe, commit)
+                evaluate.assert_not_called()
+            log = module.EventLog(root / 'training_log.jsonl', str(root / 'checkpoints'))
+            progress = log.events('validation_completed')[-1]
+            self.assertEqual(progress['selected'], 'epoch-000001.pt')
+            self.assertEqual(torch.load(final / 'model.pt', weights_only=True)['global_epoch'], 1)
 
     def test_resume_second_set_reuses_data_and_completed_epoch(self):
         import train.train_flow_xt_net as training_engine
@@ -357,8 +361,18 @@ class TrainingRecipeTests(unittest.TestCase):
                         module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
                     self.assertEqual(train.call_count, 1)
                     self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
-                                     ['validate', 'test'])
+                                     ['test'])
                 latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
+                log = (root / 'output' / 'training_log.jsonl').read_text()
+                self.assertEqual(log.count('Starting/resuming training recipe:'), 2)
+                self.assertIn('RuntimeError: Simulated interruption', log)
+                self.assertIn('Training recipe complete.', log)
+                records = module.EventLog(root / 'output' / 'training_log.jsonl', str(checkpoints))
+                self.assertEqual([e['result']['global_epoch'] for e in records.events('validation_result')],
+                                 [1, 2, 3, 4])
+                recovered = [e for e in records.events('epoch_completed') if e['global_epoch'] == 3]
+                self.assertEqual(len(recovered), 1)
+                self.assertTrue(recovered[0]['recovered_from_checkpoint'])
                 self.assertEqual(latest['global_epoch'], 4)
                 self.assertEqual(completed_candidate.stat().st_mtime_ns, saved_time)
                 self.assertFalse(training_path.exists())
@@ -388,14 +402,36 @@ x_supersampling = 4''')
             path.write_text(text)
             module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             network = root / 'output' / 'smoke'
+            log = (root / 'output' / 'training_log.jsonl').read_text()
+            for event in ('global epoch 2', 'Validation performance:', 'Test performance:',
+                          'normalized_rmse', 'Training precision:', 'Healthy checkpoint saved:',
+                          'Background generation complete', 'Training recipe complete.'):
+                self.assertIn(event, log)
             self.assertTrue((network / 'run.json').is_file())
             self.assertEqual(len(list(root.rglob('source.tar.gz'))), 1)
             self.assertEqual(len(list((network / 'checkpoints' / 'candidates').glob('*.pt'))), 2)
             self.assertTrue((network / 'final' / 'model.pt').is_file())
-            self.assertTrue((network / 'final' / 'validation-results.json').is_file())
-            self.assertTrue((network / 'final' / 'test-results.json').is_file())
+            events = module.EventLog(root / 'output' / 'training_log.jsonl',
+                                     str(network / 'checkpoints'))
+            self.assertTrue(events.events('validation_completed'))
+            self.assertTrue(events.events('test_result'))
+            self.assertEqual(events.events('training_stopped')[-1]['reason'], 'training_limit')
+            for epoch in events.events('epoch_completed'):
+                self.assertGreater(epoch['training_duration_s'], 0)
+                self.assertGreaterEqual(epoch['epoch_wall_duration_s'], epoch['training_duration_s'])
+                self.assertGreater(epoch['checkpoint_duration_s'], 0)
+                self.assertEqual(epoch['presentations'], 2)
+            measurement = events.events('test_result')[-1]['metrics']
+            for key in ('speed_relative_mae_pct', 'vector_tip_relative_mae_pct',
+                        'heading_relative_mae_pct', 'heading_cosine_error_pct',
+                        'evaluation_duration_s', 'global_epoch', 'dataset', 'metric_definitions'):
+                self.assertIn(key, measurement)
+            for filename in ('validation-progress.json', 'validation-results.json', 'test-results.json'):
+                self.assertFalse((network / 'final' / filename).exists())
+            for filename in ('precision-fallback.json', 'numerical-failure.json'):
+                self.assertFalse((network / 'checkpoints' / filename).exists())
             self.assertFalse((root / 'stimuli' / 'training').exists())
-            self.assertFalse((root / 'stimuli' / 'validation').exists())
+            self.assertTrue((root / 'stimuli' / 'validation').exists())
             self.assertTrue((root / 'stimuli' / 'test' / module.DATASET_STATE).is_file())
             progress_spec = importlib.util.spec_from_file_location(
                 'evaluate_progress', module.ROOT / 'scripts' / 'evaluate_progress.py')
@@ -413,6 +449,20 @@ x_supersampling = 4''')
             report = next(report_path.rglob('progress.md')).read_text()
             self.assertIn('epoch-000001.pt', report)
             self.assertIn('epoch-000002.pt', report)
+            measurements = events.events('progress_evaluation_result')
+            self.assertEqual(len(measurements), 2)
+            self.assertEqual(measurements[0]['split'], 'test')
+            self.assertIn('breakdowns', measurements[0])
+            self.assertFalse(list(report_path.rglob('*.json')))
+            report_spec = importlib.util.spec_from_file_location(
+                'report_training_log', module.ROOT / 'scripts/report_training_log.py')
+            report_module = importlib.util.module_from_spec(report_spec)
+            report_spec.loader.exec_module(report_module)
+            # No data/checkpoints needed: the report consumes only event records.
+            log_report = report_module.report(events.read(), str(network / 'checkpoints'))
+            self.assertIn('Wall s incl. retries/save', log_report)
+            self.assertIn('Cosine error %', log_report)
+            self.assertIn('test / session', log_report)
 
 
 if __name__ == '__main__':

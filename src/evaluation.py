@@ -10,6 +10,27 @@ from stimuli.metadata import data_contract, require_pure_translation_root
 from precision import configure_tf32
 
 
+METRIC_DEFINITIONS = {
+    'normalized_mse': 'mean(sum((prediction-target)^2 / motion_scale^2)); validation loss drives LR and checkpoint selection.',
+    'heading_mae_deg': 'Mean absolute wrapped heading error in degrees, in [0,180].',
+    'heading_relative_mae_pct': '100 * heading_mae_deg / 180; not percent of true heading.',
+    'heading_cosine_similarity': 'Mean normalized translation dot product; 1 aligned, 0 orthogonal, -1 opposite.',
+    'heading_cosine_error_pct': 'Mean 50 * (1 - cosine similarity); 0 aligned, 50 orthogonal, 100 opposite.',
+    'heading_within_15_pct': 'Percent of all samples within 15 degrees; undefined headings count as failures.',
+    'speed_relative_mae_pct': 'Mean per-sample 100 * abs(predicted_speed - true_speed) / true_speed.',
+    'vector_tip_relative_mae_pct': 'Mean per-sample 100 * norm(predicted_vector - true_vector) / true_speed.',
+    'undefined_heading_count': 'Samples with predicted or true speed <= 1e-12; excluded from angular/cosine means.',
+    'undefined_relative_error_count': 'Samples with true speed <= 1e-12; excluded from relative speed/vector means.',
+    'speed_rmse': 'RMS speed error, in scene units per step.',
+    'vector_rmse': 'RMS Euclidean translation vector error, in scene units per step.',
+    'normalized_rmse': 'sqrt(mean(sum((prediction-target)^2 / motion_scale^2))) over samples.',
+}
+
+
+class NonfiniteEvaluationError(ValueError):
+    """Numerical model failure during held-out inference."""
+
+
 def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0, indices=None):
     configure_tf32(checkpoint['allow_tp32'])
     require_pure_translation_root(dataset.folder.parent)
@@ -29,14 +50,18 @@ def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0,
         for contrast, target in loader:
             prediction = model(bank(contrast.to(device, non_blocking=True).float()[:, None],
                                     validate=False)).float()
-            if not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
-                raise ValueError('Nonfinite evaluation predictions or targets')
+            if not torch.isfinite(target).all():
+                raise ValueError('Nonfinite evaluation targets')
+            if not torch.isfinite(prediction).all():
+                raise NonfiniteEvaluationError('Nonfinite evaluation predictions')
             yield prediction.cpu().numpy(), target.numpy()
 
 
 def summary_metrics(batches, scales):
     count = heading_count = 0
     squared = speed = tip = rotation = heading = 0.
+    relative_count = within_15 = 0
+    speed_pct = tip_pct = cosine = cosine_error = speed_squared = tip_squared = 0.
     for prediction, target in batches:
         errors = translation_errors(prediction[:, :2], target[:, :2])
         difference = prediction.astype(np.float64) - target
@@ -46,15 +71,33 @@ def summary_metrics(batches, scales):
         rotation += float(np.abs(difference[:, 2]).sum())
         heading += float(errors['absolute'].sum())
         heading_count += len(errors['absolute'])
+        relative_count += len(errors['relative_speed_error_pct'])
+        within_15 += int((errors['absolute'] <= 15).sum())
+        speed_pct += float(errors['relative_speed_error_pct'].sum())
+        tip_pct += float(errors['relative_tip_error_pct'].sum())
+        cosine += float(errors['cosine_similarity'].sum())
+        cosine_error += float(errors['cosine_error_pct'].sum())
+        speed_squared += float(np.square(errors['speed_absolute']).sum())
+        tip_squared += float(np.square(errors['tip_distance']).sum())
         count += len(target)
     if not count:
         raise ValueError('Evaluation dataset is empty')
-    result = dict(n_samples=count, normalized_rmse=math.sqrt(squared / count),
+    result = dict(n_samples=count, normalized_mse=squared / count, normalized_rmse=math.sqrt(squared / count),
                   translation_speed_mae=speed / count, translation_vector_tip_mae=tip / count,
                   rotation_mae_deg=rotation / count,
                   heading_mae_deg=heading / heading_count if heading_count else None)
+    result.update(
+        heading_relative_mae_pct=100 * heading / (180 * heading_count) if heading_count else None,
+        heading_cosine_similarity=cosine / heading_count if heading_count else None,
+        heading_cosine_error_pct=cosine_error / heading_count if heading_count else None,
+        heading_within_15_pct=100 * within_15 / count,
+        undefined_heading_count=count - heading_count,
+        undefined_relative_error_count=count - relative_count,
+        speed_relative_mae_pct=speed_pct / relative_count if relative_count else None,
+        vector_tip_relative_mae_pct=tip_pct / relative_count if relative_count else None,
+        speed_rmse=math.sqrt(speed_squared / count), vector_rmse=math.sqrt(tip_squared / count))
     if any(value is not None and not math.isfinite(value) for value in result.values()):
-        raise ValueError('Nonfinite evaluation metrics')
+        raise NonfiniteEvaluationError('Nonfinite evaluation metrics')
     return result
 
 
@@ -72,15 +115,18 @@ def translation_errors(pred, target):
     relative_heading_error_pct = 100 * absolute / 180
     tip_distance = np.linalg.norm(pred - target, axis=1)
     speed_absolute = np.abs(speed - truth)
-    relative_speed_error_pct = 100 * speed_absolute / truth
-    relative_tip_error_pct = 100 * tip_distance / truth
-    cosine_similarity = np.sum(pred[valid] * target[valid], axis=1) / (speed[valid] * truth[valid])
+    relative_valid = truth > 1e-12
+    relative_speed_error_pct = 100 * speed_absolute[relative_valid] / truth[relative_valid]
+    relative_tip_error_pct = 100 * tip_distance[relative_valid] / truth[relative_valid]
+    cosine_similarity = np.clip(
+        np.sum(pred[valid] * target[valid], axis=1) / (speed[valid] * truth[valid]), -1, 1)
     return dict(speed=speed, truth=truth, valid=valid, angles=angles, absolute=absolute,
                 relative_heading_error_pct=relative_heading_error_pct,
                 tip_distance=tip_distance, speed_absolute=speed_absolute,
                 relative_speed_error_pct=relative_speed_error_pct,
                 relative_tip_error_pct=relative_tip_error_pct,
-                cosine_similarity=cosine_similarity)
+                cosine_similarity=cosine_similarity, cosine_error_pct=50 * (1 - cosine_similarity),
+                relative_valid=relative_valid)
 
 
 def mean_ci95(values):
@@ -113,10 +159,13 @@ def metrics(pred, target):
         mean_ci95(relative_heading_error_pct) if len(relative_heading_error_pct) else (None, None))
     speed_ci_low, speed_ci_high = mean_ci95(speed_absolute)
     tip_ci_low, tip_ci_high = mean_ci95(tip_distance)
-    relative_speed_ci_low, relative_speed_ci_high = mean_ci95(relative_speed_error_pct)
-    relative_tip_ci_low, relative_tip_ci_high = mean_ci95(relative_tip_error_pct)
+    relative_speed_ci_low, relative_speed_ci_high = (
+        mean_ci95(relative_speed_error_pct) if len(relative_speed_error_pct) else (None, None))
+    relative_tip_ci_low, relative_tip_ci_high = (
+        mean_ci95(relative_tip_error_pct) if len(relative_tip_error_pct) else (None, None))
     return {
         'n': len(pred), 'undefined_heading_count': int((~valid).sum()),
+        'undefined_relative_error_count': int((~errors['relative_valid']).sum()),
         'heading_mae_deg': float(absolute.mean()) if len(angles) else None,
         'heading_mae_deg_ci95_low': heading_ci_low,
         'heading_mae_deg_ci95_high': heading_ci_high,
@@ -127,12 +176,13 @@ def metrics(pred, target):
         'heading_p90_deg': float(np.percentile(absolute, 90)) if len(angles) else None,
         'heading_bias_deg': float(angles.mean()) if len(angles) else None,
         'heading_cosine_similarity': float(cosine_similarity.mean()) if len(cosine_similarity) else None,
+        'heading_cosine_error_pct': float(errors['cosine_error_pct'].mean()) if len(cosine_similarity) else None,
         # Undefined estimates count as failures in threshold accuracy.
         'heading_within_15_pct': float(100 * (absolute <= 15).sum() / len(pred)),
         'speed_mae': float(speed_absolute.mean()),
         'speed_mae_ci95_low': speed_ci_low,
         'speed_mae_ci95_high': speed_ci_high,
-        'speed_relative_mae_pct': float(relative_speed_error_pct.mean()),
+        'speed_relative_mae_pct': float(relative_speed_error_pct.mean()) if len(relative_speed_error_pct) else None,
         'speed_relative_mae_pct_ci95_low': relative_speed_ci_low,
         'speed_relative_mae_pct_ci95_high': relative_speed_ci_high,
         'speed_bias': float((speed - truth).mean()),
@@ -141,7 +191,7 @@ def metrics(pred, target):
         'vector_tip_mae': float(tip_distance.mean()),
         'vector_tip_mae_ci95_low': tip_ci_low,
         'vector_tip_mae_ci95_high': tip_ci_high,
-        'vector_tip_relative_mae_pct': float(relative_tip_error_pct.mean()),
+        'vector_tip_relative_mae_pct': float(relative_tip_error_pct.mean()) if len(relative_tip_error_pct) else None,
         'vector_tip_relative_mae_pct_ci95_low': relative_tip_ci_low,
         'vector_tip_relative_mae_pct_ci95_high': relative_tip_ci_high,
         'vector_tip_median': float(np.median(tip_distance)),
@@ -157,7 +207,8 @@ CARDINAL_HEADINGS = {0: 'Front', 90: 'Right', 180: 'Back', 270: 'Left'}
 def empty_metrics():
     """Metric schema for a requested stratum that contains no samples."""
     return {
-        'n': 0, 'undefined_heading_count': 0,
+        'n': 0, 'undefined_heading_count': 0, 'undefined_relative_error_count': 0,
+        'heading_cosine_error_pct': None,
         'heading_mae_deg': None, 'heading_median_deg': None,
         'heading_mae_deg_ci95_low': None, 'heading_mae_deg_ci95_high': None,
         'heading_relative_mae_pct': None, 'heading_relative_mae_pct_ci95_low': None,

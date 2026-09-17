@@ -1,10 +1,32 @@
 """Checkpoint structure and exact Git-commit matching."""
 
+import math
 import torch
 
 from run_revision import revision
 
-SCHEMA = 'dw93net-checkpoint-v2'
+SCHEMA = 'dw93net-checkpoint-v3'
+
+
+class NonfiniteTensorError(ValueError):
+    """Numerical corruption, distinct from schema or run-identity errors."""
+
+
+def validate_tensor_health(value, path='checkpoint'):
+    """Reject NaN/Inf in nested floating/complex tensors, naming the bad state.
+
+    Scalar scheduler sentinels such as mode_worse=inf are legitimate; this
+    checks tensor payloads rather than rejecting every infinite Python number.
+    """
+    if isinstance(value, torch.Tensor):
+        if (value.is_floating_point() or value.is_complex()) and not torch.isfinite(value).all().item():
+            raise NonfiniteTensorError(f'Nonfinite tensor in {path}')
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            validate_tensor_health(child, f'{path}[{key!r}]')
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            validate_tensor_health(child, f'{path}[{index}]')
 
 
 def validate_checkpoint(checkpoint, *, resume=False, expected_commit=None):
@@ -20,13 +42,21 @@ def validate_checkpoint(checkpoint, *, resume=False, expected_commit=None):
         if type(checkpoint[key]) is not bool:
             raise ValueError(f'Checkpoint {key} must be true or false')
     if checkpoint['kind'] == 'resume':
-        required = {'optimizer_state_dict', 'scaler_state_dict', 'scheduler_state_dict', 'settings'}
+        required = {'optimizer_state_dict', 'scaler_state_dict', 'scheduler_state_dict', 'settings',
+                    'best_validation_loss', 'best_candidate', 'stop_reason', 'validation_loss', 'validation'}
         if required - checkpoint.keys():
             raise ValueError('Incomplete resumable checkpoint')
+        for key in ('validation_loss', 'best_validation_loss'):
+            value = checkpoint[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'Checkpoint {key} must be finite and nonnegative')
+        if checkpoint['stop_reason'] not in (None, 'learning_rate_minimum'):
+            raise ValueError('Invalid checkpoint stop reason')
     if resume and checkpoint['kind'] != 'resume':
         raise ValueError('A model-only candidate cannot resume training')
     if checkpoint['git_commit'] != (revision() if expected_commit is None else expected_commit):
         raise ValueError('Checkpoint Git commit does not match the run')
+    validate_tensor_health(checkpoint)
     return checkpoint
 
 

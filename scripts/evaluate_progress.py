@@ -1,9 +1,9 @@
 """Reusable translation checkpoint evaluation; run with --help for options."""
 import argparse
-import json
 import os
 from pathlib import Path
 import sys
+import time
 from datetime import datetime, timezone
 
 import numpy as np
@@ -14,7 +14,8 @@ from stimuli.load_flow_xt_data import DoGDataset
 from stimuli.metadata import require_pure_translation_root
 from checkpoints import load_checkpoint
 from run_revision import committed_revision
-from evaluation import metrics, binned_metrics, inference_batches
+from evaluation import metrics, binned_metrics, inference_batches, METRIC_DEFINITIONS
+from training_log import EventLog
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -174,7 +175,8 @@ def main():
     parser.add_argument('--plot-heading-percent', dest='plot_heading_percent', action='store_true',
                         help='Also save heading error as a percentage of the 180° maximum')
     parser.add_argument('--output', type=Path, default=ROOT / 'evaluations')
-    parser.add_argument('--refresh', action='store_true', help='Accepted for compatibility; evaluation always recomputes')
+    parser.add_argument('--log', type=Path,
+                        help='Central training_log.jsonl; defaults to the run output folder')
     args = parser.parse_args()
     if (args.samples < 0 or args.batch_size < 1 or args.threads < 1
             or any(count < 1 for count in args.heading_bins + args.speed_bins)):
@@ -205,7 +207,11 @@ def main():
     out = (args.output / args.checkpoints.parent.name / commit[:12] /
            datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     out.mkdir(parents=True, exist_ok=True)
-    (out / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+    log = EventLog(args.log or args.checkpoints.parent.parent / 'training_log.jsonl',
+                   str(args.checkpoints))
+    evaluation_id = out.name
+    log.append('progress_evaluation_started', evaluation_id=evaluation_id,
+               manifest=manifest, metric_definitions=METRIC_DEFINITIONS)
     torch.set_num_threads(args.threads)
     rows = []
     paths = sorted((args.checkpoints / 'candidates').glob('epoch-*.pt'))
@@ -215,12 +221,13 @@ def main():
     if not paths:
         parser.error('No checkpoints found')
     for path in paths:
+        started = time.perf_counter()
         before = path.stat()
         print(f'{path.name}: evaluating {len(indices)} {args.split} examples on {args.device}', flush=True)
         committed_revision(ROOT, commit)
         checkpoint = load_checkpoint(path, expected_commit=commit)
         predictions, targets = [], []
-        for prediction, target in inference_batches(checkpoint, dataset, device=args.device,
+        for prediction, target in inference_batches(checkpoint | {'allow_tp32': False}, dataset, device=args.device,
                 batch_size=args.batch_size, indices=indices):
             predictions.append(prediction[:, :2])
             targets.append(target[:, :2])
@@ -240,12 +247,17 @@ def main():
             'speed': binned_metrics(prediction, target, dimension='speed',
                                     bin_counts=args.speed_bins),
         }
+        row['evaluation_duration_s'] = time.perf_counter() - started
+        row['allow_tf32'] = False
         committed_revision(ROOT, commit)
-        saved = out / (path.stem + '.json')
-        temporary = saved.with_suffix('.json.tmp')
-        temporary.write_text(json.dumps(row, indent=2, allow_nan=False))
-        temporary.replace(saved)
-        rows.append(row)
+        log.append('progress_evaluation_result', evaluation_id=evaluation_id,
+                   split=args.split, data=str(args.data), sample_seed=args.seed,
+                   n_samples=len(indices), **row)
+    log.append('progress_evaluation_completed', evaluation_id=evaluation_id,
+               checkpoints_evaluated=len(paths))
+    # Reports/plots are views of the central record, not separate metric stores.
+    rows = [row for row in log.events('progress_evaluation_result')
+            if row['evaluation_id'] == evaluation_id]
     rows.sort(key=lambda r: r['epoch'])
     report = ['# Translation progress', '',
               f'{len(indices)} fixed {args.split} examples; seed {args.seed}. Heading is primary.',

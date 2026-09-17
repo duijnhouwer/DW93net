@@ -13,6 +13,7 @@ from parallel_stimuli import Prefetch, Throttle
 class ParallelStimuliTests(unittest.TestCase):
     def test_interrupt_stops_real_worker_and_removes_partial_set(self):
         with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'output').mkdir()
             path = Path(directory) / 'recipe.toml'
             path.write_text(recipe_text(directory) + '\n[parallel_generation]\nenabled = true\n')
             recipe = module.load_recipe(path)
@@ -46,8 +47,15 @@ class ParallelStimuliTests(unittest.TestCase):
         self.assertEqual(controller.threads, 4)
 
     def test_real_child_matches_serial_and_reuses_completed_staging(self):
+        self._assert_real_child_matches_serial(True)
+
+    def test_high_resolution_dog_child_matches_serial(self):
+        self._assert_real_child_matches_serial(False)
+
+    def _assert_real_child_matches_serial(self, post):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / 'output').mkdir()
             path = root / 'recipe.toml'
             path.write_text(recipe_text(directory) + '''
 [parallel_generation]
@@ -56,7 +64,8 @@ min_threads = 1
 max_threads = 2
 ''')
             recipe = module.load_recipe(path)
-            recipe['stimuli'].update(fov_deg=3, n_world_dots=20, x_supersampling=4)
+            recipe['stimuli'].update(fov_deg=3, n_world_dots=20, x_supersampling=4,
+                                    apply_dog_filter_post_downsample=post)
             section = dict(seed=1001, n_samples=4, _detector=DETECTOR)
             prefetch = Prefetch(recipe)
             try:

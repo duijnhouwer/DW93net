@@ -5,6 +5,42 @@ import torch
 import torch.nn.functional as F
 
 
+class SupersampledDoG:
+    """CPU float32 FFT DoG followed by box downsampling, one stimulus at a time."""
+
+    def __init__(self, dog_filter, width, factor):
+        import numpy as np
+        from scipy import fft
+        self.width, self.factor = width, factor
+        self.radius = dog_filter.radius * factor
+        self.high_width = width * factor
+        if width <= 2 * dog_filter.radius:
+            raise ValueError('Stimulus too narrow for valid DoG filtering')
+        self.length = fft.next_fast_len(self.high_width + 2 * self.radius, real=True)
+        self.workers = torch.get_num_threads()
+        x = np.arange(-self.radius, self.radius + 1, dtype=np.float64)
+        weights = []
+        for sigma in (dog_filter.sigma_center, dog_filter.sigma_surround):
+            w = np.exp(-.5 * (x / (sigma * factor)) ** 2)
+            weights.append((w / w.sum()).astype(np.float32))
+        self.spectrum = fft.rfft(weights[0] - weights[1], n=self.length, workers=self.workers)
+
+    def __call__(self, frames):
+        import numpy as np
+        from scipy import fft
+        if frames.shape != (1, 2, self.high_width) or not torch.isfinite(frames).all():
+            raise ValueError('Expected finite supersampled [1,2,X] frames')
+        # Honor the background generator's current thread throttle.
+        workers = torch.get_num_threads()
+        spectrum = fft.rfft(frames[0].numpy(), n=self.length, axis=-1, workers=workers)
+        spectrum *= self.spectrum
+        filtered = fft.irfft(spectrum, n=self.length, axis=-1, workers=workers,
+                            overwrite_x=True)[:, 2*self.radius:self.high_width]
+        low_width = self.width - 2 * (self.radius // self.factor)
+        return torch.from_numpy(filtered.reshape(2, low_width, self.factor).mean(
+            axis=2, dtype=np.float32))
+
+
 class DoGFilter:
     """Fixed luminance DoG stage whose signed output is safe to cache."""
 

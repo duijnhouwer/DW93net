@@ -60,6 +60,78 @@ stops the run with ERROR. Even documentation-only commits require a new run.
 `latest.pt` is a full epoch-boundary resume checkpoint; `previous.pt` is its
 optional predecessor. Model-only candidates are saved at the configured epoch
 interval and at the last scheduled epoch.
+Before publishing checkpoints, training checks model and optimizer tensor health
+even when the epoch loss is finite. On a nonfinite loss or state, it discards the
+failed epoch, restores the last healthy model/optimizer/scheduler state, and
+retries the same epoch once with AMP and TF32 disabled. Before the first checkpoint,
+the retry restores the original initialization. The data and shuffle order are
+unchanged. If full float32 also fails (or was already in use), training stops and
+leaves previous checkpoint files intact. Other errors do not trigger this retry.
+Loading checks nested tensor state too,
+including optimizer, gradient-scaler, and scheduler tensors when present.
+
+The fallback stays active for all later epochs, datasets, and restarts, even if
+the recipe permits AMP/TF32. Actual precision flags are saved in checkpoints;
+`<output_path>/training_log.jsonl` records each numerical failure and the precision
+switch before retrying. On restart it supplies the persistent fallback policy;
+keep this file alongside the checkpoints. The recipe and learning-rate policy
+are not changed by recovery.
+
+This is the single training event history, stored as JSON Lines: one complete
+JSON object per line, each with `version: 1`. Each event has a UTC `timestamp`,
+`event` type, `run_id` (the absolute
+checkpoint directory), and process ID. Structured records include epoch loss,
+learning rate, precision settings, numerical failures/fallbacks, validation
+metrics/selection, test metrics, and fatal-error tracebacks. Console output,
+including background generation, is also captured as `console` events while
+remaining visible in the terminal. Restarts retain the history; writes are
+serialized across processes, appended without rewriting history, and synced to
+disk. Readers ignore an unfinished final line left by an interrupted write; the
+next writer truncates only that tail and records a `log_tail_recovered` event.
+Malformed complete records cause an explicit error when read, not silent recovery.
+Do not replace or rotate the file during a run: its file lock coordinates writers.
+The obsolete `training_log.json` format is not supported or migrated. If present,
+it causes an explicit error; use a fresh output folder or archive the old run.
+No separate failure, fallback, validation-progress/results or test-results logs
+are produced. Dataset indexes/metadata, `run.json` identity, and source/environment
+provenance remain separate because they describe artifacts rather than events.
+Standalone analysis and historical benchmark reports are not modified.
+Recipe parsing errors before the output path is known, and abrupt process kills
+or power loss, cannot produce a final failure entry.
+
+The log is also the central progress/evaluation record. `epoch_started` identifies
+each attempt; `epoch_completed` records successful-attempt training seconds
+(including loading and health checks), total epoch wall seconds (including retries
+and checkpoint saving), checkpoint-save seconds, loader wait, presentations,
+batches, throughput, loss, learning rate, and precision. Numerical failures record
+their attempt number and elapsed seconds. Timings use a monotonic clock; timestamps
+are UTC. An interrupted attempt without completion is not a completed epoch.
+
+Validation and test records contain checkpoint epoch, dataset path/split/generation
+seed, sample count, evaluation duration, precision, and explicit metric definitions.
+Besides absolute errors and RMSE, they include:
+
+- Heading MAE in degrees and as `100 * MAE / 180` (not percent of true heading).
+- Mean normalized dot product (cosine similarity), and `50 * (1 - cosine)` error:
+  aligned = 0%, perpendicular = 50%, opposite = 100%. These measure direction only.
+- Percentage of samples within 15 degrees; undefined directions count as failures.
+- Mean per-sample speed error and Euclidean vector-tip error, each divided by that
+  sample's true speed and multiplied by 100. These can exceed 100%.
+- Counts excluded from direction or relative metrics because the relevant vector
+  length is effectively zero (`<= 1e-12`); undefined aggregates are JSON `null`.
+
+Inspect recorded progress without loading checkpoints or rerunning inference:
+
+```bash
+/home/jacob/venvs/nvidia/bin/python scripts/report_training_log.py \
+  /home/jacob/Documents/dw93net_output/training_log.jsonl
+```
+
+This prints a Markdown report with separate runs, epoch timings, failures/fallbacks,
+and evaluation tables. `--run-id /absolute/path/to/checkpoints` selects one run.
+Compare measurements only on matching datasets/splits and sample selections.
+Validation runs after every epoch; final testing evaluates only the selected model.
+Use validation, rather than repeated test-set feedback, when making model-selection decisions.
 
 Validation and test seeds must differ. `training_sets.start_seed` must be strictly
 greater than both; the required positive seed increment keeps every training set
@@ -68,19 +140,29 @@ outside the held-out seeds, regardless of the number of sets.
 Each training seed creates a new DoG dataset at `training_sets.path` without
 writing intermediate Flow-XT files. The entire training cache is deleted after
 its epochs. The learning-rate schedule and
-optimizer continue across replacements. After all training, validation is
-generated once and evaluates every candidate without shuffling. The best
-normalized-RMSE candidate is promoted to `final/model.pt`; validation is then
-deleted unless requested otherwise. The persistent test set is generated or
+optimizer continue across replacements. Validation is generated before any
+training set, retained permanently, and reused unchanged after every epoch and
+across restarts. Validation loss is the mean summed squared motion error normalized
+by the fixed motion scales (`normalized_mse`). It drives both the plateau scheduler
+and best-checkpoint selection. The best checkpoint is saved even between periodic
+candidate saves; ties keep the earlier best. Training stops at the configured
+set/epoch limit or immediately when the scheduler reaches its minimum learning
+rate, whichever comes first. No additional epoch runs at the minimum rate.
+The best-validation checkpoint is promoted to `final/model.pt`. Only then is
+the persistent test set generated or
 reused at `test_set.path` and evaluates only the final model. A recipe mismatch
 never silently overwrites that test set.
 
-Validation progress is atomically saved after every candidate in
-`final/validation-progress.json`. If the runner is interrupted, it verifies each
-checkpoint's Git commit and resumes at the first candidate that still needs
-evaluation. Completed candidates belong to this run and must not be manually
-replaced. `final/validation-results.json` records completed candidate selection and
-`final/test-results.json` records the final test measurement. Rerunning restarts
+Validation results are logged after every successfully completed epoch in
+`training_log.jsonl`. Scheduler history, validation metrics, best-candidate identity,
+and the minimum-rate stop condition are saved in `latest.pt`. If interrupted,
+the runner verifies the Git commit and resumes at the next incomplete epoch;
+reaching the minimum learning rate remains terminal on restart. A checkpoint
+published just before a logging interruption restores its missing log records;
+unrecorded checkpoint-save/wall timings remain explicitly unavailable rather than
+being invented. Completed candidates belong to this run and must not be manually
+replaced. `validation_completed` records candidate selection and
+`test_result` records the final test measurement. Rerunning restarts
 only an interrupted epoch and otherwise resumes from the recorded training-set
 index and seed. Final testing is recomputed each time selection finishes.
 
@@ -116,8 +198,11 @@ runner, run only one orchestrator per output/dataset path. Allow disk space for
 two training sets during overlap.
 
 Adam and the plateau scheduler are configured in the recipe's `[learning_rate]`
-section. The scheduler monitors training loss; its history continues across
-training sets and survives restarts. Validation happens after training finishes.
+section. `monitor = "validation_loss"` is required; training loss does not control
+the learning rate. Scheduler history continues across training sets and restarts.
+The initial learning rate must exceed the minimum. Validation and final testing
+use full float32 with AMP and TF32 off, keeping measurements comparable when
+training falls back from mixed precision. Training retains its configured precision.
 Run only one orchestrator per network output directory at a time.
 
 Training also presents an in-memory horizontal reflection of every signed DoG
@@ -168,14 +253,18 @@ not demonstrate recovery across different speeds. Rotation is deferred until
 simple translation recovery works.
 
 The command uses 256 seeded validation examples, CPU inference, and no worker
-processes by default. It saves a sample manifest, per-checkpoint JSON metrics,
-and a `progress.md` report ordered by global epoch under `evaluations/`. Each
+processes by default. It appends a sample manifest and per-checkpoint metrics,
+timings, and bin breakdowns to the central `training_log.jsonl` in the run's output
+folder (`--log` overrides the path). Each evaluation has a unique session ID, so
+different subsets or splits are not silently mixed. Reports and plots are derived
+from those logged results; no separate metric JSON files are written.
+A `progress.md` report ordered by global epoch is saved under `evaluations/`. Each
 invocation recomputes the requested checkpoints in a new dated report directory.
 Use `--samples 0` for the whole split, `--split test` for a final held-out
 assessment, or `--help` for explicit dataset/checkpoint paths and other options.
 Changing sample size or seed creates a separate comparison set. Reports include
 heading mean/median error and within-15-degree accuracy, speed MAE/RMSE, and
-mean Euclidean vector-tip error (`||[dx,dz]-[dx_hat,dz_hat]||`); JSON also
+mean Euclidean vector-tip error (`||[dx,dz]-[dx_hat,dz_hat]||`); logged metrics also
 includes vector-tip median/90th percentile, heading bias/90th percentile/
 undefined-heading count, and speed bias. Speed and vector errors are in scene
 units per step.
@@ -201,8 +290,8 @@ heading percentage plots. The percentage definitions are, respectively,
 
 The report reads model-only candidates and validates the current checkpoint
 schema, matching Git commit, DoG settings, and geometry. Run the report from a
-clean checkout of the checkpoint's exact commit. Supply an existing validation cache; use `keep_after_run = true`
-in the recipe if you want it retained for these retrospective reports.
+clean checkout of the checkpoint's exact commit. Supply the permanent validation
+cache for retrospective progress reports.
 
 **dw93net** stands for **Duffy & Wurtz (1993) network**. It is an artificial
 neural network experiment designed to test the *"compensation for eye rotation"*
@@ -307,12 +396,21 @@ overrides this default, for example in small tests. `fov_deg` may be greater
 than 180° and at most 360°; visibility is selected from the full-circle
 `atan2(x, z)` angle, so rear-hemisphere dots are represented correctly.
 The recipe pipeline renders each `[2,X]` Flow-XT stimulus in memory. Default
-X supersampling is **255**, so the rendered intensity steps align with the byte
-levels. Values are rounded to the nearest byte after summing and clipping any
-superimposed layers. Explicit supersampling overrides remain supported, with
-quantization to the same byte grid before DoG filtering. The byte tensor is
-decoded in memory and never written. There is no raw Flow-XT dataset format or
+X supersampling is **255**. Patterns remain float32 after antialiasing and after
+summing and clipping any superimposed layers, and are passed directly to DoG
+filtering without byte quantization. Higher supersampling factors retain their
+finer intensity levels to float32 precision. Raw patterns are held in memory
+and never written; saved DoG contrast is also float32. There is no raw Flow-XT dataset format or
 disk-backed compatibility path.
+
+`stimuli.apply_dog_filter_post_downsample = true` keeps the usual order:
+downsample, then DoG. Set it to `false` to apply DoG at supersampled resolution
+before downsampling. The high-resolution path scales Gaussian sigmas/support
+to preserve their angular size, uses CPU float32 FFT convolution, and processes
+one high-resolution stimulus at a time to bound memory. Output width and dtype
+remain unchanged. The choice is recorded in dataset geometry and must match
+across training, validation, and test. High-resolution filtering is substantially
+slower; see the 1023x comparison under `evaluations/dog-order-1023-seed42-1000/`.
 
 Translation is sampled in polar coordinates. The defaults draw speed uniformly
 from the half-open interval `[0.001, 0.015)` scene units per frame step and

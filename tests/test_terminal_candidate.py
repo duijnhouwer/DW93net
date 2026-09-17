@@ -7,7 +7,8 @@ from unittest.mock import patch
 import torch
 
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
-from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
+from train.train_flow_xt_net import RecipeTrainingSettings
+from training_helpers import train_recipe_set
 
 
 class TerminalCandidateTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class TerminalCandidateTests(unittest.TestCase):
                 config=StimConfig(stim_wid_px=49, n_world_dots=10, x_supersampling=1))
             # Four total epochs: shorter than interval 10, non-divisible by 3,
             # and exactly divisible by 2.
-            for interval, expected in ((10, [4]), (3, [3, 4]), (2, [2, 4])):
+            for interval, expected in ((10, [1, 4]), (3, [1, 3, 4]), (2, [1, 2, 4])):
                 with self.subTest(interval=interval):
                     checkpoints = root / str(interval)
                     cfg = RecipeTrainingSettings(
@@ -37,7 +38,7 @@ class TerminalCandidateTests(unittest.TestCase):
                         is_final_training_set=False)
                     train_recipe_set(cfg)
                     candidates = checkpoints / 'candidates'
-                    self.assertEqual(len(list(candidates.glob('*.pt'))), int(interval == 2))
+                    self.assertEqual(len(list(candidates.glob('*.pt'))), 1 + int(interval == 2))
                     final_cfg = replace(cfg, training_set_index=1, training_seed=5,
                                         is_final_training_set=True)
                     latest = train_recipe_set(final_cfg)

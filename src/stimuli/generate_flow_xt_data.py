@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from dataclasses import dataclass, replace
 from pathlib import Path
-from features.dog_motion import DoGFilter
+from features.dog_motion import DoGFilter, SupersampledDoG
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.metadata import DATA_SCHEMA
 
@@ -67,8 +67,11 @@ class StimConfig:
     n_world_dots: int = 1000
     superimpose: bool = False
     x_supersampling: int = 255
+    apply_dog_filter_post_downsample: bool = True
 
     def __post_init__(self):
+        if type(self.apply_dog_filter_post_downsample) is not bool:
+            raise ValueError('apply_dog_filter_post_downsample must be true or false')
         fov = self.fov_deg
         if (isinstance(fov, bool) or not isinstance(fov, (int, float))
                 or not math.isfinite(fov) or not 0 < fov <= 360):
@@ -105,8 +108,8 @@ def _generate_flow_xt_samples(
     stored as targets, so the label always matches the stimulus. If
     `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
-    clipping to [0, 1], preserving fractional antialiased intensities. Encoded
-    uint8 pairs are passed directly to ``sample_consumer`` and never saved.
+    clipping to [0, 1], preserving fractional antialiased intensities. Float32
+    pairs are passed directly to ``sample_consumer`` and never saved.
     """
 
     if output_root is None:
@@ -187,7 +190,8 @@ def _generate_flow_xt_samples(
                 cam_trans_xz=cam_trans,
                 cam_rot_deg=cam_rot,
                 config=layer_config,
-                rng=rng
+                rng=rng,
+                downsample=config.apply_dog_filter_post_downsample,
             )
             xt_tensor_list.append(xt)
 
@@ -196,11 +200,8 @@ def _generate_flow_xt_samples(
 
         sample_id = i
 
-        # Round rather than truncate fractional intensities. At 255x
-        # supersampling the rendered levels align with the byte grayscale grid.
-        encoded = (xt_tensor * 255).round().to(torch.uint8)
         sample_consumer(dataset_root, generation_metadata, role, sample_id,
-                        encoded, (dx, dz, rot_deg))
+                        xt_tensor, (dx, dz, rot_deg))
 
         if i % 100 == 0:
             print(f"Generated {role}/{sample_id}")
@@ -216,6 +217,11 @@ class _DogBundleWriter:
         self.generation_metadata = generation_metadata
         self.bundle_size = bundle_size
         self.dog_filter = dog_filter
+        config = generation_metadata['stimulus_config']
+        self.high_filter = None
+        if not config['apply_dog_filter_post_downsample']:
+            self.high_filter = SupersampledDoG(dog_filter, config['stim_wid_px'],
+                                               config['x_supersampling'])
         self.role = role
         self.destination.mkdir(parents=True, exist_ok=False)
         self.started = datetime.now(timezone.utc).isoformat()
@@ -227,17 +233,21 @@ class _DogBundleWriter:
         self.contrast_shape = None
         self.n_samples = 0
 
-    def add(self, sample_id, encoded, target):
-        if (encoded.dtype != torch.uint8 or encoded.ndim != 3
-                or encoded.shape[:2] != (1, 2)):
+    def add(self, sample_id, frames, target):
+        if (frames.dtype != torch.float32 or frames.ndim != 3
+                or frames.shape[:2] != (1, 2)):
             raise ValueError(f"Invalid generated XT tensor: {sample_id}")
-        raw_shape = list(encoded.shape[1:])
+        raw_shape = list(frames.shape[1:])
         if self.raw_shape is None:
             self.raw_shape = raw_shape
         elif raw_shape != self.raw_shape:
             raise ValueError(f"Inconsistent generated XT shape: {sample_id}")
-        # Buffer only one bundle of uint8 frames, then filter it as a batch.
-        self.pending.append((sample_id, encoded, target))
+        # Filter high-resolution rasters immediately: never buffer a whole
+        # bundle of supersampled images (several GB at large factors).
+        if self.high_filter is not None:
+            frames = self.high_filter(frames)
+        # Buffer float32 frames or final low-resolution contrast.
+        self.pending.append((sample_id, frames, target))
         self.n_samples += 1
         if len(self.pending) >= self.bundle_size:
             self.flush()
@@ -247,11 +257,14 @@ class _DogBundleWriter:
             return
         # Bound convolution workspace independently of the on-disk bundle size.
         # Small batches amortize dispatch without a full-bundle temporary.
-        filtered = []
-        for start in range(0, len(self.pending), 16):
-            frames = torch.stack([encoded for _, encoded, _ in self.pending[start:start + 16]])
-            filtered.append(self.dog_filter(frames.float() / 255)[:, 0])
-        contrast = torch.cat(filtered)
+        if self.high_filter is not None:
+            contrast = torch.stack([frames for _, frames, _ in self.pending])
+        else:
+            filtered = []
+            for start in range(0, len(self.pending), 16):
+                frames = torch.stack([frames for _, frames, _ in self.pending[start:start + 16]])
+                filtered.append(self.dog_filter(frames)[:, 0])
+            contrast = torch.cat(filtered)
         if not torch.isfinite(contrast).all():
             raise ValueError(f'Nonfinite DoG contrast in bundle {self.bundle_number}')
         self.contrast_shape = list(contrast.shape[1:])
@@ -286,7 +299,7 @@ class _DogBundleWriter:
             'n_samples': self.n_samples,
             'raw_shape': self.raw_shape,
             'contrast_shape': self.contrast_shape,
-            'input_encoding': 'uint8 / 255',
+            'input_encoding': 'float32 [0, 1]; no byte quantization',
             'stimulus_generation': self.generation_metadata,
             'software': self.provenance,
         }
@@ -304,13 +317,13 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
                                         Path(__file__).resolve().parents[2])
     writer = None
 
-    def consume(dataset_root, metadata, role, sample_id, encoded, target):
+    def consume(dataset_root, metadata, role, sample_id, frames, target):
         nonlocal writer
         if writer is None:
             writer = _DogBundleWriter(dataset_root / 'dog', metadata, dog_bundle_size,
                                       DoGFilter(sigma_center=sigma_center,
                                                 sigma_surround=sigma_surround), role, provenance)
-        writer.add(sample_id, encoded, target)
+        writer.add(sample_id, frames, target)
         if progress_callback is not None:
             progress_callback(writer.n_samples)
 
@@ -327,13 +340,16 @@ def generate_flow_xt_stim(
     cam_trans_xz=[0, 1e-3],
     cam_rot_deg=0,
     config: StimConfig = StimConfig(),
-    rng=None
+    rng=None,
+    *,
+    downsample=True,
 ) -> torch.Tensor:
 
     """Render [2, X]: initial dots and the same dots after one motion step.
 
     Translation is expressed in the initial camera frame; rotation is in degrees
     per step. Dots are neither replaced nor wrapped between the two frames.
+    Set downsample=False to inspect/filter the supersampled float32 raster.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -435,7 +451,7 @@ def generate_flow_xt_stim(
     # --------------------------------------------------------------
     # DOWNSAMPLE X ONLY
     # --------------------------------------------------------------
-    if x_supersampling > 1:
+    if downsample and x_supersampling > 1:
         image = image.reshape(
             2,
             config.stim_wid_px,

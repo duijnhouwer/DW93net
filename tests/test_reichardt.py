@@ -7,7 +7,8 @@ import torch
 from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import MirroredDoGDataset, make_flow_loader
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
-from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
+from train.train_flow_xt_net import RecipeTrainingSettings
+from training_helpers import train_recipe_set
 
 
 class ReichardtTests(unittest.TestCase):

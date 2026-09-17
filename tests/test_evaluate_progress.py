@@ -18,6 +18,7 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertEqual(m['speed_relative_mae_pct'], 100)
         self.assertEqual(m['vector_tip_relative_mae_pct'], 100)
         self.assertEqual(m['heading_cosine_similarity'], 1)
+        self.assertEqual(m['heading_cosine_error_pct'], 0)
         self.assertEqual(m['speed_rmse'], 1)
         self.assertEqual(m['vector_tip_mae'], 1)
         self.assertEqual(m['vector_rmse'], 1)
@@ -35,6 +36,37 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertIsNone(m['heading_mae_deg'])
         self.assertEqual(m['heading_within_15_pct'], 0)
         self.assertEqual(m['undefined_heading_count'], 1)
+
+    def test_streamed_percentages_and_cosines_match_detailed_metrics(self):
+        from evaluation import summary_metrics
+        np = module.np
+        target = np.array([[0., 1., 0.], [0., 2., 0.], [0., 3., 0.]])
+        pred = np.array([[0., 1., 0.], [4., 0., 0.], [0., -3., 0.]])
+        summary = summary_metrics([(pred[:1], target[:1]), (pred[1:], target[1:])], (1, 1, 1))
+        detailed = module.metrics(pred[:, :2], target[:, :2])
+        for key in ('heading_mae_deg', 'heading_relative_mae_pct', 'heading_cosine_similarity',
+                    'heading_cosine_error_pct', 'speed_relative_mae_pct', 'vector_tip_relative_mae_pct',
+                    'heading_within_15_pct', 'speed_rmse', 'vector_rmse', 'undefined_heading_count'):
+            self.assertAlmostEqual(summary[key], detailed[key], msg=key)
+        self.assertEqual(summary['heading_mae_deg'], 90)
+        self.assertEqual(summary['heading_relative_mae_pct'], 50)
+        self.assertEqual(summary['heading_cosine_error_pct'], 50)
+        self.assertEqual(summary['heading_cosine_similarity'], 0)
+
+    def test_zero_truth_is_counted_as_undefined_not_infinite_percentage(self):
+        from evaluation import summary_metrics
+        import json
+        np = module.np
+        pred = np.array([[1., 0., 0.]])
+        target = np.zeros((1, 3))
+        summary = summary_metrics([(pred, target)], (1, 1, 1))
+        detailed = module.metrics(pred[:, :2], target[:, :2])
+        for value in (summary, detailed):
+            self.assertEqual(value['undefined_relative_error_count'], 1)
+            self.assertIsNone(value['speed_relative_mae_pct'])
+            self.assertIsNone(value['vector_tip_relative_mae_pct'])
+            self.assertIsNone(value['heading_cosine_error_pct'])
+            json.dumps(value, allow_nan=False)
 
     def test_heading_bins_are_centred_on_cardinal_directions(self):
         np = module.np
