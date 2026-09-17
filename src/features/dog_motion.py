@@ -15,6 +15,7 @@ class DoGFilter:
         self.sigma_center = float(sigma_center)
         self.sigma_surround = float(sigma_surround)
         self.radius = math.ceil(3 * self.sigma_surround)
+        self._kernels_by_device = {}
 
     @property
     def metadata(self):
@@ -41,13 +42,18 @@ class DoGFilter:
         # Construct normalized weights in float64, then explicitly compute in
         # float32. Separate Gaussian convolutions cancel uniform fields to float32
         # precision, without per-frame rescaling.
-        positions = torch.arange(-self.radius, self.radius + 1, device=xt.device, dtype=torch.float64)
-        kernels = []
-        for sigma in (self.sigma_center, self.sigma_surround):
-            kernel = torch.exp(-0.5 * (positions / sigma).square())
-            kernels.append((kernel / kernel.sum()).float())
+        # A dataset uses fixed sigmas. Construct once per device, retaining the
+        # original float64 normalization and float32 convolution arithmetic.
+        if xt.device not in self._kernels_by_device:
+            positions = torch.arange(-self.radius, self.radius + 1,
+                                     device=xt.device, dtype=torch.float64)
+            kernels = []
+            for sigma in (self.sigma_center, self.sigma_surround):
+                kernel = torch.exp(-0.5 * (positions / sigma).square())
+                kernels.append((kernel / kernel.sum()).float())
+            self._kernels_by_device[xt.device] = torch.stack(kernels)[:, None]
         frames = xt.float().reshape(-1, 1, xt.shape[-1])
-        filtered = F.conv1d(frames, torch.stack(kernels)[:, None])
+        filtered = F.conv1d(frames, self._kernels_by_device[xt.device])
         difference = filtered[:, 0] - filtered[:, 1]
         return difference.reshape(xt.shape[0], 1, 2, -1)
 

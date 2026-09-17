@@ -1,36 +1,37 @@
 """Replay a generated DoG cache and plot true projected dot displacements.
 
 This script uses the generation seed to replay the exact stimuli, checks the
-replayed camera labels against bundle sample identifiers, and measures dots
+replayed camera labels against stored bundle targets, and measures dots
 whose centers are rendered in both frames. Horizontal displacement is reported
 in output pixels per frame step.
 """
 
 import argparse
 import json
-import re
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from stimuli.generate_flow_xt_data import sample_motion
+from stimuli.metadata import bounds
 
-LABEL_RE = re.compile(
-    r"^ndx=(-?\d+)_ndz=(-?\d+)_nrot=(-?\d+)_id=(\d+)(?:_superimposed)?$"
-)
 
-
-def saved_labels(dataset_root: Path) -> dict[int, tuple[int, int, int]]:
+def saved_labels(dataset_root: Path):
     labels = {}
     indexes = list(dataset_root.glob('*/bundles.json'))
     if len(indexes) != 1:
         raise ValueError(f"Expected exactly one role index under {dataset_root}")
-    for sample_id, _, _ in json.loads(indexes[0].read_text()):
-        match = LABEL_RE.fullmatch(sample_id)
-        if match is None:
-            raise ValueError(f"Unrecognized sample identifier: {sample_id}")
-        ndx, ndz, nrot, numeric_id = map(int, match.groups())
-        labels[numeric_id] = (ndx, ndz, nrot)
+    previous, bundle = None, None
+    for sample_id, name, row in json.loads(indexes[0].read_text()):
+        if type(sample_id) is not int or sample_id in labels:
+            raise ValueError('Invalid numeric sample ID')
+        if name != previous:
+            bundle = np.load(indexes[0].parent / name, mmap_mode='r', allow_pickle=False)
+            previous = name
+        labels[sample_id] = bundle[row]['target'].copy()
     return labels
 
 
@@ -63,15 +64,10 @@ def analyze(dataset_root: Path, output_png: Path, output_json: Path) -> None:
     if len(labels) != n_samples or set(labels) != set(range(n_samples)):
         raise ValueError(f"Expected IDs 0..{n_samples - 1}, found {len(labels)} files")
 
-    def decode_spec(spec):
-        if spec.get("sampling") == "fixed":
-            return float(spec["value"]), float(spec["value"]), True
-        return float(spec["low_inclusive"]), float(spec["high_exclusive"]), False
-
-    speed_low, speed_high, speed_fixed = decode_spec(metadata["speed_range"])
-    heading_low, heading_high, heading_fixed = decode_spec(metadata["heading_deg_range"])
-    rot_low, rot_high, rot_fixed = decode_spec(metadata["rot_deg_range"])
-    if speed_fixed:
+    speed_low, speed_high = bounds(metadata["speed_range"])
+    heading_low, heading_high = bounds(metadata["heading_deg_range"])
+    rot_low, rot_high = bounds(metadata["rot_deg_range"])
+    if speed_low == speed_high:
         raise ValueError("Five speed bins require a ranged-speed dataset")
     config = metadata["stimulus_config"]
     bin_edges = np.linspace(speed_low, speed_high, 6)
@@ -81,36 +77,27 @@ def analyze(dataset_root: Path, output_png: Path, output_json: Path) -> None:
     rng = np.random.default_rng(metadata["seed"])
 
     for sample_id in range(n_samples):
-        while True:
-            speed = speed_low if speed_fixed else rng.uniform(speed_low, speed_high)
-            heading_deg = (heading_low if heading_fixed
-                           else rng.uniform(heading_low, heading_high))
-            heading_rad = np.deg2rad(heading_deg)
-            ndx = int(round(speed * np.sin(heading_rad) * 1e9))
-            ndz = int(round(speed * np.cos(heading_rad) * 1e9))
-            quantized_speed = np.hypot(ndx, ndz) / 1e9
-            if speed_low <= quantized_speed < speed_high:
-                break
-        rot_deg = rot_low if rot_fixed else rng.uniform(rot_low, rot_high)
-        nrot = int(round(rot_deg * 1e9))
-        if labels[sample_id] != (ndx, ndz, nrot):
+        dx, dz, rot_deg = sample_motion(rng, (speed_low, speed_high),
+                                        (heading_low, heading_high), (rot_low, rot_high))
+        if not np.array_equal(labels[sample_id], np.asarray((dx, dz, rot_deg), dtype=np.float32)):
             raise RuntimeError(
-                f"Replay diverged at ID {sample_id}: generated {(ndx, ndz, nrot)}, "
+                f"Replay diverged at ID {sample_id}: generated {(dx, dz, rot_deg)}, "
                 f"saved {labels[sample_id]}"
             )
 
         positions = rng.uniform(-1, 1, size=(config["n_world_dots"], 2))
-        moved = positions - np.array([ndx / 1e9, ndz / 1e9])
+        moved = positions - np.array([dx, dz])
         # Rotation is zero in the current dataset; retain the general transform
         # so the replay remains identical if used for another diagnostic set.
-        angle = np.deg2rad(-(nrot / 1e9))
+        angle = np.deg2rad(-rot_deg)
         c, s = np.cos(angle), np.sin(angle)
         moved = moved @ np.array([[c, -s], [s, c]]).T
 
         x0, visible0 = rendered_x(positions, config)
         x1, visible1 = rendered_x(moved, config)
         jointly_visible = visible0 & visible1
-        bin_index = min(np.searchsorted(bin_edges, quantized_speed, side="right") - 1, 4)
+        # Float32 conversion can round just outside a sampled interval endpoint.
+        bin_index = int(np.clip(np.searchsorted(bin_edges, np.hypot(dx, dz), side="right") - 1, 0, 4))
         steps_by_bin[bin_index].append((x1[jointly_visible] - x0[jointly_visible]).astype(np.float32))
         stimuli_by_bin[bin_index] += 1
 

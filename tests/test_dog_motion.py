@@ -16,6 +16,16 @@ from stimuli.preprocessing_provenance import write_provenance, repository_state
 
 
 class DoGFilterTests(unittest.TestCase):
+    def test_kernels_are_constructed_once_and_reused_for_batches(self):
+        dog = DoGFilter()
+        xt = torch.rand(3, 1, 2, 49)
+        with patch('features.dog_motion.torch.exp', wraps=torch.exp) as exp:
+            individual = torch.cat([dog(sample) for sample in xt])
+            batched = dog(xt)
+            self.assertEqual(exp.call_count, 2)
+        torch.testing.assert_close(batched, individual, atol=1e-7, rtol=1e-5)
+        self.assertEqual(batched.dtype, torch.float32)
+
     def test_independent_scalar_reference(self):
         dog = DoGFilter()
         torch.manual_seed(5)
@@ -102,7 +112,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_source_changes_leave_cache_incomplete(self):
         with tempfile.TemporaryDirectory() as directory, patch(
-                'stimuli.generate_flow_xt_data.repository_state', return_value=None):
+                'stimuli.generate_flow_xt_data.generation_identity', side_effect=[{'old': 1}, {'new': 1}]):
             with self.assertRaisesRegex(RuntimeError, 'Source changed'):
                 generate_dog_dataset(
                     output_root=directory, n_samples=1,

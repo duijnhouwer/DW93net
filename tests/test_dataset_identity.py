@@ -27,9 +27,9 @@ class DatasetIdentityTests(unittest.TestCase):
     def generate(self, **kwargs):
         self.folder.mkdir(parents=True)
         (self.cache / 'dog.json').write_text(json.dumps(dict(
-            storage_format='dog-contrast-bundles-v1', storage_dtype='torch.float32',
+            storage_format='dog-contrast-bundles-v2', storage_dtype='torch.float32',
             finite_validated=True, n_samples=2, contrast_shape=[2, 31])))
-        self.index = [['a', 'bundle.npy', 0], ['b', 'bundle.npy', 1]]
+        self.index = [[0, 'bundle.npy', 0], [1, 'bundle.npy', 1]]
         self.write_index()
         np.save(self.folder / 'bundle.npy', np.zeros(2, dtype=[
             ('dog_contrast', np.float32, (2, 31)), ('target', np.float32, (3,))]))
@@ -44,7 +44,8 @@ class DatasetIdentityTests(unittest.TestCase):
 
     def test_identity_and_reuse(self):
         identity = generation_identity()
-        self.assertEqual(set(identity), {'stimuli/generate_flow_xt_data.py', 'features/dog_motion.py'})
+        self.assertEqual(set(identity), {'stimuli/generate_flow_xt_data.py', 'features/dog_motion.py',
+                                         'stimuli/metadata.py'})
         self.assertEqual(self.prepare(), self.cache)
         self.assertEqual(self.generator.call_count, 1)
         with patch('stimuli.dataset_identity.generation_identity', return_value={'changed': 'hash'}), \
@@ -69,9 +70,9 @@ class DatasetIdentityTests(unittest.TestCase):
             self.prepare()
 
     def test_duplicate_out_of_range_and_missing_index_rows(self):
-        for index in ([['a', 'bundle.npy', 0], ['b', 'bundle.npy', 0]],
-                      [['a', 'bundle.npy', 0], ['b', 'bundle.npy', 2]],
-                      [['a', 'bundle.npy', 0]]):
+        for index in ([[0, 'bundle.npy', 0], [1, 'bundle.npy', 0]],
+                      [[0, 'bundle.npy', 0], [1, 'bundle.npy', 2]],
+                      [[0, 'bundle.npy', 0]]):
             with self.subTest(index=index):
                 self.index = index
                 self.write_index()

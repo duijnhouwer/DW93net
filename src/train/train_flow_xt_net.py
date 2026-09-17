@@ -11,9 +11,10 @@ from dataclasses import dataclass, asdict
 
 from models.pure_translation import PureTranslationNet
 from features.reichardt import ReichardtBank
-from stimuli.load_flow_xt_data import (DoGDataset, extract_ranges_from_foldername,
-                                       make_flow_loader, require_pure_translation_root,
-                                       stimulus_set_name, with_mirrored_dog_training)
+from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader, with_mirrored_dog_training
+from stimuli.metadata import require_pure_translation_root, motion_scales, data_contract
+from checkpoints import SCHEMA, compatibility, load_checkpoint
+
 
 
 @dataclass
@@ -59,16 +60,6 @@ def _save_latest(checkpoint, path, keep_previous):
     _atomic_torch_save(checkpoint, path)
 
 
-def _motion_scales(root_folder):
-    ranges = extract_ranges_from_foldername(stimulus_set_name(root_folder))
-    translation_scale = max(ranges['dx'], ranges['dz'])
-    if translation_scale <= 0:
-        raise ValueError('Dataset must specify a nonzero translation range')
-    return (ranges['dx'] or translation_scale,
-            ranges['dz'] or translation_scale,
-            ranges['rot_deg'] or 1.0)
-
-
 def _normalized_motion_loss(prediction, target, scales):
     return sum(torch.nn.functional.mse_loss(prediction[:, index], target[:, index]) / scale**2
                for index, scale in enumerate(scales))
@@ -93,7 +84,9 @@ def train_recipe_set(cfg, *, progress_callback=None):
         print(f'Mirrored training augmentation: {len(train_dataset):,} presentations per epoch')
     if not len(train_dataset):
         raise ValueError('Training dataset must be nonempty')
-    scales = _motion_scales(cfg.root_folder)
+    scales = motion_scales(cfg.root_folder)
+    contract = data_contract(train_cache.storage_metadata)
+    compatible = compatibility()
     shuffle_generator = torch.Generator()
     worker_generator = torch.Generator().manual_seed(cfg.shuffle_seed)
     train_loader = make_flow_loader(
@@ -118,9 +111,9 @@ def train_recipe_set(cfg, *, progress_callback=None):
     candidates_dir = checkpoint_dir / 'candidates'
     start_epoch = 0
     if latest_path.exists():
-        checkpoint = torch.load(latest_path, map_location=device, weights_only=True)
-        if checkpoint.get('git_commit') != cfg.git_commit:
-            raise ValueError('Checkpoint Git commit does not match the current run')
+        checkpoint = load_checkpoint(latest_path, device, resume=True)
+        if checkpoint['data_contract'] != contract:
+            raise ValueError('Checkpoint dataset geometry or generation code does not match')
         if checkpoint.get('detector') != detector_metadata:
             raise ValueError('Checkpoint detector configuration does not match cache')
         previous_index = checkpoint['training_set_index']
@@ -136,8 +129,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
             raise ValueError('Checkpoint training-set position does not match the recipe')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'scaler_state_dict' in checkpoint:
-            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f'Resumed set {cfg.training_set_index + 1} seed {cfg.training_seed} '
               f'after epoch {start_epoch}', flush=True)
@@ -211,19 +203,21 @@ def train_recipe_set(cfg, *, progress_callback=None):
             print(f'Training-loss plateau: learning rate reduced to {next_rate:.6g}', flush=True)
 
         common = {
+            'schema': SCHEMA, 'compatibility': compatible, 'data_contract': contract,
             'git_commit': cfg.git_commit,
             'global_epoch': global_epoch,
             'training_set_index': cfg.training_set_index,
             'training_seed': cfg.training_seed,
             'epoch_within_set': epoch_index + 1,
             'epochs_per_set': cfg.epochs_per_set,
-            'loss': epoch_loss,
+            'training_loss': epoch_loss,
             'learning_rate': next_rate,
             'detector': detector_metadata,
             'n_input_channels': len(correlation_bank.dx_values),
             'model_state_dict': model.state_dict(),
         }
         checkpoint = common | {
+            'kind': 'resume',
             'optimizer_state_dict': optimizer.state_dict(),
             'scaler_state_dict': scaler.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
@@ -234,9 +228,7 @@ def train_recipe_set(cfg, *, progress_callback=None):
         # do not change the global candidate cadence.
         terminal_epoch = cfg.is_final_training_set and epoch_index + 1 == cfg.epochs_per_set
         if global_epoch % cfg.candidate_interval_epochs == 0 or terminal_epoch:
-            candidate = {key: value for key, value in common.items() if key != 'loss'} | {
-                'training_loss': epoch_loss,
-            }
+            candidate = common | {'kind': 'candidate'}
             _atomic_torch_save(candidate, candidates_dir / f'epoch-{global_epoch:06d}.pt')
         # Publish completion last. If candidate saving is interrupted, the epoch
         # is deliberately repeated rather than skipped on resume.

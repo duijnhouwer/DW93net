@@ -8,11 +8,10 @@ Created on Fri May 23 14:22:29 2025
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, ConcatDataset, RandomSampler
-from typing import Dict
-import re
 import json
 from pathlib import Path
 from features.dog_motion import DoGFilter
+from stimuli.metadata import read_metadata, DATA_SCHEMA
 
 
 class DoGDataset(Dataset):
@@ -25,9 +24,10 @@ class DoGDataset(Dataset):
         if not index_path.exists():
             raise ValueError(f'DoG cache requires bundled storage: missing {index_path}')
         self.bundle_index = json.loads(index_path.read_text())
-        self.files = [entry[0] for entry in self.bundle_index]
-        metadata = json.loads((self.folder.parent / 'dog.json').read_text())
-        if metadata.get('storage_format') != 'dog-contrast-bundles-v1':
+        self.sample_ids = [entry[0] for entry in self.bundle_index]
+        metadata = read_metadata(self.folder.parent)
+        self.storage_metadata = metadata
+        if metadata.get('storage_format') != DATA_SCHEMA:
             raise ValueError('Unsupported DoG cache storage format')
         if (metadata.get('storage_dtype') != 'torch.float32'
                 or metadata.get('finite_validated') is not True
@@ -44,7 +44,7 @@ class DoGDataset(Dataset):
         return len(self.bundle_index)
 
     def __getitem__(self, index):
-        filename, bundle, row = self.bundle_index[index]
+        sample_id, bundle, row = self.bundle_index[index]
         if bundle not in self._mapped:
             if len(self._mapped) >= 4:
                 self._mapped.pop(next(iter(self._mapped)))
@@ -54,9 +54,9 @@ class DoGDataset(Dataset):
         target = torch.from_numpy(sample['target'].copy())
         if (contrast.ndim != 2 or contrast.shape[0] != 2
                 or contrast.dtype != torch.float32):
-            raise ValueError(f'Invalid DoG contrast tensor: {filename}')
+            raise ValueError(f'Invalid DoG contrast tensor: {sample_id}')
         if target.shape != (3,) or target.dtype != torch.float32 or not torch.isfinite(target).all():
-            raise ValueError(f'Invalid motion target in bundle: {filename}')
+            raise ValueError(f'Invalid motion target in bundle: {sample_id}')
         return contrast, target
 
     def __getstate__(self):
@@ -99,62 +99,3 @@ def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=
                       generator=worker_generator,
                       pin_memory=torch.device(device).type == "cuda",
                       persistent_workers=num_workers > 0)
-
-
-def extract_ranges_from_foldername(foldername: str) -> Dict[str, float]:
-    """
-    Derive Cartesian component ranges from polar ranges in the folder name.
-
-    Expected format: nspeed=<min>,<max>_nheading=<min>,<max>_nrot=<min>,<max>.
-    Speed uses nano scene-units per step and heading/rotation use nano-degrees.
-    Component extrema include the range endpoints and any sine/cosine extrema
-    inside the heading interval.
-
-    Returns:
-        Dictionary with keys: 'dx', 'dz', 'rot_deg' (scene units and degrees)
-    """
-    def get_bounds(key):
-        match = re.search(rf"{key}=(-?\d*\.?\d*),(-?\d*\.?\d*)", foldername)
-        if not match:
-            raise ValueError(f"Dataset folder is missing {key}=min,max: {foldername}")
-        low, high = float(match.group(1)), float(match.group(2))
-        if low > high:
-            raise ValueError(f"Dataset folder has reversed {key} bounds: {foldername}")
-        return low, high
-
-    speed_low, speed_high = (value / 1e9 for value in get_bounds('nspeed'))
-    heading_low, heading_high = (value / 1e9 for value in get_bounds('nheading'))
-    rot_low, rot_high = (value / 1e9 for value in get_bounds('nrot'))
-    if speed_low <= 0 or heading_low < -180 or heading_high > 180:
-        raise ValueError(f"Invalid polar motion bounds in dataset folder: {foldername}")
-
-    def component_range(function, critical_angles):
-        angles = [heading_low, heading_high]
-        angles.extend(angle for angle in critical_angles
-                      if heading_low <= angle <= heading_high)
-        values = [speed * function(np.deg2rad(angle))
-                  for speed in (speed_low, speed_high) for angle in angles]
-        return max(values) - min(values)
-
-    return {
-        'dx': component_range(np.sin, (-90, 90)),
-        'dz': component_range(np.cos, (-180, 0, 180)),
-        'rot_deg': rot_high - rot_low,
-    }
-
-
-def stimulus_set_name(root_folder):
-    """Parameter-set name containing a DoG cache directory."""
-    root = Path(root_folder)
-    return root.parent.name if root.name == 'dog' else root.name
-
-
-def require_pure_translation_root(root_folder):
-    """Fail before any file I/O unless folder bounds explicitly specify zero yaw."""
-    name = stimulus_set_name(root_folder)
-    match = re.search(r"(?:^|_)nrot=(-?\d+),(-?\d+)(?=_|$)", name)
-    if match is None or any(int(bound) != 0 for bound in match.groups()):
-        raise ValueError(
-            f"Pure translation requires rot_deg=0 for the entire dataset "
-            f"(nrot=0,0); stopping before loading files: {root_folder}"
-        )

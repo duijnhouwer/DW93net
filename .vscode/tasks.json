@@ -2,31 +2,13 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "dw93net: verify NVIDIA environment",
+      "label": "dw93net: verify selected PyTorch environment",
       "type": "shell",
-      "command": "/home/jacob/venvs/nvidia/bin/python",
+      "command": "${command:python.interpreterPath}",
       "args": [
         "-c",
-        "import torch; assert torch.version.cuda, 'PyTorch is not a CUDA build'; assert torch.version.hip is None, 'ROCm PyTorch is active'; assert torch.cuda.is_available(), 'CUDA is unavailable'; names=[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]; assert any('3080 Ti' in name for name in names), f'RTX 3080 Ti not visible: {names}'; print('CUDA development GPU verified:', names)"
+        "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda, 'HIP:', torch.version.hip); print('Devices:', [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])"
       ],
-      "problemMatcher": []
-    },
-    {
-      "label": "Local Qwen: start",
-      "type": "shell",
-      "command": "bash /home/jacob/Documents/MyLCA/assistant start",
-      "problemMatcher": []
-    },
-    {
-      "label": "Local Qwen: status",
-      "type": "shell",
-      "command": "bash /home/jacob/Documents/MyLCA/assistant status",
-      "problemMatcher": []
-    },
-    {
-      "label": "Local Qwen: stop",
-      "type": "shell",
-      "command": "bash /home/jacob/Documents/MyLCA/assistant stop",
       "problemMatcher": []
     }
   ]

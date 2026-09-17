@@ -6,7 +6,27 @@ import json
 import platform
 import subprocess
 import tarfile
+import os
+import tempfile
 from pathlib import Path
+
+
+def capture_provenance(run_directory, repo):
+    """Publish one source/environment snapshot per run, referenced by datasets."""
+    run_directory = Path(run_directory).resolve()
+    run_directory.mkdir(parents=True, exist_ok=True)
+    destination = run_directory / 'provenance'
+    if destination.exists():
+        return json.loads((destination / 'snapshot.json').read_text())
+    with tempfile.TemporaryDirectory(prefix='.provenance-', dir=run_directory) as temporary:
+        info, initial = write_provenance(temporary, repo, exclude=run_directory)
+        if repository_state(repo, run_directory) != initial:
+            raise RuntimeError('Source changed while capturing run provenance')
+        info['directory'] = str(destination)
+        (Path(temporary) / 'provenance' / 'snapshot.json').write_text(
+            json.dumps(info, indent=2, allow_nan=False) + '\n')
+        os.replace(Path(temporary) / 'provenance', destination)
+    return info
 
 
 def repository_state(repo, exclude):
@@ -34,10 +54,10 @@ def repository_state(repo, exclude):
     return commit, diff, files
 
 
-def write_provenance(destination, repo):
+def write_provenance(destination, repo, *, exclude=None):
     """Capture before processing. Return state for an end-of-run stability check."""
     destination = Path(destination)
-    state = repository_state(repo, destination)
+    state = repository_state(repo, destination if exclude is None else exclude)
     commit, diff, files = state
     out = destination / 'provenance'
     out.mkdir()

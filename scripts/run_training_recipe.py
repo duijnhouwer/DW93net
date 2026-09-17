@@ -19,13 +19,15 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from parallel_stimuli import Prefetch
 from run_lock import run_lock
 
-from models.pure_translation import PureTranslationNet
-from features.reichardt import ReichardtBank
-from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset
+from checkpoints import load_checkpoint, code_identity, TRAINING_SOURCES
+from evaluation import inference_batches, summary_metrics
+from stimuli.metadata import motion_scales
+from stimuli.preprocessing_provenance import capture_provenance
+from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset, validate_speed_float32
 from stimuli.dataset_identity import dataset_spec, generation_identity, storage_manifest
-from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader
+from stimuli.load_flow_xt_data import DoGDataset
 from train.train_flow_xt_net import (
-    RecipeTrainingSettings, _motion_scales, committed_revision, train_recipe_set,
+    RecipeTrainingSettings, committed_revision, train_recipe_set,
 )
 
 TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', 'training_sets',
@@ -121,15 +123,23 @@ def load_recipe(path):
         if key not in stimuli:
             raise ValueError(f'stimuli.{key} is required')
         _range(stimuli[key], f'stimuli.{key}')
+    validate_speed_float32(stimuli['speed_range'])
     if stimuli['rot_deg_range'] != [0, 0]:
         raise ValueError('stimuli.rot_deg_range must be [0, 0] while rotation is disabled')
     _positive_int(stimuli.get('dog_bundle_size'), 'stimuli.dog_bundle_size')
     for key in ('n_world_dots', 'x_supersampling'):
         if key in stimuli:
             _positive_int(stimuli[key], f'stimuli.{key}')
-    for key in ('fov_deg', 'near_exclusion_radius'):
-        if key in stimuli:
-            _number(stimuli[key], f'stimuli.{key}', positive=True)
+    if 'fov_deg' in stimuli:
+        fov = stimuli['fov_deg']
+        _number(fov, 'stimuli.fov_deg', positive=True)
+        if fov > 360:
+            raise ValueError('stimuli.fov_deg must not exceed 360')
+    if 'near_exclusion_radius' in stimuli:
+        radius = stimuli['near_exclusion_radius']
+        _number(radius, 'stimuli.near_exclusion_radius', nonnegative=True)
+        if radius >= 1:
+            raise ValueError('stimuli.near_exclusion_radius must be less than 1')
     if 'superimpose' in stimuli and type(stimuli['superimpose']) is not bool:
         raise ValueError('stimuli.superimpose must be true or false')
 
@@ -180,6 +190,13 @@ def load_recipe(path):
 
     test = _section(recipe, 'test_set', FIXED_SET_KEYS | {'staging_path'})
     test_path = _validate_fixed_set(test, 'test_set')
+    if validation['seed'] == test['seed']:
+        raise ValueError('validation_set.seed and test_set.seed must differ')
+    # Positive increments keep every training set above both held-out seeds,
+    # regardless of how many sets are configured. No sequence enumeration needed.
+    if training['start_seed'] <= max(validation['seed'], test['seed']):
+        raise ValueError('training_sets.start_seed must be greater than both '
+                         'validation_set.seed and test_set.seed')
 
     optimization = _section(recipe, 'optimization', OPTIMIZATION_KEYS)
     _positive_int(optimization.get('batch_size'), 'optimization.batch_size')
@@ -252,16 +269,17 @@ def _initialize_output(recipe, network_name, commit):
     if not output_root.is_dir() or not os.access(output_root, os.W_OK):
         raise ValueError(f'output_path must already exist and be writable: {output_root}')
     network_dir = output_root / network_name
-    expected_marker = f'commit_id={commit}'
+    expected = {'recipe': recipe, 'training_code': code_identity(TRAINING_SOURCES)}
+    manifest = network_dir / 'run.json'
     if network_dir.exists():
-        markers = list(network_dir.glob('commit_id=*'))
-        if len(markers) != 1 or markers[0].name != expected_marker:
-            raise ValueError(f'Output does not belong to Git commit {commit}: {network_dir}')
-        if markers[0].stat().st_size:
-            raise ValueError(f'Commit marker must be empty: {markers[0]}')
+        if not manifest.is_file():
+            raise ValueError(f'Output has no current run manifest: {network_dir}')
+        saved = json.loads(manifest.read_text())
+        if any(saved.get(key) != value for key, value in expected.items()):
+            raise ValueError(f'Output recipe or training implementation is incompatible: {network_dir}')
     else:
         network_dir.mkdir()
-        (network_dir / expected_marker).touch()
+        _atomic_json(manifest, expected | {'origin_git_commit': commit})
     checkpoint_dir, final_dir = network_dir / 'checkpoints', network_dir / 'final'
     checkpoint_dir.mkdir(exist_ok=True)
     final_dir.mkdir(exist_ok=True)
@@ -338,6 +356,7 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
         n_samples=section['n_samples'], speed_range=stimuli['speed_range'],
         heading_deg_range=stimuli['heading_deg_range'], rot_deg_range=stimuli['rot_deg_range'],
         role=role, seed=section['seed'], config=StimConfig(**config_values),
+        provenance=section.get('_provenance'),
         **({'progress_callback': progress_callback} if progress_callback is not None else {}))
     cache = Path(cache).resolve()
     if path not in cache.parents:
@@ -348,13 +367,6 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
     _atomic_json(state_path, {'spec': desired, 'cache': str(cache.relative_to(path)),
                               'storage': storage})
     return cache
-
-
-def _load_checkpoint(path, device):
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
-    if 'model_state_dict' not in checkpoint:
-        raise ValueError(f'Checkpoint has no model weights: {path}')
-    return checkpoint
 
 
 def _validate_metrics(metrics, where):
@@ -371,52 +383,14 @@ def evaluate_model(model_path, cache_root, role, evaluation, commit):
     """Evaluate a candidate/final model without shuffling or retaining predictions."""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dataset = DoGDataset(Path(cache_root) / role)
-    loader = make_flow_loader(dataset, evaluation['batch_size'], device, shuffle=False,
-                              num_workers=evaluation['num_workers'])
-    checkpoint = _load_checkpoint(model_path, device)
-    if checkpoint.get('git_commit') != commit:
-        raise ValueError(f'Model Git commit does not match this run: {model_path}')
-    detector = checkpoint.get('detector')
-    if not isinstance(detector, dict) or detector.get('dog') != dataset.metadata:
-        raise ValueError(f'Model detector configuration does not match {role} data')
-    correlation_bank = ReichardtBank(detector['correlation']['dx_values'])
-    if correlation_bank.metadata != detector['correlation']:
-        raise ValueError('Model correlation configuration is unsupported')
-    model = PureTranslationNet(correlation_bank.dx_values).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    scales = torch.tensor(_motion_scales(cache_root), device=device)
-    normalized_sq = speed_error = tip_error = rotation_error = heading_error = 0.0
-    heading_count = count = 0
-    with torch.inference_mode():
-        for inputs, target in loader:
-            inputs = inputs.to(device, non_blocking=True).float()
-            target = target.to(device, non_blocking=True).float()
-            prediction = model(correlation_bank(inputs[:, None], validate=False)).float()
-            difference = prediction - target
-            normalized_sq += ((difference / scales) ** 2).sum().item()
-            target_speed = torch.linalg.vector_norm(target[:, :2], dim=1)
-            predicted_speed = torch.linalg.vector_norm(prediction[:, :2], dim=1)
-            speed_error += (predicted_speed - target_speed).abs().sum().item()
-            tip_error += torch.linalg.vector_norm(difference[:, :2], dim=1).sum().item()
-            rotation_error += difference[:, 2].abs().sum().item()
-            valid = (target_speed > 1e-12) & (predicted_speed > 1e-12)
-            if valid.any():
-                actual = torch.atan2(target[valid, 1], target[valid, 0])
-                predicted = torch.atan2(prediction[valid, 1], prediction[valid, 0])
-                angle = torch.atan2(torch.sin(predicted - actual), torch.cos(predicted - actual))
-                heading_error += torch.rad2deg(angle.abs()).sum().item()
-                heading_count += valid.sum().item()
-            count += target.shape[0]
-    if not count:
-        raise ValueError(f'{role} dataset is empty')
-    metrics = {'n_samples': count, 'normalized_rmse': math.sqrt(normalized_sq / count),
-            'translation_speed_mae': speed_error / count,
-            'translation_vector_tip_mae': tip_error / count,
-            'rotation_mae_deg': rotation_error / count,
-            'heading_mae_deg': heading_error / heading_count if heading_count else None}
+    checkpoint = load_checkpoint(model_path, device)
+    batches = inference_batches(checkpoint, dataset, device=device,
+                                batch_size=evaluation['batch_size'],
+                                num_workers=evaluation['num_workers'])
+    metrics = summary_metrics(batches, motion_scales(cache_root))
     _validate_metrics(metrics, f'{role} evaluation of {model_path}')
-    return metrics
+    return metrics | {'checkpoint_git_commit': checkpoint['git_commit'],
+                      'evaluator_git_commit': commit}
 
 
 def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
@@ -428,7 +402,7 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     # candidate. Publish each result independently so an interruption resumes
     # at the first unevaluated (or subsequently replaced) checkpoint.
     progress_path = final_dir / 'validation-progress.json'
-    context = {'version': 1, 'git_commit': commit,
+    context = {'version': 2, 'evaluation_code': code_identity(TRAINING_SOURCES),
                'selection_metric': 'normalized_rmse',
                'evaluation': recipe['evaluation']}
     progress = {**context, 'complete': False, 'candidates': []}
@@ -489,14 +463,12 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     model_path = final_dir / 'model.pt'
     promote = True
     if model_path.is_file():
-        existing = _load_checkpoint(model_path, 'cpu')
-        existing_value = existing.get('validation', {}).get('normalized_rmse')
-        if existing_value is not None:
-            _number(existing_value, f'{model_path} validation.normalized_rmse', nonnegative=True)
-        promote = (existing.get('git_commit') != commit or existing_value is None or
-                   best['normalized_rmse'] < existing_value)
+        existing = load_checkpoint(model_path, 'cpu')
+        existing_value = existing['validation']['normalized_rmse']
+        _number(existing_value, f'{model_path} validation.normalized_rmse', nonnegative=True)
+        promote = best['normalized_rmse'] < existing_value
     if promote:
-        selected = _load_checkpoint(checkpoint_dir / 'candidates' / best['candidate'], 'cpu')
+        selected = load_checkpoint(checkpoint_dir / 'candidates' / best['candidate'], 'cpu')
         selected['validation'] = {'candidate': best['candidate'],
                                   'normalized_rmse': best['normalized_rmse']}
         _atomic_torch_save(selected, model_path)
@@ -551,6 +523,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         raise ValueError('Git commit must be the full 40-character lowercase ID')
     network_name = recipe_path.stem
     checkpoint_dir, final_dir = _initialize_output(recipe, network_name, commit)
+    provenance = capture_provenance(checkpoint_dir.parent, ROOT)
+    prefetch.provenance = provenance
     print(f'Network: {network_name}\nRecipe: {recipe_path}\nGit commit: {commit}', flush=True)
 
     stimuli, training = recipe['stimuli'], recipe['training_sets']
@@ -559,9 +533,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         seed = training['start_seed'] + set_index * training['seed_increment']
         complete = False
         if latest_path.is_file():
-            latest = _load_checkpoint(latest_path, 'cpu')
-            if latest.get('git_commit') != commit:
-                raise ValueError('Latest checkpoint Git commit does not match this run')
+            latest = load_checkpoint(latest_path, 'cpu', resume=True)
             latest_index = latest['training_set_index']
             if not 0 <= latest_index < training['number_of_sets']:
                 raise ValueError('Latest checkpoint has an invalid training-set index')
@@ -581,7 +553,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             # is checked by _prepare_dataset when that set is reached.
             continue
         section = {'seed': seed, 'n_samples': training['samples_per_set'],
-                   '_detector': recipe['detector']}
+                   '_detector': recipe['detector'], '_provenance': provenance}
         print(f'Preparing training set {set_index + 1}/{training["number_of_sets"]}, seed {seed}',
               flush=True)
         prefetch.acquire(training_path, section)
@@ -617,7 +589,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         _safe_delete_managed(training_path)
 
     validation = recipe['validation_set']
-    validation = validation | {'_detector': recipe['detector']}
+    validation = validation | {'_detector': recipe['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
     validation_cache = _prepare_dataset(validation_path, 'validate', validation,
                                         stimuli, persistent=False)
@@ -627,7 +599,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         print('Validation set deleted after model selection', flush=True)
 
     test = recipe['test_set']
-    test = test | {'_detector': recipe['detector']}
+    test = test | {'_detector': recipe['detector'], '_provenance': provenance}
     test_path = Path(test['path'])
     test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
     staged = bool(test.get('staging_path'))

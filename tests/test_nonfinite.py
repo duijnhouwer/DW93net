@@ -61,7 +61,7 @@ class NonfiniteTests(unittest.TestCase):
                     invalid = METRICS | {'normalized_rmse': value}
                     if cached:
                         (final / 'validation-progress.json').write_text(json.dumps(dict(
-                            version=1, git_commit=commit, selection_metric='normalized_rmse',
+                            version=2, evaluation_code=module.code_identity(module.TRAINING_SOURCES), selection_metric='normalized_rmse',
                             evaluation=recipe['evaluation'], candidates=[invalid | dict(
                                 candidate=candidate.name, checkpoint_sha256=module._sha256(candidate))])))
                     with patch.object(module, 'evaluate_model', return_value=invalid) as evaluate:
@@ -98,4 +98,3 @@ class NonfiniteTests(unittest.TestCase):
                             step.assert_not_called()
                     self.assertEqual(latest.read_bytes(), original)
                     self.assertFalse((root / 'checkpoints' / 'candidates' / 'epoch-000002.pt').exists())
-

@@ -28,7 +28,8 @@ path = "/home/jacob/Documents/dw93net_stimuli/training"
 number_of_sets = 2
 samples_per_set = 20000
 epochs_per_set = 25
-start_seed = 1000
+# Training seeds must start above both validation and test seeds.
+start_seed = 4000
 seed_increment = 1
 shuffle_seed = 7000
 

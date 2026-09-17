@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import torch
 
-from stimuli.load_flow_xt_data import require_pure_translation_root
+from stimuli.metadata import require_pure_translation_root
+import json
+import tempfile
+from pathlib import Path
+from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
 from models.pure_translation import PureTranslationNet, LocalMotionOpponency, V1Motion
 
 
@@ -35,21 +39,20 @@ class PureTranslationTests(unittest.TestCase):
         torch.testing.assert_close(center_a[:, :, 60], center_b[:, :, 60])
         self.assertGreater(contrast_a[0, 0, 60].item(), contrast_b[0, 0, 60].item())
 
-    def test_yaw_bounds_stop_before_file_loading(self):
-        from train.train_flow_xt_net import train_recipe_set, RecipeTrainingSettings
-
-        for suffix in ['nrot=-1,1', 'nrot=1,1', 'nrot=0,1', 'missing', 'nrot=bad']:
-            root = '/nonexistent/nspeed=1,1_nheading=0,0_' + suffix
-            with self.subTest(suffix=suffix), patch('torch.load') as load, patch('os.listdir') as listing:
-                with self.assertRaisesRegex(ValueError, 'stopping before loading files'):
-                    train_recipe_set(RecipeTrainingSettings(
-                        root_folder=root, checkpoint_dir='/nonexistent/checkpoints',
-                        git_commit='a' * 40, training_set_index=0, training_seed=1,
-                        epochs_per_set=1, shuffle_seed=2))
-                load.assert_not_called()
-                listing.assert_not_called()
-        require_pure_translation_root(
-            '/nonexistent/nspeed=1,1_nheading=0,0_nrot=0,0/')
+    def test_yaw_constraints_come_from_metadata_not_folder_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(generate_dog_dataset(output_root=directory, n_samples=1,
+                role='train', seed=1, rot_deg_range=(0, 0),
+                config=StimConfig(stim_wid_px=49, n_world_dots=4, x_supersampling=1)))
+            renamed = cache.with_name('arbitrary_name_nrot=1,1')
+            cache.rename(renamed)
+            require_pure_translation_root(renamed)
+            path = renamed / 'dog.json'
+            metadata = json.loads(path.read_text())
+            metadata['stimulus_generation']['rot_deg_range']['value'] = 1
+            path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, 'requires rot_deg=0'):
+                require_pure_translation_root(renamed)
 
     def test_full_resolution_backward_and_roundtrip(self):
         torch.manual_seed(10)

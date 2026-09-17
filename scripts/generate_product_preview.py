@@ -33,7 +33,7 @@ def main():
     records = []
     bank = ReichardtBank()
     dataset = DoGDataset(cache / 'train')
-    for index, sample_name in enumerate(dataset.files):
+    for index, sample_name in enumerate(dataset.sample_ids):
         _, bundle, row = dataset.bundle_index[index]
         contrast, target = dataset[index]
         correlations = bank(contrast, validate=False)

@@ -9,17 +9,17 @@ committed recipe.
 displays those inputs. A committed `recipe/<network-name>.toml` generates the
 datasets, trains one network, selects its final weights, and evaluates them.
 
-Each parameter set contains the compact detector stage used by training:
+Each managed dataset contains the compact detector stage used by training:
 
 ```text
-stimuli/<parameter-set>/
-  dog/          # dog.json, provenance, and one train/validate/test role
+<dataset-path>/
+  dog/          # dog.json and one train/validate/test role
 ```
 
 The orchestrator renders Flow-XT stimuli and applies the DoG filter in memory,
 then writes only float32 signed DoG bundles. Training and evaluation calculate
 the requested shifted correlations on the model device. Evaluation `--data`
-points to `stimuli/<parameter-set>/dog/`.
+points to `<dataset-path>/dog/`. Directory names have no scientific meaning.
 
 ## Unattended training recipes
 
@@ -50,11 +50,17 @@ users, or standalone tools that do not acquire it.
 
 The runner requires a clean commit and CUDA by default. For a recipe named
 `translation_only.toml`, it creates
-`<output_path>/translation_only/{checkpoints,final}` plus an empty file named
-`commit_id=<full-40-character-Git-ID>`. A mismatching marker prevents resume.
+`<output_path>/translation_only/{checkpoints,final,provenance}` plus `run.json`.
+The manifest records the original Git commit, recipe, and relevant training-code
+fingerprints. Resume requires the same recipe and training implementation, not
+the same Git commit. Documentation-only commits are compatible.
 `latest.pt` is a full epoch-boundary resume checkpoint; `previous.pt` is its
 optional predecessor. Model-only candidates are saved at the configured epoch
-interval.
+interval and at the last scheduled epoch.
+
+Validation and test seeds must differ. `training_sets.start_seed` must be strictly
+greater than both; the required positive seed increment keeps every training set
+outside the held-out seeds, regardless of the number of sets.
 
 Each training seed creates a new DoG dataset at `training_sets.path` without
 writing intermediate Flow-XT files. The entire training cache is deleted after
@@ -188,8 +194,10 @@ heading percentage plots. The percentage definitions are, respectively,
 `100 * heading_error_deg / 180`, `100 * |speed_hat - speed| / speed`, and
 `100 * ||[dx_hat,dz_hat]-[dx,dz]|| / ||[dx,dz]||`.
 
-The report reads model-only candidates and requires their Git commit to match
-this checkout. Supply an existing validation cache; use `keep_after_run = true`
+The report reads model-only candidates and validates the current checkpoint
+schema, inference-code fingerprints, DoG settings, geometry, and generation
+identity. Git commits are recorded for both checkpoint and evaluator, not used
+as a compatibility gate. Inference does not require unchanged optimizer code. Supply an existing validation cache; use `keep_after_run = true`
 in the recipe if you want it retained for these retrospective reports.
 
 **dw93net** stands for **Duffy & Wurtz (1993) network**. It is an artificial
@@ -291,7 +299,9 @@ one translation-and-rotation step. There are no dot lifetimes, replacements, or
 boundary wrapping; X-only supersampling preserves fractional intensities.
 By default, `stim_wid_px = round(fov_deg * 60)` provides nominal one-arcminute
 angular sampling: a 120° FOV uses 7,200 pixels. An explicit `stim_wid_px`
-overrides this default, for example in small tests.
+overrides this default, for example in small tests. `fov_deg` may be greater
+than 180° and at most 360°; visibility is selected from the full-circle
+`atan2(x, z)` angle, so rear-hemisphere dots are represented correctly.
 The recipe pipeline renders each `[2,X]` Flow-XT stimulus in memory. Default
 X supersampling is **255**, so the rendered intensity steps align with the byte
 levels. Values are rounded to the nearest byte after summing and clipping any
@@ -306,11 +316,15 @@ heading uniformly from `[-180, 180)` degrees. Heading 0 is forward (+Z), -90 is
 left (-X), and +90 is right (+X). Cartesian motion is then calculated as
 `dx = speed*sin(heading)` and `dz = speed*cos(heading)`. The strictly positive
 minimum avoids samples whose translation is zero or too close to zero to define
-a useful heading. Derived `dx` and `dz` are rounded to nano-units before both
-rendering and filename labeling.
+a useful heading. Motion is sampled once, then `dx`, `dz`, and yaw are converted
+to their stored float32 values before rendering. There is no nano-unit grid or
+rejection loop. Speed bounds must remain finite and positive in float32; each
+converted translation must remain nonzero. Half-open ranges describe sampling
+before float32 rounding, which can move a stored value slightly across an endpoint.
+Samples have sequential numeric IDs; replay uses the same sampling/conversion code.
 
-The generated folder name records speed, heading, and rotation bounds.
-`dog.json` records the exact half-open interval semantics, seed, dataset role,
+`dog.json`, not the directory name, records speed, heading, and rotation bounds,
+loss-normalization inputs, geometry, the exact half-open interval semantics, seed, dataset role,
 coordinate conversion, and stimulus configuration.
 
 Preprocessing applies a **1D luminance DoG independently to each frame**:
@@ -335,7 +349,7 @@ Filtering, cached contrast, and online correlations use float32.
 
 Generation preserves the requested role and stable sample identifiers, and publishes
 `dog.json` only after completion. Existing destinations are refused. The cache
-format is `dog-contrast-bundles-v1`. `DoGDataset` reads the contrast bundles;
+format is `dog-contrast-bundles-v2`. `DoGDataset` reads the contrast bundles;
 checkpoints retain both DoG and displacement metadata, and evaluation rejects
 incompatible caches.
 
@@ -403,10 +417,12 @@ signals, orientation channels, temporal dynamics, recurrence, or eccentricity-
 dependent receptive fields. Its mechanisms and estimation accuracy need tests
 and ablations; speed scale still relies on the training distance distribution.
 
-Training and evaluation stop before loading files unless the dataset root
-explicitly specifies `nrot=0,0`.
-Checkpoints store detector metadata and the full Git commit ID. Resume requires
-the exact committed code and recipe used to create the network.
+Training and evaluation require structured metadata specifying zero yaw.
+Checkpoints use one current schema with mandatory fields (including scaler state
+for resume); older schemas are rejected. Compatibility rules and the explicit
+source-file lists live in `src/checkpoints.py`. These conservative fingerprints
+also invalidate on comments inside relevant source modules. They are not a proof
+of semantic equivalence; update the lists when introducing new dependencies.
 Keep FOV, width, crop, and detector semantics fixed across dataset roles. Pipeline
 tests verify implementation, not translation accuracy.
 
@@ -418,9 +434,13 @@ and [Duffy & Wurtz (1991)](https://doi.org/10.1152/jn.1991.65.6.1329).
 
 Every new cache root contains `dog.json`, recording DoG sigmas/support,
 normalization and boundary rules, input/output shapes and dtypes, sample count,
-UTC start/end times, generation settings, and the full Git HEAD commit ID.
+UTC start/end times, generation settings, code fingerprints, and a reference to
+the run's source snapshot. A recipe run captures source and environment once in
+`<output_path>/<network>/provenance/`; all datasets, including background-generated
+sets, reference it. Standalone generation captures once at its output root.
+Preserve that provenance directory when archiving datasets separately.
 
-The `provenance/` folder contains:
+The run's `provenance/` folder contains:
 
 - `working-tree.patch`: combined staged and unstaged tracked changes from HEAD,
   including binary differences and deletions.
@@ -436,8 +456,13 @@ The archive contains tracked and nonignored untracked files, excluding the
 current output directory; Git-ignored datasets/environments and Git history
 are not bundled. Dependencies are recorded, not packaged. Artifact metadata is
 stored in `dog.json`. Git must be available with an existing HEAD commit.
-If repository files change during preprocessing, the run fails without publishing
-`dog.json`, so training cannot mistake the partial cache for a complete one.
+If generation implementation files change during generation, the run fails without
+publishing `dog.json`. Dataset identity includes only cached DoG parameters, not
+the online displacement bank. Structural manifest validation checks every bundle
+header, row count, shape, dtype, and file size without scanning the full payload.
 
-Use `--sigma-center` and `--sigma-surround` to override the pixel sigmas in
-standalone preprocessing; the kernel radius is always `ceil(3*sigma_surround)`.
+DoG kernels are cached per device and computed in float32 after float64 kernel
+normalization. Filtering uses batches of at most 16, independent of bundle size.
+The kernel radius is always `ceil(3*sigma_surround)`.
+
+Runtime dependencies are declared only in `requirements.txt`; `setup.py` reads it.

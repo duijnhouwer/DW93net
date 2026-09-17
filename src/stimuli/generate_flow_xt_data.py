@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import sys
 from datetime import datetime, timezone
 
@@ -15,12 +16,48 @@ import torch
 from dataclasses import dataclass, replace
 from pathlib import Path
 from features.dog_motion import DoGFilter
-from stimuli.preprocessing_provenance import write_provenance, repository_state
+from stimuli.preprocessing_provenance import capture_provenance
+from stimuli.dataset_identity import generation_identity
+from stimuli.metadata import DATA_SCHEMA
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "stimuli")
+
+
+def validate_speed_float32(values):
+    """Reject positive speeds that cannot be stored as finite, nonzero float32."""
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        stored = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(stored).all() or np.any(stored <= 0):
+        raise ValueError('speed_range must remain finite and strictly positive in float32')
+
+
+def sample_motion(rng, speed_range, heading_deg_range, rot_deg_range):
+    """Sample once, then use the exact stored float32 labels for rendering/replay."""
+    def sample(bounds):
+        if not all(math.isfinite(value) for value in bounds):
+            raise ValueError('Motion bounds must be finite for float32 targets')
+        return bounds[0] if bounds[0] == bounds[1] else rng.uniform(*bounds)
+
+    speed, heading, rotation = (sample(bounds) for bounds in
+                                 (speed_range, heading_deg_range, rot_deg_range))
+    validate_speed_float32(speed)
+    if not np.isfinite([heading, rotation]).all():
+        raise ValueError('Motion angles must be finite')
+    # Cardinal directions have an exactly zero component, not a trig residual.
+    cardinal = {0: (0., 1.), 90: (1., 0.), -90: (-1., 0.),
+                180: (0., -1.), -180: (0., -1.)}
+    sine, cosine = cardinal[heading] if heading in cardinal else (
+        np.sin(np.deg2rad(heading)), np.cos(np.deg2rad(heading)))
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        target = np.asarray([speed * sine, speed * cosine, rotation], dtype=np.float32)
+    if not np.isfinite(target).all() or not np.any(target[:2] != 0):
+        raise ValueError('Motion must have finite float32 targets and nonzero translation')
+    # Python floats preserve these float32 values exactly while keeping renderer
+    # geometry calculations in float64, as before.
+    return tuple(target.tolist())
 
 
 @dataclass
@@ -33,6 +70,14 @@ class StimConfig:
     x_supersampling: int = 255
 
     def __post_init__(self):
+        fov = self.fov_deg
+        if (isinstance(fov, bool) or not isinstance(fov, (int, float))
+                or not math.isfinite(fov) or not 0 < fov <= 360):
+            raise ValueError('fov_deg must be finite and satisfy 0 < value <= 360')
+        radius = self.near_exclusion_radius
+        if (isinstance(radius, bool) or not isinstance(radius, (int, float))
+                or not math.isfinite(radius) or not 0 <= radius < 1):
+            raise ValueError('near_exclusion_radius must be finite and satisfy 0 <= value < 1')
         if self.stim_wid_px is None:
             self.stim_wid_px = round(self.fov_deg * 60)
 
@@ -56,9 +101,9 @@ def _generate_flow_xt_samples(
     and +90 is right (+X). The sampled polar translation is converted with
     dx=speed*sin(heading) and dz=speed*cos(heading).
 
-    Each sample's resulting dx, dz and rot_deg are rounded to
-    nano-units/nano-degrees FIRST. Those exact Cartesian values are rendered and
-    included in the sample identifier, so the label always matches the stimulus. If
+    Each sample's resulting dx, dz and rot_deg are converted to float32 FIRST.
+    Those exact Cartesian values are rendered and
+    stored as targets, so the label always matches the stimulus. If
     `superimpose` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities. Encoded
@@ -85,6 +130,7 @@ def _generate_flow_xt_samples(
     rot_deg_range, rot_is_fixed = validate_range('rot_deg_range', rot_deg_range)
     if speed_range[0] <= 0:
         raise ValueError("speed_range must have a strictly positive lower bound")
+    validate_speed_float32(speed_range)
     if heading_deg_range[0] < -180 or heading_deg_range[1] > 180:
         raise ValueError("heading_deg_range must lie within [-180, 180]")
     if role not in {"train", "validate", "test"}:
@@ -94,23 +140,7 @@ def _generate_flow_xt_samples(
         import time
         seed = int(time.time() * 1000) % (2**32)
 
-    # Dataset identity is defined by the sampled polar variables. Cartesian
-    # deltas belong to individual files because they are derived labels.
-    nspeed_min = int(round(speed_range[0] * 1e9))
-    nspeed_max = int(round(speed_range[1] * 1e9))
-    nheading_min = int(round(heading_deg_range[0] * 1e9))
-    nheading_max = int(round(heading_deg_range[1] * 1e9))
-    nrot_min = int(round(rot_deg_range[0] * 1e9))
-    nrot_max = int(round(rot_deg_range[1] * 1e9))
-
-    folder_name = (
-        f"nspeed={nspeed_min},{nspeed_max}_"
-        f"nheading={nheading_min},{nheading_max}_"
-        f"nrot={nrot_min},{nrot_max}"
-    )
-    if config.superimpose:
-        folder_name += "_superimposed"
-    dataset_root = Path(output_root, folder_name)
+    dataset_root = Path(output_root)
 
     def range_metadata(values, is_fixed, **extra):
         if is_fixed:
@@ -130,6 +160,7 @@ def _generate_flow_xt_samples(
             heading_deg_range, heading_is_fixed,
             convention="0=+Z_forward,-90=-X_left,+90=+X_right"),
         "conversion": {"dx": "speed*sin(heading)", "dz": "speed*cos(heading)"},
+        "target_encoding": "float32 before rendering; no nano-unit quantization",
         "rot_deg_range": range_metadata(
             rot_deg_range, rot_is_fixed, units="degrees_per_frame_step"),
         "role": role, "seed": seed, "stimulus_config": vars(config),
@@ -137,25 +168,7 @@ def _generate_flow_xt_samples(
     rng = np.random.default_rng(seed)
 
     for i in range(n_samples):
-        # Component labels are quantized below. Resample the vanishingly thin
-        # boundary cases where Cartesian nano-unit rounding would move the
-        # actual rendered magnitude outside the requested half-open interval.
-        while True:
-            speed = speed_range[0] if speed_is_fixed else rng.uniform(*speed_range)
-            heading_deg = (heading_deg_range[0] if heading_is_fixed
-                           else rng.uniform(*heading_deg_range))
-            heading_rad = np.deg2rad(heading_deg)
-            ndx = int(round(speed * np.sin(heading_rad) * 1e9))
-            ndz = int(round(speed * np.cos(heading_rad) * 1e9))
-            quantized_speed = np.hypot(ndx, ndz) / 1e9
-            if speed_is_fixed or speed_range[0] <= quantized_speed < speed_range[1]:
-                break
-        rot_deg = rot_deg_range[0] if rot_is_fixed else rng.uniform(*rot_deg_range)
-
-        # Round to nano-units/nano-degrees FIRST, then use those exact values for BOTH
-        # stimulus generation and the filename, so the label always matches the stimulus.
-        nrot = int(round(rot_deg * 1e9))
-        dx, dz, rot_deg = ndx / 1e9, ndz / 1e9, nrot / 1e9
+        dx, dz, rot_deg = sample_motion(rng, speed_range, heading_deg_range, rot_deg_range)
 
         # Generate one or two tensors depending on `superimpose`
         xt_tensor_list = []
@@ -182,9 +195,7 @@ def _generate_flow_xt_samples(
         # Preserve antialiased intensities; saturate overlapping flow layers.
         xt_tensor = sum(xt_tensor_list).clamp(0, 1).unsqueeze(0)  # [1, 2, X]
 
-        sample_id = f"ndx={ndx}_ndz={ndz}_nrot={nrot}_id={i}"
-        if config.superimpose:
-            sample_id += "_superimposed"
+        sample_id = i
 
         # Round rather than truncate fractional intensities. At 255x
         # supersampling the rendered levels align with the byte grayscale grid.
@@ -201,7 +212,7 @@ def _generate_flow_xt_samples(
 class _DogBundleWriter:
     """Collect generated stimuli into float32 signed DoG cache bundles."""
 
-    def __init__(self, destination, generation_metadata, bundle_size, dog_filter, role):
+    def __init__(self, destination, generation_metadata, bundle_size, dog_filter, role, provenance):
         self.destination = Path(destination).resolve()
         self.generation_metadata = generation_metadata
         self.bundle_size = bundle_size
@@ -209,8 +220,8 @@ class _DogBundleWriter:
         self.role = role
         self.destination.mkdir(parents=True, exist_ok=False)
         self.started = datetime.now(timezone.utc).isoformat()
-        self.repo = Path(__file__).resolve().parents[2]
-        self.provenance, self.initial_state = write_provenance(self.destination, self.repo)
+        self.provenance = provenance
+        self.initial_identity = generation_identity()
         self.pending = []
         self.index = []
         self.bundle_number = 0
@@ -218,23 +229,17 @@ class _DogBundleWriter:
         self.contrast_shape = None
         self.n_samples = 0
 
-    def add(self, filename, encoded, target):
+    def add(self, sample_id, encoded, target):
         if (encoded.dtype != torch.uint8 or encoded.ndim != 3
                 or encoded.shape[:2] != (1, 2)):
-            raise ValueError(f"Invalid generated XT tensor: {filename}")
+            raise ValueError(f"Invalid generated XT tensor: {sample_id}")
         raw_shape = list(encoded.shape[1:])
         if self.raw_shape is None:
             self.raw_shape = raw_shape
         elif raw_shape != self.raw_shape:
-            raise ValueError(f"Inconsistent generated XT shape: {filename}")
-        contrast = self.dog_filter(encoded.float() / 255)[0, 0]
-        if not torch.isfinite(contrast).all():
-            raise ValueError(f"Nonfinite DoG contrast: {filename}")
-        if self.contrast_shape is None:
-            self.contrast_shape = list(contrast.shape)
-        elif list(contrast.shape) != self.contrast_shape:
-            raise ValueError(f"Inconsistent DoG contrast shape: {filename}")
-        self.pending.append((filename, contrast, target))
+            raise ValueError(f"Inconsistent generated XT shape: {sample_id}")
+        # Buffer only one bundle of uint8 frames, then filter it as a batch.
+        self.pending.append((sample_id, encoded, target))
         self.n_samples += 1
         if len(self.pending) >= self.bundle_size:
             self.flush()
@@ -242,6 +247,16 @@ class _DogBundleWriter:
     def flush(self):
         if not self.pending:
             return
+        # Bound convolution workspace independently of the on-disk bundle size.
+        # Small batches amortize dispatch without a full-bundle temporary.
+        filtered = []
+        for start in range(0, len(self.pending), 16):
+            frames = torch.stack([encoded for _, encoded, _ in self.pending[start:start + 16]])
+            filtered.append(self.dog_filter(frames.float() / 255)[:, 0])
+        contrast = torch.cat(filtered)
+        if not torch.isfinite(contrast).all():
+            raise ValueError(f'Nonfinite DoG contrast in bundle {self.bundle_number}')
+        self.contrast_shape = list(contrast.shape[1:])
         folder = self.destination / self.role
         folder.mkdir(parents=True, exist_ok=True)
         name = f'bundle-{self.bundle_number:09d}.npy'
@@ -249,11 +264,11 @@ class _DogBundleWriter:
             ('dog_contrast', np.float32, tuple(self.contrast_shape)),
             ('target', np.float32, (3,)),
         ]))
-        bundle['dog_contrast'] = np.stack([value.numpy() for _, value, _ in self.pending])
+        bundle['dog_contrast'] = contrast.numpy()
         bundle['target'] = np.asarray([target for _, _, target in self.pending], dtype=np.float32)
         np.save(folder / name, bundle)
         self.index.extend(
-            [filename, name, row] for row, (filename, _, _) in enumerate(self.pending))
+            [sample_id, name, row] for row, (sample_id, _, _) in enumerate(self.pending))
         self.pending.clear()
         self.bundle_number += 1
 
@@ -262,11 +277,12 @@ class _DogBundleWriter:
         folder = self.destination / self.role
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'bundles.json').write_text(json.dumps(self.index) + '\n')
-        if repository_state(self.repo, self.destination) != self.initial_state:
+        if generation_identity() != self.initial_identity:
             raise RuntimeError("Source changed during generation; cache left incomplete")
         metadata = {
             **self.dog_filter.metadata,
-            'storage_format': 'dog-contrast-bundles-v1',
+            'storage_format': DATA_SCHEMA,
+            'generation_identity': self.initial_identity,
             'storage_dtype': 'torch.float32',
             'finite_validated': True,
             'created_utc': self.started,
@@ -283,10 +299,13 @@ class _DogBundleWriter:
 
 
 def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=3.,
-                         progress_callback=None, **generation_kwargs):
+                         progress_callback=None, provenance=None, **generation_kwargs):
     """Render stimuli in memory and persist only float32 signed DoG bundles."""
     if type(dog_bundle_size) is not int or dog_bundle_size < 1:
         raise ValueError('dog_bundle_size must be a positive integer')
+    if provenance is None:
+        provenance = capture_provenance(Path(generation_kwargs.get("output_root") or DEFAULT_DATA_ROOT),
+                                        Path(__file__).resolve().parents[2])
     writer = None
 
     def consume(dataset_root, metadata, role, sample_id, encoded, target):
@@ -294,7 +313,7 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
         if writer is None:
             writer = _DogBundleWriter(dataset_root / 'dog', metadata, dog_bundle_size,
                                       DoGFilter(sigma_center=sigma_center,
-                                                sigma_surround=sigma_surround), role)
+                                                sigma_surround=sigma_surround), role, provenance)
         writer.add(sample_id, encoded, target)
         if progress_callback is not None:
             progress_callback(writer.n_samples)
@@ -341,7 +360,6 @@ def generate_flow_xt_stim(
 
     half_fov_rad = np.deg2rad(config.fov_deg / 2)
     cam_rot_rad = np.deg2rad(cam_rot_deg)
-    tan_half_fov = np.tan(half_fov_rad)
 
     # Initial dot positions in the 2x2 XZ plane.
     dot_positions = rng.uniform(
@@ -374,20 +392,28 @@ def generate_flow_xt_stim(
         x = positions[:, 0]
         z = positions[:, 1]
 
-        x_in_fov = np.abs(x / z) < tan_half_fov
+        # atan2 spans the entire camera-centred circle, unlike x/z and
+        # tan(half_fov), which become ambiguous behind the camera and invert
+        # for fields wider than 180 degrees. The ordinary boundary remains
+        # open, matching the previous renderer; 360 degrees includes the
+        # +/-pi seam because it has no outside region.
+        theta = np.arctan2(x, z)
+        if config.fov_deg == 360:
+            # Canonicalize the two numeric representations of the rearward
+            # direction onto the drawable right edge of the projection.
+            theta = np.where(theta == -np.pi, np.pi, theta)
+            angle_in_fov = np.ones(theta.shape, dtype=bool)
+        else:
+            angle_in_fov = np.abs(theta) < half_fov_rad
 
         visible = (
             inside_unit_circle &
             outside_near_exclusion &
-            x_in_fov
+            angle_in_fov
         )
 
         if np.any(visible):
-            x_visible = x[visible]
-            z_visible = z[visible]
-
-            theta = np.arctan2(x_visible, z_visible)
-            x_proj = theta / half_fov_rad
+            x_proj = theta[visible] / half_fov_rad
 
             # Continuous projected position in supersampled X coordinates.
             x_scaled = (

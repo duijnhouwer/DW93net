@@ -5,21 +5,23 @@ import json
 from pathlib import Path
 
 import numpy as np
+from stimuli.metadata import DATA_SCHEMA
 
 
 def generation_identity():
     # Keep this list aligned with the renderer's local implementation dependencies.
     # Training/model changes must not invalidate an otherwise identical dataset.
     root = Path(__file__).resolve().parents[1]
-    names = ('stimuli/generate_flow_xt_data.py', 'features/dog_motion.py')
+    names = ('stimuli/generate_flow_xt_data.py', 'features/dog_motion.py', 'stimuli/metadata.py')
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in names}
 
 
 def dataset_spec(role, section, stimuli):
-    return {'version': 3, 'generation_identity': generation_identity(),
+    return {'version': 4, 'generation_identity': generation_identity(),
             'role': role, 'seed': section['seed'], 'n_samples': section['n_samples'],
-            'stimuli': stimuli, 'detector': section['_detector']}
+            'stimuli': stimuli, 'dog': {key: section['_detector'][key] for key in
+                ('dog_sigma_center_px', 'dog_sigma_surround_px')}}
 
 
 def storage_manifest(cache, role, n_samples):
@@ -34,7 +36,7 @@ def storage_manifest(cache, role, n_samples):
     metadata = json.loads(metadata_bytes)
     index = json.loads(index_bytes)
     shape = metadata.get('contrast_shape')
-    if (metadata.get('storage_format') != 'dog-contrast-bundles-v1'
+    if (metadata.get('storage_format') != DATA_SCHEMA
             or metadata.get('storage_dtype') != 'torch.float32'
             or metadata.get('finite_validated') is not True
             or metadata.get('n_samples') != n_samples
@@ -47,7 +49,7 @@ def storage_manifest(cache, role, n_samples):
         if not isinstance(entry, list) or len(entry) != 3:
             raise ValueError('Invalid bundle index entry')
         sample, name, row = entry
-        if (not isinstance(sample, str) or sample in sample_ids
+        if (type(sample) is not int or sample < 0 or sample in sample_ids
                 or not isinstance(name, str) or Path(name).name != name
                 or not name.endswith('.npy') or type(row) is not int or row < 0):
             raise ValueError('Invalid or duplicate bundle index entry')
@@ -56,6 +58,8 @@ def storage_manifest(cache, role, n_samples):
         if row in bundle_rows:
             raise ValueError('Duplicate bundle row')
         bundle_rows.add(row)
+    if sample_ids != set(range(n_samples)):
+        raise ValueError('Sample IDs must cover 0..n_samples-1')
     folder = cache / role
     if {p.name for p in folder.glob('*.npy')} != set(rows):
         raise ValueError('Bundle files do not match the index')

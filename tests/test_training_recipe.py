@@ -40,7 +40,7 @@ path = "{root}/stimuli/training"
 number_of_sets = 3
 samples_per_set = 5000
 epochs_per_set = 10
-start_seed = 1000
+start_seed = 4000
 seed_increment = 1
 shuffle_seed = 7000
 [validation_set]
@@ -78,7 +78,81 @@ shuffle = false
 '''
 
 
+def candidate_checkpoint(commit, epoch=1):
+    from checkpoints import SCHEMA, compatibility
+    return dict(schema=SCHEMA, kind='candidate', compatibility=compatibility(),
+                data_contract={}, git_commit=commit, global_epoch=epoch,
+                training_set_index=0, training_seed=1, epoch_within_set=epoch,
+                epochs_per_set=epoch, training_loss=.1, learning_rate=.001,
+                detector={}, n_input_channels=3, model_state_dict={})
+
+
 class TrainingRecipeTests(unittest.TestCase):
+    def test_speed_bounds_must_be_representable_in_float32(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            for bounds in ('[1e-12, 2e-12]', '[1e-12, 1e-12]', '[1e-50, 1e-40]', '[1e38, 1e40]'):
+                path.write_text(recipe_text(directory).replace(
+                    'speed_range = [0.001, 0.006]', f'speed_range = {bounds}'))
+                with self.subTest(bounds=bounds):
+                    if '1e-12' in bounds:
+                        module.load_recipe(path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'float32'):
+                            module.load_recipe(path)
+
+    def test_near_exclusion_radius_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            for radius in ('0', '0.04', '0.999999', '-0.01', '1', '1.1', 'nan', 'inf', '-inf', 'true'):
+                with self.subTest(radius=radius):
+                    path.write_text(recipe_text(directory).replace(
+                        '[stimuli]', f'[stimuli]\nnear_exclusion_radius = {radius}'))
+                    if radius in ('0', '0.04', '0.999999'):
+                        module.load_recipe(path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'near_exclusion_radius'):
+                            module.load_recipe(path)
+
+    def test_fov_must_fit_full_circle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            original = recipe_text(directory)
+            for fov in ('0.001', '120', '240', '360', '0', '-1', '360.001', 'nan', 'inf', 'true'):
+                with self.subTest(fov=fov):
+                    path.write_text(original.replace('[stimuli]', f'[stimuli]\nfov_deg = {fov}'))
+                    if fov in ('0.001', '120', '240', '360'):
+                        module.load_recipe(path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'fov_deg'):
+                            module.load_recipe(path)
+
+    def test_training_seeds_must_start_above_distinct_held_out_seeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            original = recipe_text(directory)
+            for start in (0, 1999, 2000, 2500, 3000):
+                with self.subTest(start=start):
+                    path.write_text(original.replace('start_seed = 4000', f'start_seed = {start}'))
+                    with self.assertRaisesRegex(ValueError, 'greater than both'):
+                        module.load_recipe(path)
+            path.write_text(original.replace('seed = 3000', 'seed = 2000'))
+            with self.assertRaisesRegex(ValueError, 'must differ'):
+                module.load_recipe(path)
+            # Both held-out seed orderings are valid, even with many training sets.
+            for validation, test in ((2000, 3000), (3000, 2000)):
+                before_test, test_section = original.split('[test_set]', 1)
+                text = (before_test.replace('seed = 2000', f'seed = {validation}')
+                        + '[test_set]' + test_section.replace('seed = 3000', f'seed = {test}'))
+                text = text.replace('start_seed = 4000', 'start_seed = 3001')
+                text = text.replace('number_of_sets = 3', 'number_of_sets = 1000000')
+                path.write_text(text)
+                module.load_recipe(path)
+            for increment in (0, -1):
+                path.write_text(original.replace('seed_increment = 1', f'seed_increment = {increment}'))
+                with self.assertRaisesRegex(ValueError, 'seed_increment must be a positive integer'):
+                    module.load_recipe(path)
+
     def test_loads_schema_and_rejects_rotation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'translation_only.toml'
@@ -102,21 +176,18 @@ class TrainingRecipeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'absolute path'):
                 module.load_recipe(path)
 
-    def test_output_uses_empty_full_commit_marker_and_refuses_mismatch(self):
-        commit = 'a' * 40
+    def test_output_uses_compatibility_not_commit_equality(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
             output.mkdir()
             recipe = {'network': {'output_path': str(output)}}
-            checkpoints, final = module._initialize_output(recipe, 'translation_only', commit)
-            marker = output / 'translation_only' / f'commit_id={commit}'
-            self.assertTrue(marker.is_file())
-            self.assertEqual(marker.stat().st_size, 0)
-            self.assertTrue(checkpoints.is_dir())
-            self.assertTrue(final.is_dir())
-            marker.rename(marker.with_name('commit_id=' + 'b' * 40))
-            with self.assertRaisesRegex(ValueError, 'does not belong'):
-                module._initialize_output(recipe, 'translation_only', commit)
+            checkpoints, final = module._initialize_output(recipe, 'translation_only', 'a' * 40)
+            self.assertEqual(module._initialize_output(recipe, 'translation_only', 'b' * 40),
+                             (checkpoints, final))
+            manifest = json.loads((checkpoints.parent / 'run.json').read_text())
+            self.assertEqual(manifest['origin_git_commit'], 'a' * 40)
+            with self.assertRaisesRegex(ValueError, 'incompatible'):
+                module._initialize_output(recipe | {'changed': True}, 'translation_only', 'b' * 40)
 
     def test_generation_writes_only_dog_cache_and_reuses_exact_spec(self):
         stimuli = {'speed_range': [0.001, 0.006], 'heading_deg_range': [-180, 180],
@@ -130,10 +201,10 @@ class TrainingRecipeTests(unittest.TestCase):
                 import numpy as np
                 (cache / 'train').mkdir(parents=True)
                 (cache / 'dog.json').write_text(json.dumps(dict(
-                    storage_format='dog-contrast-bundles-v1', storage_dtype='torch.float32',
+                    storage_format='dog-contrast-bundles-v2', storage_dtype='torch.float32',
                     finite_validated=True, n_samples=12, contrast_shape=[2, 31])))
                 (cache / 'train' / 'bundles.json').write_text(json.dumps(
-                    [[str(i), 'bundle-000000000.npy', i] for i in range(12)]))
+                    [[i, 'bundle-000000000.npy', i] for i in range(12)]))
                 np.save(cache / 'train' / 'bundle-000000000.npy', np.zeros(12, dtype=[
                     ('dog_contrast', np.float32, (2, 31)), ('target', np.float32, (3,))]))
                 return str(cache)
@@ -184,8 +255,7 @@ class TrainingRecipeTests(unittest.TestCase):
             candidates.mkdir(parents=True)
             final.mkdir()
             for epoch in range(1, 4):
-                torch.save({'git_commit': commit, 'model_state_dict': {},
-                            'global_epoch': epoch}, candidates / f'epoch-{epoch:06d}.pt')
+                torch.save(candidate_checkpoint(commit, epoch), candidates / f'epoch-{epoch:06d}.pt')
 
             first = {**metric, 'normalized_rmse': 3.0}
             with patch.object(module, 'evaluate_model',
@@ -242,7 +312,7 @@ class TrainingRecipeTests(unittest.TestCase):
                         module.run_recipe(path, root=root, commit='c' * 40)
                 training_path = root / 'stimuli' / 'training'
                 state = json.loads((training_path / module.DATASET_STATE).read_text())
-                self.assertEqual(state['spec']['seed'], 1001)
+                self.assertEqual(state['spec']['seed'], 4001)
                 checkpoints = root / 'output' / 'smoke' / 'checkpoints'
                 completed_candidate = checkpoints / 'candidates' / 'epoch-000003.pt'
                 saved_time = completed_candidate.stat().st_mtime_ns
@@ -290,7 +360,8 @@ x_supersampling = 4''')
             path.write_text(text)
             module.run_recipe(path, root=root, commit='c' * 40)
             network = root / 'output' / 'smoke'
-            self.assertTrue((network / ('commit_id=' + 'c' * 40)).is_file())
+            self.assertTrue((network / 'run.json').is_file())
+            self.assertEqual(len(list(root.rglob('source.tar.gz'))), 1)
             self.assertEqual(len(list((network / 'checkpoints' / 'candidates').glob('*.pt'))), 2)
             self.assertTrue((network / 'final' / 'model.pt').is_file())
             self.assertTrue((network / 'final' / 'validation-results.json').is_file())

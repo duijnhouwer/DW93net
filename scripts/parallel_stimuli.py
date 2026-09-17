@@ -33,6 +33,7 @@ class Prefetch:
     def __init__(self, recipe, *, lock_fds=()):
         self.recipe = recipe
         self.lock_fds = lock_fds
+        self.provenance = None
         self.settings = recipe.get('parallel_generation', {})
         self.enabled = self.settings.get('enabled', False)
         self.stage = Path(recipe['training_sets']['path']).with_name(
@@ -50,6 +51,7 @@ class Prefetch:
             return
         if self.process is not None:
             raise RuntimeError('A generation job is already running')
+        section = section | {'_provenance': self.provenance}
         self.owns_stage = True
         self.temporary = tempfile.TemporaryDirectory(prefix='dw93net-prefetch-')
         self.control = Path(self.temporary.name) / 'control.json'
