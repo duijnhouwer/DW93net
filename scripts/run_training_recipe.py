@@ -17,10 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from parallel_stimuli import Prefetch
+from run_lock import run_lock
 
 from models.pure_translation import PureTranslationNet
 from features.reichardt import ReichardtBank
 from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset
+from stimuli.dataset_identity import dataset_spec, generation_identity, storage_manifest
 from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader
 from train.train_flow_xt_net import (
     RecipeTrainingSettings, _motion_scales, committed_revision, train_recipe_set,
@@ -73,6 +75,8 @@ def _nonnegative_int(value, where):
 def _number(value, where, *, positive=False, nonnegative=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f'{where} must be a number')
+    if not math.isfinite(value):
+        raise ValueError(f'{where} must be finite')
     if positive and value <= 0:
         raise ValueError(f'{where} must be positive')
     if nonnegative and value < 0:
@@ -274,7 +278,7 @@ def _safe_delete_managed(path):
 def _atomic_json(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + '.tmp')
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + '\n')
     os.replace(temporary, path)
 
 
@@ -297,20 +301,22 @@ def _sha256(path):
 def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callback=None):
     """Generate one role-only set containing only bundled signed DoG contrast."""
     path = Path(path).resolve()
-    desired = {'version': 2, 'role': role, 'seed': section['seed'],
-               'n_samples': section['n_samples'], 'stimuli': stimuli,
-               'detector': section['_detector']}
+    desired = dataset_spec(role, section, stimuli)
     state_path = path / DATASET_STATE
     if state_path.is_file():
         state = json.loads(state_path.read_text())
-        cache = path / state['cache']
-        ready = ((cache / 'dog.json').is_file()
-                 and (cache / role / 'bundles.json').is_file())
+        cache = (path / state['cache']).resolve()
+        ready = False
+        if state.get('spec') == desired and path in cache.parents:
+            try:
+                ready = storage_manifest(cache, role, section['n_samples']) == state.get('storage')
+            except (OSError, ValueError, TypeError, KeyError, EOFError) as error:
+                print(f'Invalid {role} cache: {error}', flush=True)
         if state.get('spec') == desired and ready:
             print(f'Reusing {role} set: {path}', flush=True)
             return cache
         if persistent:
-            raise ValueError(f'Persistent {role} set differs from the recipe: {path}')
+            raise ValueError(f'Persistent {role} set differs from the recipe or has invalid storage: {path}')
         _safe_delete_managed(path)
     elif path.exists() and any(path.iterdir()):
         # A managed directory with no published state is an interrupted
@@ -336,7 +342,11 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
     cache = Path(cache).resolve()
     if path not in cache.parents:
         raise RuntimeError('Generator returned a path outside its managed dataset directory')
-    _atomic_json(state_path, {'spec': desired, 'cache': str(cache.relative_to(path))})
+    storage = storage_manifest(cache, role, section['n_samples'])
+    if generation_identity() != desired['generation_identity']:
+        raise RuntimeError('Generation implementation changed while preparing dataset')
+    _atomic_json(state_path, {'spec': desired, 'cache': str(cache.relative_to(path)),
+                              'storage': storage})
     return cache
 
 
@@ -345,6 +355,16 @@ def _load_checkpoint(path, device):
     if 'model_state_dict' not in checkpoint:
         raise ValueError(f'Checkpoint has no model weights: {path}')
     return checkpoint
+
+
+def _validate_metrics(metrics, where):
+    """Undefined heading is legitimate; nonfinite numeric metrics are not."""
+    _positive_int(metrics.get('n_samples'), f'{where}.n_samples')
+    for key in ('normalized_rmse', 'translation_speed_mae',
+                'translation_vector_tip_mae', 'rotation_mae_deg', 'heading_mae_deg'):
+        if key == 'heading_mae_deg' and key in metrics and metrics[key] is None:
+            continue
+        _number(metrics.get(key), f'{where}.{key}', nonnegative=True)
 
 
 def evaluate_model(model_path, cache_root, role, evaluation, commit):
@@ -390,11 +410,13 @@ def evaluate_model(model_path, cache_root, role, evaluation, commit):
             count += target.shape[0]
     if not count:
         raise ValueError(f'{role} dataset is empty')
-    return {'n_samples': count, 'normalized_rmse': math.sqrt(normalized_sq / count),
+    metrics = {'n_samples': count, 'normalized_rmse': math.sqrt(normalized_sq / count),
             'translation_speed_mae': speed_error / count,
             'translation_vector_tip_mae': tip_error / count,
             'rotation_mae_deg': rotation_error / count,
             'heading_mae_deg': heading_error / heading_count if heading_count else None}
+    _validate_metrics(metrics, f'{role} evaluation of {model_path}')
+    return metrics
 
 
 def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
@@ -425,6 +447,7 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
             raise ValueError('Saved validation progress has an invalid candidate result')
         if result['candidate'] in saved_by_name:
             raise ValueError('Saved validation progress has duplicate candidate results')
+        _validate_metrics(result, f'Cached candidate {result["candidate"]}')
         saved_by_name[result['candidate']] = result
 
     results = []
@@ -439,6 +462,7 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
             print(f'Validating candidate {index}/{len(candidates)}: {candidate.name}', flush=True)
             metrics = evaluate_model(candidate, validation_cache, 'validate',
                                      recipe['evaluation'], commit)
+            _validate_metrics(metrics, f'Candidate {candidate.name}')
             result = {'candidate': candidate.name,
                       'checkpoint_sha256': fingerprint, **metrics}
             saved_by_name[candidate.name] = result
@@ -467,6 +491,8 @@ def _select_final(checkpoint_dir, final_dir, validation_cache, recipe, commit):
     if model_path.is_file():
         existing = _load_checkpoint(model_path, 'cpu')
         existing_value = existing.get('validation', {}).get('normalized_rmse')
+        if existing_value is not None:
+            _number(existing_value, f'{model_path} validation.normalized_rmse', nonnegative=True)
         promote = (existing.get('git_commit') != commit or existing_value is None or
                    best['normalized_rmse'] < existing_value)
     if promote:
@@ -498,19 +524,20 @@ def _stage_test_set(test_path, staging_path):
 
 def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
-    prefetch = Prefetch(load_recipe(recipe_path))
-    try:
-        return _run_recipe(recipe_path, root=root, commit=commit,
-                           require_clean=require_clean, prefetch=prefetch)
-    finally:
-        prefetch.close()
+    recipe = load_recipe(recipe_path)
+    with run_lock() as lock_fds:
+        prefetch = Prefetch(recipe, lock_fds=lock_fds)
+        try:
+            return _run_recipe(recipe_path, root=root, commit=commit,
+                               require_clean=require_clean, prefetch=prefetch, recipe=recipe)
+        finally:
+            prefetch.close()
 
 
-def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch):
+def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe):
     """Execute or resume the one committed recipe in ``root/recipe``."""
     root = Path(root).resolve()
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
-    recipe = load_recipe(recipe_path)
     if recipe_path.parent != root / 'recipe':
         raise ValueError('Recipe must be directly inside the repository recipe/ directory')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', recipe_path.stem):
@@ -566,6 +593,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         train_recipe_set(RecipeTrainingSettings(
             root_folder=str(cache), checkpoint_dir=str(checkpoint_dir), git_commit=commit,
             training_set_index=set_index, training_seed=seed,
+            is_final_training_set=set_index == training['number_of_sets'] - 1,
             epochs_per_set=training['epochs_per_set'], shuffle_seed=training['shuffle_seed'],
             candidate_interval_epochs=checkpoints['candidate_interval_epochs'],
             keep_previous_resumable=checkpoints['keep_previous_resumable'],
@@ -612,6 +640,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
                                  recipe['evaluation'], commit)
         _atomic_json(results_path, {'git_commit': commit, **metrics})
     else:
+        _validate_metrics(json.loads(results_path.read_text()), f'Cached test results {results_path}')
         print('Final model is unchanged; retaining its existing test results', flush=True)
     if staged:
         _safe_delete_managed(Path(test['staging_path']))

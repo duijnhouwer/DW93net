@@ -1,6 +1,7 @@
 """Training engine called by the recipe orchestrator for one seeded set."""
 
 import os
+import math
 import shutil
 import subprocess
 import time
@@ -24,6 +25,7 @@ class RecipeTrainingSettings:
     training_seed: int
     epochs_per_set: int
     shuffle_seed: int
+    is_final_training_set: bool = True
     candidate_interval_epochs: int = 1
     keep_previous_resumable: bool = True
     batch_size: int = 64
@@ -183,6 +185,13 @@ def train_recipe_set(cfg, *, progress_callback=None):
                 window_start, window_wait = now, 0.0
 
         epoch_loss = train_loss_total.item() / len(train_dataset)
+        # Do not advance the scheduler or publish a checkpoint for a failed
+        # epoch. Resume must retain the last completed, finite-loss epoch.
+        if not math.isfinite(epoch_loss):
+            raise RuntimeError(
+                f'Nonfinite training loss {epoch_loss}: set {cfg.training_set_index + 1}, '
+                f'seed {cfg.training_seed}, epoch {epoch_index + 1}, global epoch {global_epoch}; '
+                'previous checkpoint retained')
         previous_rate = optimizer.param_groups[0]['lr']
         scheduler.step(epoch_loss)
         next_rate = optimizer.param_groups[0]['lr']
@@ -220,7 +229,11 @@ def train_recipe_set(cfg, *, progress_callback=None):
             'scheduler_state_dict': scheduler.state_dict(),
             'settings': asdict(cfg),
         }
-        if global_epoch % cfg.candidate_interval_epochs == 0:
+        # Always offer the completed run to validation, even when its final
+        # epoch falls between periodic candidates. Intermediate set boundaries
+        # do not change the global candidate cadence.
+        terminal_epoch = cfg.is_final_training_set and epoch_index + 1 == cfg.epochs_per_set
+        if global_epoch % cfg.candidate_interval_epochs == 0 or terminal_epoch:
             candidate = {key: value for key, value in common.items() if key != 'loss'} | {
                 'training_loss': epoch_loss,
             }

@@ -40,6 +40,14 @@ Edit the recipe, commit the recipe and all code changes, then run:
 PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/run_training_recipe.py
 ```
 
+Only one recipe run per user may be active on this machine, regardless of
+checkout or dataset paths. A second run fails immediately. The lock covers
+background generation and cleanup, and releases automatically when all owning
+processes exit, including after crashes. The file
+`/tmp/dw93net-run-locks-<uid>/run.lock` intentionally remains; do not delete it
+to unlock a run. This advisory lock does not coordinate different hosts or
+users, or standalone tools that do not acquire it.
+
 The runner requires a clean commit and CUDA by default. For a recipe named
 `translation_only.toml`, it creates
 `<output_path>/translation_only/{checkpoints,final}` plus an empty file named

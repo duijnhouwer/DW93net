@@ -30,8 +30,9 @@ class Throttle:
 
 
 class Prefetch:
-    def __init__(self, recipe):
+    def __init__(self, recipe, *, lock_fds=()):
         self.recipe = recipe
+        self.lock_fds = lock_fds
         self.settings = recipe.get('parallel_generation', {})
         self.enabled = self.settings.get('enabled', False)
         self.stage = Path(recipe['training_sets']['path']).with_name(
@@ -62,7 +63,8 @@ class Prefetch:
         for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
             env[key] = '1'
         self.process = subprocess.Popen(
-            [sys.executable, '-u', str(Path(__file__).resolve()), str(self.request)], env=env)
+            [sys.executable, '-u', str(Path(__file__).resolve()), str(self.request)], env=env,
+            pass_fds=self.lock_fds)
         print(f'Generating next set in {self.stage}; seed {section["seed"]}; '
               f'{self.throttle.threads} threads (maximum {self.throttle.maximum})', flush=True)
 
@@ -87,14 +89,14 @@ class Prefetch:
                   f'loader wait {wait_fraction:.1%}', flush=True)
 
     def acquire(self, destination, section):
+        from stimuli.dataset_identity import dataset_spec
+
         if self.process is None:
             state_path = self.stage / '.dw93net-dataset.json'
             if not self.enabled or not state_path.is_file() or Path(destination).exists():
                 return False
             state = json.loads(state_path.read_text())
-            desired = dict(version=2, role='train', seed=section['seed'],
-                           n_samples=section['n_samples'], stimuli=self.recipe['stimuli'],
-                           detector=section['_detector'])
+            desired = dataset_spec('train', section, self.recipe['stimuli'])
             if state.get('spec') != desired:
                 return False
             self.stage.rename(destination)

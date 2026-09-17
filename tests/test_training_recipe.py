@@ -127,9 +127,15 @@ class TrainingRecipeTests(unittest.TestCase):
             cache = path / 'parameters' / 'dog'
 
             def generate(**kwargs):
+                import numpy as np
                 (cache / 'train').mkdir(parents=True)
-                (cache / 'dog.json').write_text('{}')
-                (cache / 'train' / 'bundles.json').write_text('[]')
+                (cache / 'dog.json').write_text(json.dumps(dict(
+                    storage_format='dog-contrast-bundles-v1', storage_dtype='torch.float32',
+                    finite_validated=True, n_samples=12, contrast_shape=[2, 31])))
+                (cache / 'train' / 'bundles.json').write_text(json.dumps(
+                    [[str(i), 'bundle-000000000.npy', i] for i in range(12)]))
+                np.save(cache / 'train' / 'bundle-000000000.npy', np.zeros(12, dtype=[
+                    ('dog_contrast', np.float32, (2, 31)), ('target', np.float32, (3,))]))
                 return str(cache)
 
             with patch.object(module, 'generate_dog_dataset', side_effect=generate) as mocked:
