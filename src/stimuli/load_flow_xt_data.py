@@ -7,7 +7,7 @@ Created on Fri May 23 14:22:29 2025
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset, RandomSampler
 from typing import Dict
 import re
 import json
@@ -87,11 +87,16 @@ def with_mirrored_dog_training(dataset):
 
 
 def make_flow_loader(dataset, batch_size, device, *, shuffle=False, num_workers=4,
-                     generator=None):
+                     shuffle_generator=None, worker_generator=None):
     """Prepare batches in the background, pinning host memory for CUDA copies."""
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+    # DataLoader consumes its generator when creating worker seeds, but not
+    # when resetting persistent workers. Give the sampler a separate generator
+    # so restarting the loader cannot change an epoch's shuffled trial order.
+    # Loading and mirroring are deterministic; workers do not choose trials.
+    sampler = RandomSampler(dataset, generator=shuffle_generator) if shuffle else None
+    return DataLoader(dataset, batch_size=batch_size, sampler=sampler,
                       num_workers=num_workers,
-                      generator=generator,
+                      generator=worker_generator,
                       pin_memory=torch.device(device).type == "cuda",
                       persistent_workers=num_workers > 0)
 

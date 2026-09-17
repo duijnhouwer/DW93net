@@ -207,6 +207,58 @@ class TrainingRecipeTests(unittest.TestCase):
             self.assertEqual(len(results['candidates']), 3)
             self.assertNotIn('checkpoint_sha256', results['candidates'][0])
 
+    def test_resume_second_set_reuses_data_and_completed_epoch(self):
+        import train.train_flow_xt_net as training_engine
+        torch.set_num_threads(1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'output').mkdir()
+            (root / 'recipe').mkdir()
+            path = root / 'recipe' / 'smoke.toml'
+            text = recipe_text(directory)
+            text = text.replace('number_of_sets = 3', 'number_of_sets = 2')
+            text = text.replace('samples_per_set = 5000', 'samples_per_set = 2')
+            text = text.replace('epochs_per_set = 10', 'epochs_per_set = 2')
+            text = text.replace('n_samples = 1000', 'n_samples = 2')
+            text = text.replace('dog_bundle_size = 64',
+                                'dog_bundle_size = 2\nfov_deg = 3\nn_world_dots = 20\nx_supersampling = 4')
+            path.write_text(text)
+            save_latest = training_engine._save_latest
+
+            def interrupt_after_checkpoint(checkpoint, *args):
+                save_latest(checkpoint, *args)
+                if checkpoint['training_set_index'] == 1 and checkpoint['epoch_within_set'] == 1:
+                    raise RuntimeError('Simulated interruption in set 2')
+
+            with patch.object(torch.cuda, 'is_available', return_value=False):
+                with patch.object(training_engine, '_save_latest', side_effect=interrupt_after_checkpoint):
+                    with self.assertRaisesRegex(RuntimeError, 'Simulated interruption'):
+                        module.run_recipe(path, root=root, commit='c' * 40)
+                training_path = root / 'stimuli' / 'training'
+                state = json.loads((training_path / module.DATASET_STATE).read_text())
+                self.assertEqual(state['spec']['seed'], 1001)
+                checkpoints = root / 'output' / 'smoke' / 'checkpoints'
+                completed_candidate = checkpoints / 'candidates' / 'epoch-000003.pt'
+                saved_time = completed_candidate.stat().st_mtime_ns
+                original_train = module.train_recipe_set
+
+                def verify_reused_data(cfg, **kwargs):
+                    self.assertEqual(cfg.training_set_index, 1)
+                    self.assertEqual(json.loads((training_path / module.DATASET_STATE).read_text()), state)
+                    self.assertEqual(Path(cfg.root_folder), training_path / state['cache'])
+                    return original_train(cfg, **kwargs)
+
+                with patch.object(module, 'generate_dog_dataset', wraps=module.generate_dog_dataset) as generate:
+                    with patch.object(module, 'train_recipe_set', side_effect=verify_reused_data) as train:
+                        module.run_recipe(path, root=root, commit='c' * 40)
+                    self.assertEqual(train.call_count, 1)
+                    self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
+                                     ['validate', 'test'])
+                latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
+                self.assertEqual(latest['global_epoch'], 4)
+                self.assertEqual(completed_candidate.stat().st_mtime_ns, saved_time)
+                self.assertFalse(training_path.exists())
+
     def test_tiny_end_to_end_run_replaces_training_sets_and_selects_final(self):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:

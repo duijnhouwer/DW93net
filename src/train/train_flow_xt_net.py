@@ -93,9 +93,11 @@ def train_recipe_set(cfg, *, progress_callback=None):
         raise ValueError('Training dataset must be nonempty')
     scales = _motion_scales(cfg.root_folder)
     shuffle_generator = torch.Generator()
+    worker_generator = torch.Generator().manual_seed(cfg.shuffle_seed)
     train_loader = make_flow_loader(
         train_dataset, cfg.batch_size, device, shuffle=True,
-        num_workers=cfg.num_workers, generator=shuffle_generator)
+        num_workers=cfg.num_workers, shuffle_generator=shuffle_generator,
+        worker_generator=worker_generator)
 
     torch.manual_seed(cfg.shuffle_seed)
     if torch.cuda.is_available():

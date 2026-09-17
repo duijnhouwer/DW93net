@@ -550,8 +550,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         if complete:
             print(f'Training set {set_index + 1}/{training["number_of_sets"]} already complete',
                   flush=True)
-            if training_path.exists() and (training_path / MANAGED_MARKER).is_file():
-                _safe_delete_managed(training_path)
+            # The shared path may already contain a later set. Its manifest
+            # is checked by _prepare_dataset when that set is reached.
             continue
         section = {'seed': seed, 'n_samples': training['samples_per_set'],
                    '_detector': recipe['detector']}
@@ -581,6 +581,12 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             **({'progress_callback': prefetch.observe} if prefetch.enabled else {}))
         _safe_delete_managed(training_path)
         print(f'Training set {set_index + 1} complete and deleted', flush=True)
+
+    # A restart after the last checkpoint but before dataset cleanup skips
+    # every set above. All training is now complete, so remove that leftover.
+    training_path = Path(training['path'])
+    if training_path.exists() and (training_path / MANAGED_MARKER).is_file():
+        _safe_delete_managed(training_path)
 
     validation = recipe['validation_set']
     validation = validation | {'_detector': recipe['detector']}

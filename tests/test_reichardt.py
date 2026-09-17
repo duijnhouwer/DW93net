@@ -61,6 +61,38 @@ class ReichardtTests(unittest.TestCase):
                     torch.testing.assert_close(y, expected_y, rtol=0, atol=0)
             del loader
 
+    def test_shuffle_order_survives_loader_restart_with_persistent_workers(self):
+        dataset = torch.arange(37)
+        shuffle = torch.Generator()
+        continuing = make_flow_loader(
+            dataset, 8, 'cpu', shuffle=True, num_workers=1,
+            shuffle_generator=shuffle,
+            worker_generator=torch.Generator().manual_seed(123))
+        previous_order = None
+        for epoch in (1, 2, 3):
+            seed = 7000 + epoch
+            shuffle.manual_seed(seed)
+            actual = torch.cat(list(continuing))
+            # New workers represent a resumed process. Deliberately vary both
+            # their count and seed: neither should influence the trial order.
+            restarted = make_flow_loader(
+                dataset, 8, 'cpu', shuffle=True, num_workers=2,
+                shuffle_generator=torch.Generator().manual_seed(seed),
+                worker_generator=torch.Generator().manual_seed(999))
+            resumed = torch.cat(list(restarted))
+            serial = make_flow_loader(
+                dataset, 8, 'cpu', shuffle=True, num_workers=0,
+                shuffle_generator=torch.Generator().manual_seed(seed),
+                worker_generator=torch.Generator().manual_seed(456))
+            torch.testing.assert_close(actual, resumed, rtol=0, atol=0)
+            torch.testing.assert_close(actual, torch.cat(list(serial)), rtol=0, atol=0)
+            torch.testing.assert_close(actual.sort().values, dataset, rtol=0, atol=0)
+            if previous_order is not None:
+                self.assertFalse(torch.equal(actual, previous_order))
+            previous_order = actual
+            del restarted
+        del continuing
+
     def test_scalar_reference_and_alignment(self):
         xt = torch.arange(2 * 2 * 11, dtype=torch.float32).reshape(2, 1, 2, 11) / 100
         bank = ReichardtBank([2, -3, 0])

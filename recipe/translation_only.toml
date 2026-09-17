@@ -48,7 +48,7 @@ n_samples = 10000
 
 [optimization]
 batch_size = 64
-mixed_precision = true
+mixed_precision = false
 profile_batches = 20
 num_workers = 8
 mirror_train_stimuli = true
