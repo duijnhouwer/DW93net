@@ -25,23 +25,23 @@ dog_sigma_center_px = 1.0
 dog_sigma_surround_px = 3.0
 
 [training_sets]
-path = "/mnt/pytorch_data/dw93net_stimuli/training"
+path = "/home/jacob/Documents/dw93net_stimuli/training"
 number_of_sets = 2
 samples_per_set = 20000
-epochs_per_set = 25
+epochs_per_set = 10
 # Training seeds must start above both validation and test seeds.
 start_seed = 4000
 seed_increment = 1
 shuffle_seed = 7000
 
 [validation_set]
-path = "/mnt/pytorch_data/dw93net_stimuli/validation"
+path = "/home/jacob/Documents/dw93net_stimuli/validation"
 seed = 2000
 n_samples = 2000
 selection_metric = "validation_loss"
 
 [test_set]
-path = "/mnt/pytorch_data/dw93net_stimuli/test"
+path = "/home/jacob/Documents/dw93net_stimuli/test"
 seed = 3000
 n_samples = 10000
 
