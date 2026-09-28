@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -11,6 +12,28 @@ from parallel_stimuli import Prefetch, Throttle
 
 
 class ParallelStimuliTests(unittest.TestCase):
+    def test_full_force_first_set_uses_all_available_cpus_but_one_and_restores(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recipe = dict(training_sets={'path': str(Path(directory) / 'train')},
+                          optimization={'num_workers': 0},
+                          parallel_generation={'enabled': True,
+                                               'full_force_first_set': True})
+            with patch('parallel_stimuli.os.sched_getaffinity', return_value=set(range(8))):
+                prefetch = Prefetch(recipe)
+                with (patch('torch.get_num_threads', return_value=3),
+                      patch('torch.set_num_threads') as set_threads):
+                    with prefetch.first_set_generation(0):
+                        pass
+                    self.assertEqual([call.args[0] for call in set_threads.call_args_list], [7, 3])
+                    set_threads.reset_mock()
+                    with prefetch.first_set_generation(1):
+                        pass
+                    set_threads.assert_not_called()
+                    with self.assertRaisesRegex(RuntimeError, 'generation failed'):
+                        with prefetch.first_set_generation(0):
+                            raise RuntimeError('generation failed')
+                    self.assertEqual([call.args[0] for call in set_threads.call_args_list], [7, 3])
+
     def test_interrupt_stops_real_worker_and_removes_partial_set(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / 'output').mkdir()

@@ -173,9 +173,12 @@ def load_recipe(path):
     parallel = recipe.get('parallel_generation', {})
     if not isinstance(parallel, dict):
         raise ValueError('parallel_generation must be a table')
-    _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads'}, 'parallel_generation')
+    _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads',
+                               'full_force_first_set'}, 'parallel_generation')
     if type(parallel.get('enabled', False)) is not bool:
         raise ValueError('parallel_generation.enabled must be boolean')
+    if type(parallel.get('full_force_first_set', False)) is not bool:
+        raise ValueError('parallel_generation.full_force_first_set must be boolean')
     for key in ('min_threads', 'max_threads'):
         _positive_int(parallel.get(key, 1 if key == 'min_threads' else 8),
                       f'parallel_generation.{key}')
@@ -566,7 +569,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         log.append('training_set_preparing', training_set_index=set_index, training_seed=seed,
                    n_samples=training['samples_per_set'])
         prefetch.acquire(training_path, section)
-        cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
+        with prefetch.first_set_generation(set_index):
+            cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
         check_repository()
         if set_index + 1 < training['number_of_sets']:
             prefetch.start(section | {'seed': seed + training['seed_increment']})

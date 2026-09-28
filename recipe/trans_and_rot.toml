@@ -26,7 +26,7 @@ dog_sigma_surround_px = 3.0
 
 [training_sets]
 path = "/home/jacob/Documents/dw93net_stimuli/training"
-number_of_sets = 10
+number_of_sets = 10000
 samples_per_set = 100000
 epochs_per_set = 5
 # Training seeds must start above both validation and test seeds.
@@ -58,13 +58,14 @@ mirror_train_stimuli = true
 enabled = true
 min_threads = 1
 max_threads = 8
+full_force_first_set = true
 
 [learning_rate]
 initial = 0.001
 scheduler = "reduce_on_plateau"
 monitor = "validation_loss"
 factor = 0.5
-patience_epochs = 10
+patience_epochs = 20
 minimum = 0.000001
 relative_improvement_threshold = 0.0001
 reset_on_new_training_set = false

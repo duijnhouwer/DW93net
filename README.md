@@ -181,6 +181,12 @@ the available CPUs for training; training itself keeps its existing affinity.
 BLAS and inter-op thread pools are limited to one. CPU affinity uses logical
 CPUs, not topology-aware physical-core allocation.
 
+`full_force_first_set = true` temporarily gives synchronous generation of the
+first training set one fewer PyTorch thread than the logical CPUs allowed by
+the runner's affinity mask. The previous thread count is restored before CUDA
+training starts. Validation generation and background lookahead retain their
+normal thread policies.
+
 Every 32 training batches, two consecutive windows with loader wait above 15%
 halve generator threads; four below 3% add one thread. Intermediate windows
 reset these streaks. The worker applies changes every 64 generated examples.

@@ -1,5 +1,6 @@
 """One-set lookahead with a separately spawned, CPU-only generator."""
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,26 @@ class Prefetch:
         self.cpus = cpus[reserve:] or cpus
         maximum = min(self.settings.get('max_threads', 8), len(self.cpus) or 1)
         self.throttle = Throttle(min(self.settings.get('min_threads', 1), maximum), maximum)
+
+    @contextmanager
+    def first_set_generation(self, set_index):
+        """Optionally use all available logical CPUs but one for set one."""
+        if set_index != 0 or not self.settings.get('full_force_first_set', False):
+            yield
+            return
+        import torch
+        available = (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                     else (os.cpu_count() or 1))
+        threads = max(1, available - 1)
+        previous = torch.get_num_threads()
+        torch.set_num_threads(threads)
+        print(f'First training set generation: {threads} CPU threads '
+              f'({available} available; one reserved)', flush=True)
+        try:
+            yield
+        finally:
+            torch.set_num_threads(previous)
+            print(f'Restored {previous} CPU threads before training', flush=True)
 
     def start(self, section):
         if not self.enabled:
