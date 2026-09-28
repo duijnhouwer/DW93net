@@ -8,7 +8,7 @@ output_path = "/home/jacob/Documents/dw93net_output"
 [stimuli]
 speed_range = [0.001, 0.006]
 heading_deg_range = [-180, 180]
-rot_deg_range = [0, 0]
+rot_deg_range = [-0.5, 0.5]
 fov_deg = 120
 near_exclusion_radius = 0.04
 n_world_dots = 1000
@@ -18,8 +18,8 @@ dog_bundle_size = 64
 apply_dog_filter_post_downsample = true
 
 [detector]
-displacement_min_px = -60
-displacement_max_px = 60
+displacement_min_px = -120
+displacement_max_px = 120
 displacement_step_px = 1
 dog_sigma_center_px = 1.0
 dog_sigma_surround_px = 3.0
@@ -37,13 +37,13 @@ shuffle_seed = 7000
 [validation_set]
 path = "/home/jacob/Documents/dw93net_stimuli/validation"
 seed = 2000
-n_samples = 2000
+n_samples = 25000
 selection_metric = "validation_loss"
 
 [test_set]
 path = "/home/jacob/Documents/dw93net_stimuli/test"
 seed = 3000
-n_samples = 10000
+n_samples = 100000
 
 [optimization]
 batch_size = 64
