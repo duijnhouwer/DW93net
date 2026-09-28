@@ -8,7 +8,7 @@ output_path = "/home/jacob/Documents/dw93net_output"
 [stimuli]
 speed_range = [0.001, 0.006]
 heading_deg_range = [-180, 180]
-rot_deg_range = [-0.5, 0.5]
+rot_deg_range = [0, 0]
 fov_deg = 120
 near_exclusion_radius = 0.04
 n_world_dots = 1000
