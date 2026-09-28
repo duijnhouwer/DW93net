@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from features.reichardt import ReichardtBank
-from models.pure_translation import PureTranslationNet
+from models.flatland_flow import FlatlandFlowNet
 from stimuli.load_flow_xt_data import make_flow_loader
 from stimuli.metadata import data_contract
 from precision import configure_tf32
@@ -41,7 +41,7 @@ def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0,
     bank = ReichardtBank(detector['correlation']['dx_values'])
     if bank.metadata != detector['correlation']:
         raise ValueError('Unsupported checkpoint correlation configuration')
-    model = PureTranslationNet(bank.dx_values).to(device).eval()
+    model = FlatlandFlowNet(bank.dx_values).to(device).eval()
     model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     subset = dataset if indices is None else torch.utils.data.Subset(dataset, indices)
     loader = make_flow_loader(subset, batch_size, device, num_workers=num_workers)

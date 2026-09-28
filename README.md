@@ -475,7 +475,8 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 
 ## Motion-estimation model baseline
 
-`src/models/pure_translation.py` consumes `[B,D,1,X]` signed correlations and
+`src/models/flatland_flow.py` defines `FlatlandFlowNet`, which consumes
+`[B,D,1,X]` signed correlations and
 predicts `[dx,dz,rot]` in scene units per frame step and degrees per frame step.
 A `[0,0]` rotation range targets zero on `rot`; nonzero ranges train yaw
 estimation. Heading is `atan2(dx,dz)` (zero toward +Z,

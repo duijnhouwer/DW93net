@@ -76,7 +76,7 @@ class V1Motion(nn.Module):
         return center, contrast
 
 
-class PureTranslationNet(nn.Module):
+class FlatlandFlowNet(nn.Module):
     def __init__(self, dx_values=tuple(range(-60, 61))):
         super().__init__()
         # Explicit signed labels are required: channel count cannot identify

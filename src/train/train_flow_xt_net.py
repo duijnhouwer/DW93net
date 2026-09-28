@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from dataclasses import dataclass, asdict
 
-from models.pure_translation import PureTranslationNet
+from models.flatland_flow import FlatlandFlowNet
 from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader, with_mirrored_dog_training
 from stimuli.metadata import motion_scales, data_contract
@@ -137,7 +137,7 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
     torch.manual_seed(cfg.shuffle_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.shuffle_seed)
-    model = PureTranslationNet(correlation_bank.dx_values).to(device)
+    model = FlatlandFlowNet(correlation_bank.dx_values).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
     amp_enabled = device == 'cuda' and allow_amp
     scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)

@@ -160,7 +160,7 @@ CUDA, and transfer them to the model device. The correlation bank will perform
 the shifted multiplications in VRAM and pass `[B, D, X_product]` signed
 correlations to the model.
 
-`PureTranslationNet` will accept signed correlation directly. Its trainable V1,
+`FlatlandFlowNet` will accept signed correlation directly. Its trainable V1,
 MT, MST, and decoder layers retain their existing displacement semantics and
 parameter shapes. The four-block reconstruction at the start of `forward` will
 be removed from the production path.

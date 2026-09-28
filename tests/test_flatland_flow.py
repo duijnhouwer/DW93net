@@ -3,10 +3,10 @@ import unittest
 
 import torch
 
-from models.pure_translation import PureTranslationNet, LocalMotionOpponency, V1Motion
+from models.flatland_flow import FlatlandFlowNet, LocalMotionOpponency, V1Motion
 
 
-class PureTranslationTests(unittest.TestCase):
+class FlatlandFlowTests(unittest.TestCase):
     def test_opponency_uses_span_labels_and_preserves_stationary(self):
         opponent = LocalMotionOpponency([2, 0, -2])
         x = torch.tensor([[[3., 1.], [4., 5.], [1., 3.]]])
@@ -35,7 +35,7 @@ class PureTranslationTests(unittest.TestCase):
 
     def test_full_resolution_backward_and_roundtrip(self):
         torch.manual_seed(10)
-        model = PureTranslationNet().eval()
+        model = FlatlandFlowNet().eval()
         x = torch.rand(1, 121, 1, 7062)
         prediction = model(x)
         self.assertEqual(prediction.shape, (1, 3))
@@ -43,13 +43,13 @@ class PureTranslationTests(unittest.TestCase):
         for parameter in model.parameters():
             self.assertIsNotNone(parameter.grad)
             self.assertTrue(torch.isfinite(parameter.grad).all())
-        restored = PureTranslationNet().eval()
+        restored = FlatlandFlowNet().eval()
         restored.load_state_dict(model.state_dict())
         with torch.no_grad():
             torch.testing.assert_close(restored(x), prediction)
 
     def test_reject_wrong_input_axes(self):
-        model = PureTranslationNet([-1, 0, 1])
+        model = FlatlandFlowNet([-1, 0, 1])
         for shape in [(1, 3, 2, 10), (1, 2, 1, 10), (1, 3, 10), (1, 3, 1, 0)]:
             with self.subTest(shape=shape), self.assertRaises(ValueError):
                 model(torch.zeros(shape))
