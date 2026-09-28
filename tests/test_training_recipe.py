@@ -229,7 +229,7 @@ class TrainingRecipeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'seed_increment must be a positive integer'):
                     module.load_recipe(path)
 
-    def test_loads_schema_and_rejects_rotation(self):
+    def test_loads_schema_and_rotation_range(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'translation_only.toml'
             path.write_text(recipe_text(directory))
@@ -238,8 +238,8 @@ class TrainingRecipeTests(unittest.TestCase):
             self.assertEqual(recipe['stimuli']['dog_bundle_size'], 64)
             path.write_text(recipe_text(directory).replace(
                 'rot_deg_range = [0, 0]', 'rot_deg_range = [-0.5, 0.5]'))
-            with self.assertRaisesRegex(ValueError, 'rotation is disabled'):
-                module.load_recipe(path)
+            recipe = module.load_recipe(path)
+            self.assertEqual(recipe['stimuli']['rot_deg_range'], [-0.5, 0.5])
 
     def test_rejects_relative_or_nested_paths(self):
         with tempfile.TemporaryDirectory() as directory:

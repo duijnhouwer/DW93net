@@ -40,12 +40,6 @@ def read_metadata(cache):
     return metadata
 
 
-def require_pure_translation_root(cache):
-    metadata = read_metadata(cache)
-    if bounds(metadata['stimulus_generation']['rot_deg_range']) != (0., 0.):
-        raise ValueError('Pure translation requires rot_deg=0 for the entire dataset')
-
-
 def motion_ranges(generation):
     speed_low, speed_high = bounds(generation['speed_range'])
     heading_low, heading_high = bounds(generation['heading_deg_range'])

@@ -11,7 +11,6 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from stimuli.load_flow_xt_data import DoGDataset
-from stimuli.metadata import require_pure_translation_root
 from checkpoints import load_checkpoint
 from run_revision import committed_revision
 from evaluation import metrics, binned_metrics, inference_batches, METRIC_DEFINITIONS
@@ -188,7 +187,6 @@ def main():
     commit = committed_revision(ROOT)
     args.checkpoints = args.checkpoints.resolve()
     args.data = args.data.resolve()
-    require_pure_translation_root(args.data)
     dataset = DoGDataset(args.data / args.split)
     if not len(dataset):
         parser.error('Dataset is empty')

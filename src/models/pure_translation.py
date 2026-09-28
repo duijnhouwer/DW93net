@@ -1,10 +1,10 @@
-"""Translation-only V1 -> MT -> MST inspired rate-network baseline.
+"""V1 -> MT -> MST inspired motion-estimation rate-network baseline.
 
 Input [B,C,1,X] contains signed DoG correlations calculated online from cached
 signed DoG contrast. At the default 7200 pixels / 120 degrees and spans
 -60..60, C=121 and X=7062. Displacements are pixels per step, NOT deg/s.
 Output [dx,dz,rot] uses scene distance per step for translation and degrees per
-step for yaw. Translation-only training targets zero on the rotation output.
+step for yaw.
 Heading=atan2(dx,dz), with 0 forward, -90 left and +90 right; speed per
 step=hypot(dx,dz). Absolute scale depends on the training distance distribution.
 
@@ -113,8 +113,7 @@ class PureTranslationNet(nn.Module):
             nn.Linear(96 * 120, 256),
             nn.ReLU(),  # Nonnegative MST-like population; tuning must be measured.
         )
-        # A downstream linear decoder reads dx, dz, and yaw. Translation-only
-        # training teaches the yaw output to remain zero.
+        # A downstream linear decoder reads dx, dz, and yaw.
         # No dropout/batch normalization: begin with deterministic rate responses;
         # regularization can be studied separately if held-out performance demands it.
         self.decoder = nn.Linear(256, 3)

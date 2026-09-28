@@ -6,7 +6,7 @@ import torch
 from features.reichardt import ReichardtBank
 from models.pure_translation import PureTranslationNet
 from stimuli.load_flow_xt_data import make_flow_loader
-from stimuli.metadata import data_contract, require_pure_translation_root
+from stimuli.metadata import data_contract
 from precision import configure_tf32
 
 
@@ -33,7 +33,6 @@ class NonfiniteEvaluationError(ValueError):
 
 def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0, indices=None):
     configure_tf32(checkpoint['allow_tp32'])
-    require_pure_translation_root(dataset.folder.parent)
     if checkpoint['data_contract'] != data_contract(dataset.storage_metadata):
         raise ValueError('Checkpoint dataset geometry or generation implementation does not match')
     detector = checkpoint['detector']

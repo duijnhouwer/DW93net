@@ -29,10 +29,9 @@ absolute training/validation/test paths, a sequence of training seeds, epoch
 counts, dynamic learning-rate settings, and an absolute output root. The runner
 takes no arguments and discovers that one file.
 
-The shared topology always outputs `[dx, dz, rot]`. Rotation training is
-currently disabled, so the recipe must specify
-`rot_deg_range = [0, 0]`; this trains the rotation output toward zero. The same
-topology can be retained when rotation experiments are enabled later.
+The shared topology outputs `[dx, dz, rot]`. `rot_deg_range` controls yaw in
+degrees per frame step; `[0, 0]` trains a translation-only dataset, while a
+nonzero range trains translation and yaw estimation together.
 
 Edit the recipe, commit the recipe and all code changes, then run:
 
@@ -474,12 +473,12 @@ Run the correctness and pipeline tests with the project's Python environment:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-## Translation-only model baseline
+## Motion-estimation model baseline
 
-On `toward_translation`, `src/models/pure_translation.py` replaces the original
-regressor. It consumes `[B,D,1,X]` signed correlations and predicts `[dx,dz,rot]` in
-scene units per frame step and degrees per step. Current translation-only
-datasets target zero on `rot`. Heading is `atan2(dx,dz)` (zero toward +Z,
+`src/models/pure_translation.py` consumes `[B,D,1,X]` signed correlations and
+predicts `[dx,dz,rot]` in scene units per frame step and degrees per frame step.
+A `[0,0]` rotation range targets zero on `rot`; nonzero ranges train yaw
+estimation. Heading is `atan2(dx,dz)` (zero toward +Z,
 positive toward +X); translation distance per step is `hypot(dx,dz)`. Heading
 is undefined at zero translation. Speed in units per second additionally
 requires the step duration.
@@ -509,7 +508,7 @@ The model has explicit V1, MT, and MST inspired stages:
   with progressively larger receptive fields. Retain multiple speed signals
   instead of explicitly reducing them to one local velocity estimate.
 - **MST:** retain 120 ordered spatial bins, then learn 256 broad-field units
-  and decode their activity to two translation components. Broad spatial
+  and decode their activity to two translation components and yaw. Broad spatial
   integration is motivated by MST physiology; biological tuning is not imposed
   or guaranteed by this learned readout.
 
@@ -519,7 +518,7 @@ signals, orientation channels, temporal dynamics, recurrence, or eccentricity-
 dependent receptive fields. Its mechanisms and estimation accuracy need tests
 and ablations; speed scale still relies on the training distance distribution.
 
-Training and evaluation require structured metadata specifying zero yaw.
+Training and evaluation accept structured metadata with fixed or varying yaw.
 Checkpoints use one current schema with mandatory fields (including scaler state
 for resume); older schemas are rejected. `src/checkpoints.py` checks structure
 and the exact Git commit. There are no per-file source fingerprints or selective

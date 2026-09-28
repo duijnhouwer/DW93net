@@ -126,8 +126,6 @@ def load_recipe(path):
             raise ValueError(f'stimuli.{key} is required')
         _range(stimuli[key], f'stimuli.{key}')
     validate_speed_float32(stimuli['speed_range'])
-    if stimuli['rot_deg_range'] != [0, 0]:
-        raise ValueError('stimuli.rot_deg_range must be [0, 0] while rotation is disabled')
     _positive_int(stimuli.get('dog_bundle_size'), 'stimuli.dog_bundle_size')
     for key in ('n_world_dots', 'x_supersampling'):
         if key in stimuli:

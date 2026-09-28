@@ -13,7 +13,7 @@ from dataclasses import dataclass, asdict
 from models.pure_translation import PureTranslationNet
 from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import DoGDataset, make_flow_loader, with_mirrored_dog_training
-from stimuli.metadata import require_pure_translation_root, motion_scales, data_contract
+from stimuli.metadata import motion_scales, data_contract
 from checkpoints import SCHEMA, load_checkpoint, validate_tensor_health, validate_checkpoint, NonfiniteTensorError
 from precision import configure_tf32
 from run_revision import committed_revision
@@ -94,7 +94,6 @@ def record_completed_epoch(log, checkpoint, *, recover=False, timing=None):
 
 def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
     """Train one seeded dataset, resuming only at completed epoch boundaries."""
-    require_pure_translation_root(cfg.root_folder)
     if type(cfg.training_set_index) is not int or cfg.training_set_index < 0:
         raise ValueError('training_set_index must be a nonnegative integer')
     for name in ('epochs_per_set', 'candidate_interval_epochs', 'batch_size'):
