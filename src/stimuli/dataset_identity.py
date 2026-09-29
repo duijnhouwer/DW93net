@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 
 import numpy as np
-from stimuli.metadata import DATA_SCHEMA
+from stimuli.metadata import require_current_schema
 from run_revision import revision
+from features.spatial import resolve_boundary
 
 
 def dataset_spec(role, section, stimuli):
-    return {'version': 5, 'git_commit': section.get('_git_commit') or revision(),
+    return {'version': 6, 'boundary': resolve_boundary(stimuli.get('fov_deg', 120)),
+            'git_commit': section.get('_git_commit') or revision(),
             'role': role, 'seed': section['seed'], 'n_samples': section['n_samples'],
             'stimuli': stimuli, 'dog': {key: section['_detector'][key] for key in
                 ('dog_sigma_center_px', 'dog_sigma_surround_px')}}
@@ -25,10 +27,10 @@ def storage_manifest(cache, role, n_samples):
     metadata_bytes = (cache / 'dog.json').read_bytes()
     index_bytes = (cache / role / 'bundles.json').read_bytes()
     metadata = json.loads(metadata_bytes)
+    require_current_schema(metadata)
     index = json.loads(index_bytes)
     shape = metadata.get('contrast_shape')
-    if (metadata.get('storage_format') != DATA_SCHEMA
-            or metadata.get('storage_dtype') != 'torch.float32'
+    if (metadata.get('storage_dtype') != 'torch.float32'
             or metadata.get('finite_validated') is not True
             or metadata.get('n_samples') != n_samples
             or not isinstance(shape, list) or len(shape) != 2 or shape[0] != 2

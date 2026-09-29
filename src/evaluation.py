@@ -38,10 +38,10 @@ def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0,
     detector = checkpoint['detector']
     if detector['dog'] != dataset.metadata:
         raise ValueError('Checkpoint DoG configuration does not match dataset')
-    bank = ReichardtBank(detector['correlation']['dx_values'])
+    bank = ReichardtBank(detector['correlation']['dx_values'], boundary=dataset.metadata['dog']['boundary'])
     if bank.metadata != detector['correlation']:
         raise ValueError('Unsupported checkpoint correlation configuration')
-    model = FlatlandFlowNet(bank.dx_values).to(device).eval()
+    model = FlatlandFlowNet(bank.dx_values, boundary=bank.boundary).to(device).eval()
     model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     subset = dataset if indices is None else torch.utils.data.Subset(dataset, indices)
     loader = make_flow_loader(subset, batch_size, device, num_workers=num_workers)

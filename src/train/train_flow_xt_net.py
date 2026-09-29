@@ -116,7 +116,7 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
               flush=True)
     configure_tf32(allow_tp32)
     train_cache = DoGDataset(Path(cfg.root_folder) / 'train')
-    correlation_bank = ReichardtBank(cfg.dx_values)
+    correlation_bank = ReichardtBank(cfg.dx_values, boundary=train_cache.metadata['dog']['boundary'])
     detector_metadata = {'dog': train_cache.metadata,
                          'correlation': correlation_bank.metadata}
     train_dataset = train_cache
@@ -137,7 +137,7 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
     torch.manual_seed(cfg.shuffle_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.shuffle_seed)
-    model = FlatlandFlowNet(correlation_bank.dx_values).to(device)
+    model = FlatlandFlowNet(correlation_bank.dx_values, boundary=correlation_bank.boundary).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
     amp_enabled = device == 'cuda' and allow_amp
     scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)

@@ -24,6 +24,7 @@ choices. Keep stimulus geometry and channel semantics fixed between splits.
 import torch
 import torch.nn as nn
 from features.reichardt import ReichardtBank
+from features.spatial import validate_boundary, spatial_pool, spatial_conv
 
 
 class LocalMotionOpponency(nn.Module):
@@ -52,14 +53,14 @@ class LocalMotionOpponency(nn.Module):
 class V1Motion(nn.Module):
     """Local motion populations with a same-channel suppressive surround."""
 
-    def __init__(self):
+    def __init__(self, *, boundary='valid'):
         super().__init__()
         # ~0.25-degree anchor neighborhood; keep stride 1 until opponency has
         # acted. The actual detector also reaches back by up to 60 pixels.
-        self.center = nn.AvgPool1d(15, stride=1, padding=7, count_include_pad=False)
+        self.center = spatial_pool(15, stride=1, padding=7, boundary=boundary)
         # ~1-degree surround scale, larger than center. This is a broad pool
         # including the center, not an anatomically fitted annular surround.
-        self.surround = nn.AvgPool1d(61, stride=1, padding=30, count_include_pad=False)
+        self.surround = spatial_pool(61, stride=1, padding=30, boundary=boundary)
         # Fixed semisaturation on normalized product responses: prevents division
         # by zero and preserves some amplitude dependence at low activity.
         self.semisaturation = 0.03
@@ -77,30 +78,31 @@ class V1Motion(nn.Module):
 
 
 class FlatlandFlowNet(nn.Module):
-    def __init__(self, dx_values=tuple(range(-60, 61))):
+    def __init__(self, dx_values=tuple(range(-60, 61)), *, boundary='valid'):
         super().__init__()
         # Explicit signed labels are required: channel count cannot identify
         # opponent pairs or distinguish custom/reordered detector banks.
         self.dx_values = ReichardtBank(dx_values).dx_values
         self.n_input_channels = len(self.dx_values)
-        self.v1 = V1Motion()
+        self.boundary = validate_boundary(boundary)
+        self.v1 = V1Motion(boundary=boundary)
         self.mt_opponency = LocalMotionOpponency(self.dx_values)
         self.mt = nn.Sequential(
             # Integrate rectified V1-sized subunits over 31 pixels, stride 8.
             # Opposite directions at different subunits remain represented.
             # No averaging across displacement channels: preserve speed diversity.
-            nn.AvgPool1d(31, stride=8, padding=15, count_include_pad=False),
+            spatial_pool(31, stride=8, padding=15, boundary=boundary),
             # 96 local rate units combine direction/speed evidence from both V1
             # populations. A 1x1 kernel mixes channels without mixing positions.
             nn.Conv1d(2 * len(self.dx_values), 96, kernel_size=1),
             nn.ReLU(),  # Nonnegative rate abstraction; not a spiking-neuron model.
             # Nine taps spaced by 4 (~4.3 degrees between first/last centers)
             # compare broader neighborhoods with modest parameter/memory cost.
-            nn.Conv1d(96, 96, kernel_size=9, dilation=4, padding=16),
+            spatial_conv(96, 96, kernel_size=9, dilation=4, padding=16, boundary=boundary),
             nn.ReLU(),  # Rectified MT population responses after learned integration.
             # Wider MT context: another 8.5 degrees of receptive-field support.
             # Stride 1 retains the positional map for subsequent MST integration.
-            nn.Conv1d(96, 96, kernel_size=9, dilation=8, padding=32),
+            spatial_conv(96, 96, kernel_size=9, dilation=8, padding=32, boundary=boundary),
             nn.ReLU(),  # Different units can retain different local motion patterns.
         )
         self.mst = nn.Sequential(

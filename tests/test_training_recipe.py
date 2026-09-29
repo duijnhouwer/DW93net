@@ -305,7 +305,7 @@ class TrainingRecipeTests(unittest.TestCase):
                 import numpy as np
                 (cache / 'train').mkdir(parents=True)
                 (cache / 'dog.json').write_text(json.dumps(dict(
-                    storage_format='dog-contrast-bundles-v2', storage_dtype='torch.float32',
+                    storage_format='dog-contrast-bundles-v3', storage_dtype='torch.float32',
                     finite_validated=True, n_samples=12, contrast_shape=[2, 31])))
                 (cache / 'train' / 'bundles.json').write_text(json.dumps(
                     [[i, 'bundle-000000000.npy', i] for i in range(12)]))

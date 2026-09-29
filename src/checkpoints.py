@@ -5,7 +5,7 @@ import torch
 
 from run_revision import revision
 
-SCHEMA = 'dw93net-checkpoint-v3'
+SCHEMA = 'dw93net-checkpoint-v4'
 
 
 class NonfiniteTensorError(ValueError):
@@ -37,7 +37,7 @@ def validate_checkpoint(checkpoint, *, resume=False, expected_commit=None):
     if not isinstance(checkpoint, dict) or common - checkpoint.keys():
         raise ValueError('Incomplete checkpoint schema; legacy checkpoints are not supported')
     if checkpoint['schema'] != SCHEMA or checkpoint['kind'] not in ('candidate', 'resume'):
-        raise ValueError('Unsupported checkpoint schema or kind')
+        raise ValueError('Unsupported checkpoint schema or kind; regenerate checkpoints')
     for key in ('allow_amp', 'allow_tp32'):
         if type(checkpoint[key]) is not bool:
             raise ValueError(f'Checkpoint {key} must be true or false')

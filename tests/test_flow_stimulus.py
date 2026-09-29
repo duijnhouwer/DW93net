@@ -173,7 +173,7 @@ class OneStepStimulusTests(unittest.TestCase):
                 torch.testing.assert_close(left[index][1], right[index][1], rtol=0, atol=0)
                 self.assertEqual(left[index][0].dtype, torch.float32)
             metadata = json.loads((first_cache / 'dog.json').read_text())
-            self.assertEqual(metadata['storage_format'], 'dog-contrast-bundles-v2')
+            self.assertEqual(metadata['storage_format'], 'dog-contrast-bundles-v3')
 
     def test_direct_dog_cache_preserves_float32_intensities(self):
         intensities = torch.linspace(0, 1, 98, dtype=torch.float32).reshape(2, 49)

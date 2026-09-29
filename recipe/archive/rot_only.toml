@@ -1,4 +1,4 @@
-# The filename is the network name. This repository permits one recipe per commit.
+# The filename is the network name. The runner permits one active recipe directly in recipe/.
 version = 1
 require_cuda = true
 

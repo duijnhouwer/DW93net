@@ -4,8 +4,10 @@ import math
 from pathlib import Path
 
 import numpy as np
+from features.spatial import resolve_boundary
+from features.dog_motion import DoGFilter
 
-DATA_SCHEMA = 'dog-contrast-bundles-v2'
+DATA_SCHEMA = 'dog-contrast-bundles-v3'
 
 
 def bounds(spec):
@@ -20,10 +22,14 @@ def bounds(spec):
     return low, high
 
 
+def require_current_schema(metadata):
+    if metadata.get('storage_format') != DATA_SCHEMA:
+        raise ValueError('Unsupported dataset schema; regenerate this dataset')
+
+
 def read_metadata(cache):
     metadata = json.loads((Path(cache) / 'dog.json').read_text())
-    if metadata['storage_format'] != DATA_SCHEMA:
-        raise ValueError('Unsupported dataset schema; regenerate this dataset')
+    require_current_schema(metadata)
     generation = metadata['stimulus_generation']
     if generation['format'] != 'polar-translation-stimuli-v2':
         raise ValueError('Unsupported stimulus metadata')
@@ -37,6 +43,17 @@ def read_metadata(cache):
                 'n_world_dots', 'superimpose', 'x_supersampling'):
         if key not in config:
             raise ValueError(f'Missing stimulus geometry: {key}')
+    boundary = resolve_boundary(config['fov_deg'])
+    if config.get('boundary') != boundary or metadata.get('boundary') != boundary:
+        raise ValueError('Inconsistent dataset boundary metadata; regenerate this dataset')
+    dog = DoGFilter.from_metadata(metadata)
+    if dog.boundary != boundary:
+        raise ValueError('DoG boundary does not match stimulus geometry')
+    if boundary == 'circular' and config.get('apply_dog_filter_after_downsample') is not True:
+        raise ValueError('Circular DoG requires filtering after downsampling')
+    expected_width = config['stim_wid_px'] - (2 * dog.radius if boundary == 'valid' else 0)
+    if metadata.get('contrast_shape') != [2, expected_width]:
+        raise ValueError('Contrast shape does not match geometry and boundary')
     return metadata
 
 
@@ -69,6 +86,6 @@ def motion_scales(cache):
 
 def data_contract(metadata):
     """Input meaning required by a model; ranges/seed/sample count may vary."""
-    return {'schema': metadata['storage_format'],
+    return {'schema': metadata['storage_format'], 'boundary': metadata['boundary'],
             'geometry': metadata['stimulus_generation']['stimulus_config'],
             'git_commit': metadata['git_commit']}

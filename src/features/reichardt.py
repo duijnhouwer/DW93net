@@ -2,17 +2,20 @@
 
 from numbers import Integral
 import torch
+from features.spatial import validate_boundary, modular_indices
 
 
 class ReichardtBank:
     """Signed dX in pixels; one-bin delay and supplied span order.
 
     All channels share present-time anchors, cropped to the intersection of
-    valid coordinates. Positive dX detects motion toward increasing X.
+    valid coordinates in valid mode, or covering the full circle in circular mode.
+    Positive dX detects motion toward increasing X.
     Opposing directions remain separate products (no subtraction).
     """
 
-    def __init__(self, dx_values=tuple(range(-60, 61))):
+    def __init__(self, dx_values=tuple(range(-60, 61)), *, boundary='valid'):
+        self.boundary = validate_boundary(boundary)
         self.dx_values = tuple(dx_values)
         if (not self.dx_values
                 or any(isinstance(v, bool) or not isinstance(v, Integral)
@@ -27,11 +30,12 @@ class ReichardtBank:
 
     @property
     def metadata(self):
-        return dict(format="signed-reichardt-correlation-v1",
+        return dict(format="signed-reichardt-correlation-v2",
                     dx_values=list(self.dx_values),
                     displacement_units="pixels_per_frame_step",
                     temporal_delay_steps=1,
-                    crop="common-valid-present-anchor")
+                    boundary=self.boundary,
+                    crop="none" if self.boundary == "circular" else "common-valid-present-anchor")
 
     def __call__(self, xt, *, validate=True):
         """Accept [2,X], [1,2,X], or [B,1,2,X]; return [C,1,X'] or batched."""
@@ -44,15 +48,22 @@ class ReichardtBank:
             raise ValueError("Expected [2,X], [1,2,X], or [B,1,2,X]")
         if not xt.is_floating_point() or (validate and not torch.isfinite(xt).all()):
             raise ValueError("XT input must contain finite floating-point intensities")
-        x0 = max(0, max(self.dx_values))
-        x1 = xt.shape[-1] + min(0, min(self.dx_values))
-        if x0 >= x1:
-            raise ValueError("Offsets leave no common valid XT region")
-        now = xt[:, :, 1:2, x0:x1]
-        responses = torch.cat([
-            xt[:, :, 0:1, x0-dx:x1-dx] * now
-            for dx in self.dx_values
-        ], dim=1)
+        if self.boundary == 'circular':
+            anchors = torch.arange(xt.shape[-1], device=xt.device)
+            responses = torch.cat([
+                xt[:, :, 0:1].index_select(-1, modular_indices(anchors - dx, xt.shape[-1]))
+                * xt[:, :, 1:2] for dx in self.dx_values
+            ], dim=1)
+        else:
+            x0 = max(0, max(self.dx_values))
+            x1 = xt.shape[-1] + min(0, min(self.dx_values))
+            if x0 >= x1:
+                raise ValueError("Offsets leave no common valid XT region")
+            now = xt[:, :, 1:2, x0:x1]
+            responses = torch.cat([
+                xt[:, :, 0:1, x0-dx:x1-dx] * now
+                for dx in self.dx_values
+            ], dim=1)
         if validate and not torch.isfinite(responses).all():
             raise ValueError("Products overflowed; use a wider floating-point dtype")
         return responses if batched else responses[0]

@@ -1,0 +1,14 @@
+{
+  "device": "NVIDIA GeForce RTX 3080 Ti",
+  "width": 21600,
+  "channels": 241,
+  "batch_size": 64,
+  "amp": false,
+  "free_before_mib": 9506.0,
+  "total_mib": 11909.625,
+  "status": "ok",
+  "loss": 0.0008179337601177394,
+  "peak_allocated_mib": 9242.06005859375,
+  "peak_reserved_mib": 9274.0,
+  "elapsed_s": 0.8234531310008606
+}

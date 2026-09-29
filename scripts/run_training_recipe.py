@@ -23,7 +23,7 @@ from run_lock import run_lock
 from checkpoints import load_checkpoint
 from training_log import EventLog, training_log
 from evaluation import inference_batches, summary_metrics, METRIC_DEFINITIONS
-from stimuli.metadata import motion_scales
+from stimuli.metadata import motion_scales, require_current_schema
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset, validate_speed_float32
 from stimuli.dataset_identity import dataset_spec, storage_manifest
@@ -144,6 +144,9 @@ def load_recipe(path):
         raise ValueError('stimuli.superimpose must be true or false')
     if type(stimuli.get('apply_dog_filter_after_downsample', True)) is not bool:
         raise ValueError('stimuli.apply_dog_filter_after_downsample must be true or false')
+
+    StimConfig(**{key: value for key, value in stimuli.items()
+                  if key in StimConfig.__dataclass_fields__})
 
     detector = _section(recipe, 'detector', DETECTOR_KEYS)
     for key in ('displacement_min_px', 'displacement_max_px'):
@@ -357,6 +360,11 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
     if state_path.is_file():
         state = json.loads(state_path.read_text())
         cache = (path / state['cache']).resolve()
+        # An obsolete cache requires explicit regeneration; never erase it as
+        # a side effect of the exploratory schema change.
+        metadata_path = cache / 'dog.json'
+        if path in cache.parents and metadata_path.is_file():
+            require_current_schema(json.loads(metadata_path.read_text()))
         ready = False
         if state.get('spec') == desired and path in cache.parents:
             try:

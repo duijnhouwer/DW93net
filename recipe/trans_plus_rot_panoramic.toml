@@ -1,0 +1,80 @@
+# The filename is the network name. The runner permits one active recipe directly in recipe/.
+version = 1
+require_cuda = true
+
+[network]
+output_path = "/home/jacob/Documents/dw93net_output"
+
+[stimuli]
+speed_range = [0.001, 0.006]
+heading_deg_range = [-180, 180]
+rot_deg_range = [-0.5, 0.5]
+fov_deg = 360
+near_exclusion_radius = 0.04
+n_world_dots = 1000
+superimpose = false
+x_supersampling = 255
+dog_bundle_size = 64
+apply_dog_filter_after_downsample = true
+
+[detector]
+displacement_min_px = -120
+displacement_max_px = 120
+displacement_step_px = 1
+dog_sigma_center_px = 1.0
+dog_sigma_surround_px = 3.0
+
+[training_sets]
+path = "/home/jacob/Documents/dw93net_stimuli/training"
+number_of_sets = 10000
+samples_per_set = 100000
+epochs_per_set = 5
+# Training seeds must start above both validation and test seeds.
+start_seed = 4000
+seed_increment = 1
+shuffle_seed = 7000
+
+[validation_set]
+path = "/home/jacob/Documents/dw93net_stimuli/validation"
+seed = 2000
+n_samples = 25000
+selection_metric = "validation_loss"
+
+[test_set]
+path = "/home/jacob/Documents/dw93net_stimuli/test"
+seed = 3000
+n_samples = 100000
+
+[optimization]
+batch_size = 64
+# Enable AMP for exploratory training; disable to compare without AMP.
+allow_amp = true
+allow_tp32 = true
+profile_batches = 20
+num_workers = 8
+mirror_train_stimuli = true
+
+[parallel_generation]
+enabled = true
+min_threads = 1
+max_threads = 8
+full_force_first_set = true
+
+[learning_rate]
+initial = 0.001
+scheduler = "reduce_on_plateau"
+monitor = "validation_loss"
+factor = 0.5
+patience_epochs = 20
+minimum = 0.000001
+relative_improvement_threshold = 0.0001
+reset_on_new_training_set = false
+
+[checkpoints]
+candidate_interval_epochs = 1
+keep_previous_resumable = true
+
+[evaluation]
+batch_size = 64
+num_workers = 8
+shuffle = false

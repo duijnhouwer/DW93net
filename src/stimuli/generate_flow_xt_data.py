@@ -13,11 +13,12 @@ if _SRC_ROOT not in sys.path:
 
 import numpy as np
 import torch
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from pathlib import Path
 from features.dog_motion import DoGFilter, SupersampledDoG
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.metadata import DATA_SCHEMA
+from features.spatial import resolve_boundary, modular_indices
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
@@ -71,13 +72,14 @@ class StimConfig:
     x_supersampling: int = 255
     apply_dog_filter_after_downsample: bool = True
 
+    boundary: str = field(init=False)
+
     def __post_init__(self):
+        self.boundary = resolve_boundary(self.fov_deg)
+        if self.boundary == 'circular' and not self.apply_dog_filter_after_downsample:
+            raise ValueError('360° requires apply_dog_filter_after_downsample = true')
         if type(self.apply_dog_filter_after_downsample) is not bool:
             raise ValueError('apply_dog_filter_after_downsample must be true or false')
-        fov = self.fov_deg
-        if (isinstance(fov, bool) or not isinstance(fov, (int, float))
-                or not math.isfinite(fov) or not 0 < fov <= 360):
-            raise ValueError('fov_deg must be finite and satisfy 0 < value <= 360')
         radius = self.near_exclusion_radius
         if (isinstance(radius, bool) or not isinstance(radius, (int, float))
                 or not math.isfinite(radius) or not 0 <= radius < 1):
@@ -293,6 +295,7 @@ class _DogBundleWriter:
         metadata = {
             **self.dog_filter.metadata,
             'storage_format': DATA_SCHEMA,
+            'boundary': self.dog_filter.boundary,
             'git_commit': self.provenance['git_commit'],
             'storage_dtype': 'torch.float32',
             'finite_validated': True,
@@ -324,7 +327,8 @@ def generate_dog_dataset(*, dog_bundle_size=64, sigma_center=1., sigma_surround=
         if writer is None:
             writer = _DogBundleWriter(dataset_root / 'dog', metadata, dog_bundle_size,
                                       DoGFilter(sigma_center=sigma_center,
-                                                sigma_surround=sigma_surround), role, provenance)
+                                                sigma_surround=sigma_surround,
+                                                boundary=metadata["stimulus_config"]["boundary"]), role, provenance)
         writer.add(sample_id, frames, target)
         if progress_callback is not None:
             progress_callback(writer.n_samples)
@@ -350,7 +354,7 @@ def generate_flow_xt_stim(
     """Render [2, X]: initial dots and the same dots after one motion step.
 
     Translation is expressed in the initial camera frame; rotation is in degrees
-    per step. Dots are neither replaced nor wrapped between the two frames.
+    per step. World dots are not replaced; panoramic raster footprints wrap at the seam.
     Set downsample=False to inspect/filter the supersampled float32 raster.
     """
     if rng is None:
@@ -412,10 +416,8 @@ def generate_flow_xt_stim(
         # open, matching the previous renderer; 360 degrees includes the
         # +/-pi seam because it has no outside region.
         theta = np.arctan2(x, z)
-        if config.fov_deg == 360:
-            # Canonicalize the two numeric representations of the rearward
-            # direction onto the drawable right edge of the projection.
-            theta = np.where(theta == -np.pi, np.pi, theta)
+        if config.boundary == 'circular':
+            theta = modular_indices(theta + np.pi, 2 * np.pi) - np.pi
             angle_in_fov = np.ones(theta.shape, dtype=bool)
         else:
             angle_in_fov = np.abs(theta) < half_fov_rad
@@ -430,10 +432,8 @@ def generate_flow_xt_stim(
             x_proj = theta[visible] / half_fov_rad
 
             # Continuous projected position in supersampled X coordinates.
-            x_scaled = (
-                (x_proj + 1) / 2 *
-                (render_wid_px - 1)
-            )
+            x_scaled = ((x_proj + 1) / 2 *
+                        (render_wid_px if config.boundary == 'circular' else render_wid_px - 1))
 
             # A dot should remain one output pixel wide.
             # Therefore at supersampled resolution it occupies
@@ -441,8 +441,13 @@ def generate_flow_xt_stim(
             dot_width = x_supersampling
 
             for xc in x_scaled:
-                left = int(np.floor(xc - dot_width / 2))
+                # Panorama bin i is centered on angular sample -pi + i*2pi/W.
+                half_width = (dot_width - 1) / 2 if config.boundary == 'circular' else dot_width / 2
+                left = int(np.floor(xc - half_width))
                 right = left + dot_width
+                if config.boundary == 'circular':
+                    image[t, modular_indices(np.arange(left, right), render_wid_px)] = 1.0
+                    continue
 
                 left = max(left, 0)
                 right = min(right, render_wid_px)

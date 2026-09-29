@@ -1,5 +1,6 @@
 """Cacheable signed luminance difference-of-Gaussians filtering."""
 import math
+from features.spatial import validate_boundary, circular_pad
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +12,8 @@ class SupersampledDoG:
     def __init__(self, dog_filter, width, factor):
         import numpy as np
         from scipy import fft
+        if dog_filter.boundary != 'valid':
+            raise ValueError('Circular DoG requires filtering after downsampling')
         self.width, self.factor = width, factor
         self.radius = dog_filter.radius * factor
         self.high_width = width * factor
@@ -44,10 +47,11 @@ class SupersampledDoG:
 class DoGFilter:
     """Fixed luminance DoG stage whose signed output is safe to cache."""
 
-    def __init__(self, *, sigma_center=1., sigma_surround=3.):
+    def __init__(self, *, sigma_center=1., sigma_surround=3., boundary='valid'):
         if not (math.isfinite(sigma_center) and math.isfinite(sigma_surround)
                 and 0 < sigma_center < sigma_surround):
             raise ValueError("DoG requires finite 0 < sigma_center < sigma_surround")
+        self.boundary = validate_boundary(boundary)
         self.sigma_center = float(sigma_center)
         self.sigma_surround = float(sigma_surround)
         self.radius = math.ceil(3 * self.sigma_surround)
@@ -56,16 +60,16 @@ class DoGFilter:
     @property
     def metadata(self):
         return dict(
-            format="dog-signed-contrast-v1",
+            format="dog-signed-contrast-v2",
             dog=dict(sigma_center_px=self.sigma_center, sigma_surround_px=self.sigma_surround,
                      radius_px=self.radius, gaussian_normalization="separate_unit_sum",
-                     boundary="valid", compute_dtype="float32"),
+                     boundary=self.boundary, compute_dtype="float32"),
             frames_order=["first", "second"],
             signed_contrast="center_gaussian_minus_surround_gaussian",
         )
 
     def filter_frames(self, xt):
-        """Return signed [B,1,2,X-2r] contrasts; no temporal filtering/padding."""
+        """Return signed [B,1,2,X] circular or [B,1,2,X-2r] valid contrasts."""
         if xt.ndim == 2:
             xt = xt[None, None]
         elif xt.ndim == 3 and xt.shape[0] == 1:
@@ -73,7 +77,7 @@ class DoGFilter:
         if (xt.ndim != 4 or xt.shape[1:3] != (1, 2)
                 or not xt.is_floating_point() or not torch.isfinite(xt).all()):
             raise ValueError("Expected finite floating-point [2,X], [1,2,X], or [B,1,2,X]")
-        if xt.shape[-1] <= 2 * self.radius:
+        if xt.shape[-1] < 1 or (self.boundary == 'valid' and xt.shape[-1] <= 2 * self.radius):
             raise ValueError("Stimulus too narrow for valid DoG filtering")
         # Construct normalized weights in float64, then explicitly compute in
         # float32. Separate Gaussian convolutions cancel uniform fields to float32
@@ -89,6 +93,8 @@ class DoGFilter:
                 kernels.append((kernel / kernel.sum()).float())
             self._kernels_by_device[xt.device] = torch.stack(kernels)[:, None]
         frames = xt.float().reshape(-1, 1, xt.shape[-1])
+        if self.boundary == 'circular':
+            frames = circular_pad(frames, self.radius, self.radius)
         filtered = F.conv1d(frames, self._kernels_by_device[xt.device])
         difference = filtered[:, 0] - filtered[:, 1]
         return difference.reshape(xt.shape[0], 1, 2, -1)
@@ -98,10 +104,10 @@ class DoGFilter:
     @classmethod
     def from_metadata(cls, metadata):
         dog = metadata.get("dog", {})
-        if metadata.get("format") != "dog-signed-contrast-v1":
-            raise ValueError("Expected signed DoG contrast metadata")
+        if metadata.get("format") != "dog-signed-contrast-v2":
+            raise ValueError("Unsupported DoG contrast metadata; regenerate this dataset")
         result = cls(sigma_center=dog.get("sigma_center_px"),
-                     sigma_surround=dog.get("sigma_surround_px"))
+                     sigma_surround=dog.get("sigma_surround_px"), boundary=dog.get("boundary"))
         if any(metadata.get(key) != value for key, value in result.metadata.items()):
             raise ValueError("Inconsistent DoG contrast metadata")
         return result

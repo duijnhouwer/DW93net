@@ -1,5 +1,10 @@
 # Exact-360° Circular Flow Plan
 
+Implementation completed; see `HANDOFF.md` for current state and
+`benchmarks/panorama-20260929/REPORT.md` for the GPU preflight.
+The original recipe is preserved under `recipe/archive/`; only the panoramic
+recipe is active. Checkpoints additionally use `dw93net-checkpoint-v4`.
+
 ## Summary
 
 Implement end-to-end circular spatial processing only when `fov_deg == 360`.

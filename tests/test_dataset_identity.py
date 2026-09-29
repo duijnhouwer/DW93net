@@ -27,7 +27,7 @@ class DatasetIdentityTests(unittest.TestCase):
     def generate(self, **kwargs):
         self.folder.mkdir(parents=True)
         (self.cache / 'dog.json').write_text(json.dumps(dict(
-            storage_format='dog-contrast-bundles-v2', storage_dtype='torch.float32',
+            storage_format='dog-contrast-bundles-v3', storage_dtype='torch.float32',
             finite_validated=True, n_samples=2, contrast_shape=[2, 31])))
         self.index = [[0, 'bundle.npy', 0], [1, 'bundle.npy', 1]]
         self.write_index()
@@ -51,6 +51,17 @@ class DatasetIdentityTests(unittest.TestCase):
             self.assertTrue((self.folder / 'bundle.npy').exists())
             self.prepare(persistent=False)
         self.assertEqual(self.generator.call_count, 2)
+
+    def test_obsolete_cache_rejected_without_removing_artifacts(self):
+        metadata_path = self.cache / 'dog.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata['storage_format'] = 'dog-contrast-bundles-v2'
+        metadata_path.write_text(json.dumps(metadata))
+        for persistent in (True, False):
+            with self.assertRaisesRegex(ValueError, 'regenerate'):
+                self.prepare(persistent=persistent)
+            self.assertTrue((self.folder / 'bundle.npy').exists())
+        self.assertEqual(self.generator.call_count, 1)
 
     def test_missing_bundle_rejected_and_managed_cache_regenerated(self):
         (self.folder / 'bundle.npy').unlink()

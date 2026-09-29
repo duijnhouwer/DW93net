@@ -408,9 +408,22 @@ finer intensity levels to float32 precision. Raw patterns are held in memory
 and never written; saved DoG contrast is also float32. There is no raw Flow-XT dataset format or
 disk-backed compatibility path.
 
+Exact 360° FOV selects a shared `circular` boundary policy. The renderer uses
+`[-180°, 180°)` with no duplicated endpoint and wraps dot footprints across the
+seam. DoG and Reichardt preserve all columns; V1/MT local pools and convolutions
+also wrap. Adaptive pooling and the decoder are unchanged. Smaller FOVs keep
+nonperiodic behavior, including 359°; subsequent nonpanoramic experiments should
+use FOVs below 350° because motion across an omitted angular gap is not modeled.
+
+The sole active recipe is `recipe/trans_plus_rot_panoramic.toml`: 360° at 60
+pixels/degree (21,600 columns), speed `[0.001, 0.006]`, heading `[-180, 180]`,
+and rotation `[-0.5, 0.5]`. Previous recipes live in `recipe/archive/`, which the
+single-recipe runner ignores.
+
 `stimuli.apply_dog_filter_after_downsample = true` keeps the usual order:
 downsample, then DoG. Set it to `false` to apply DoG at supersampled resolution
-before downsampling. The high-resolution path scales Gaussian sigmas/support
+before downsampling for FOVs below 360°. Panoramas require `true`; the
+high-resolution circular path is unsupported. The high-resolution path scales Gaussian sigmas/support
 to preserve their angular size, uses CPU float32 FFT convolution, and processes
 one high-resolution stimulus at a time to bound memory. Output width and dtype
 remain unchanged. The choice is recorded in dataset geometry and must match
@@ -437,8 +450,10 @@ coordinate conversion, and stimulus configuration.
 Preprocessing applies a **1D luminance DoG independently to each frame**:
 center sigma 1 pixel, surround sigma 3 pixels, kernel radius 9 pixels (19 taps).
 Both discrete Gaussians are separately normalized to unit sum. Filtering uses
-valid support, no padding, no temporal filtering, and no per-image rescaling.
-The float32 signed contrast `[2,X-2r]` is stored directly. ON and OFF remain
+valid support for nonpanoramic FOVs and circular padding for 360°, with no
+temporal filtering or per-image rescaling.
+The float32 signed contrast is stored as `[2,X-2r]` in valid mode or `[2,X]`
+in circular mode. ON and OFF remain
 recoverable as `relu(contrast)` and `relu(-contrast)`.
 
 For each training or evaluation batch, `ReichardtBank(dx_values)` computes the
@@ -448,17 +463,21 @@ configured displacement `s`. This equals
 redundant polarity blocks. Negative responses remain available until local
 opposite-direction suppression and rectification.
 
-For radius `r`, `left=r+max(0,max(dx_values))` and
+In valid mode, for radius `r`, `left=r+max(0,max(dx_values))` and
 `right=r+max(0,-min(dx_values))`, a `[2,X]` or `[1,2,X]` stimulus produces
 `[len(dx_values),1,X-left-right]`. The defaults give `[121,1,7062]` at X=7200.
-Positions are anchored in the present frame's original pixel coordinates.
+Circular correlations instead have shape `[len(dx_values),1,X]` and use modular
+offsets. Positions are anchored in the present frame's original pixel coordinates.
 Filtering, cached contrast, and online correlations use float32.
 
 Generation preserves the requested role and stable sample identifiers, and publishes
 `dog.json` only after completion. Existing destinations are refused. The cache
-format is `dog-contrast-bundles-v2`. `DoGDataset` reads the contrast bundles;
+format is `dog-contrast-bundles-v3`. `DoGDataset` reads the contrast bundles;
 checkpoints retain both DoG and displacement metadata, and evaluation rejects
-incompatible caches.
+incompatible caches. Boundary metadata is checked against stimulus geometry.
+DoG format `dog-signed-contrast-v2`, correlation format
+`signed-reichardt-correlation-v2`, and checkpoint schema `dw93net-checkpoint-v4`
+reject older formats; regenerate data and checkpoints rather than migrating.
 
 Training uses range-normalized MSE on each example's motion prediction.
 
