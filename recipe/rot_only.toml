@@ -15,7 +15,7 @@ n_world_dots = 1000
 superimpose = false
 x_supersampling = 255
 dog_bundle_size = 64
-apply_dog_filter_post_downsample = true
+apply_dog_filter_after_downsample = true
 
 [detector]
 displacement_min_px = -120

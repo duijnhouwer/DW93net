@@ -37,7 +37,7 @@ TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', '
                   'checkpoints', 'evaluation', 'parallel_generation'}
 STIMULI_KEYS = {'speed_range', 'heading_deg_range', 'rot_deg_range', 'fov_deg',
                  'near_exclusion_radius', 'n_world_dots', 'superimpose',
-                 'x_supersampling', 'dog_bundle_size', 'apply_dog_filter_post_downsample'}
+                 'x_supersampling', 'dog_bundle_size', 'apply_dog_filter_after_downsample'}
 DETECTOR_KEYS = {'displacement_min_px', 'displacement_max_px', 'displacement_step_px',
                  'dog_sigma_center_px', 'dog_sigma_surround_px'}
 TRAINING_KEYS = {'path', 'number_of_sets', 'samples_per_set', 'epochs_per_set',
@@ -142,8 +142,8 @@ def load_recipe(path):
             raise ValueError('stimuli.near_exclusion_radius must be less than 1')
     if 'superimpose' in stimuli and type(stimuli['superimpose']) is not bool:
         raise ValueError('stimuli.superimpose must be true or false')
-    if type(stimuli.get('apply_dog_filter_post_downsample', True)) is not bool:
-        raise ValueError('stimuli.apply_dog_filter_post_downsample must be true or false')
+    if type(stimuli.get('apply_dog_filter_after_downsample', True)) is not bool:
+        raise ValueError('stimuli.apply_dog_filter_after_downsample must be true or false')
 
     detector = _section(recipe, 'detector', DETECTOR_KEYS)
     for key in ('displacement_min_px', 'displacement_max_px'):

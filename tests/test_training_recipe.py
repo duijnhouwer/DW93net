@@ -131,12 +131,12 @@ class TrainingRecipeTests(unittest.TestCase):
             path = Path(directory) / 'recipe.toml'
             for value in ('true', 'false', '1', '"false"'):
                 path.write_text(recipe_text(directory).replace('[stimuli]',
-                    f'[stimuli]\napply_dog_filter_post_downsample = {value}'))
+                    f'[stimuli]\napply_dog_filter_after_downsample = {value}'))
                 if value in ('true', 'false'):
-                    self.assertEqual(module.load_recipe(path)['stimuli']['apply_dog_filter_post_downsample'],
+                    self.assertEqual(module.load_recipe(path)['stimuli']['apply_dog_filter_after_downsample'],
                                      value == 'true')
                 else:
-                    with self.assertRaisesRegex(ValueError, 'apply_dog_filter_post_downsample'):
+                    with self.assertRaisesRegex(ValueError, 'apply_dog_filter_after_downsample'):
                         module.load_recipe(path)
 
     def test_precision_options_are_required_booleans(self):

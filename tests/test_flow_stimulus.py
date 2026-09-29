@@ -24,7 +24,7 @@ class OneStepStimulusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             datasets = []
             for post in (True, False):
-                cfg = replace(config, apply_dog_filter_post_downsample=post)
+                cfg = replace(config, apply_dog_filter_after_downsample=post)
                 cache = generate_dog_dataset(output_root=str(Path(directory) / str(post)),
                     n_samples=2, seed=42, config=cfg, dog_bundle_size=2,
                     speed_range=(.001, .006), heading_deg_range=(-180, 180), rot_deg_range=(0, 0), role='train')

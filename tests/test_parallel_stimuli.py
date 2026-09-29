@@ -88,7 +88,7 @@ max_threads = 2
 ''')
             recipe = module.load_recipe(path)
             recipe['stimuli'].update(fov_deg=3, n_world_dots=20, x_supersampling=4,
-                                    apply_dog_filter_post_downsample=post)
+                                    apply_dog_filter_after_downsample=post)
             section = dict(seed=1001, n_samples=4, _detector=DETECTOR)
             prefetch = Prefetch(recipe)
             try:

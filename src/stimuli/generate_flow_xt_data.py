@@ -69,11 +69,11 @@ class StimConfig:
     n_world_dots: int = 1000
     superimpose: bool = False
     x_supersampling: int = 255
-    apply_dog_filter_post_downsample: bool = True
+    apply_dog_filter_after_downsample: bool = True
 
     def __post_init__(self):
-        if type(self.apply_dog_filter_post_downsample) is not bool:
-            raise ValueError('apply_dog_filter_post_downsample must be true or false')
+        if type(self.apply_dog_filter_after_downsample) is not bool:
+            raise ValueError('apply_dog_filter_after_downsample must be true or false')
         fov = self.fov_deg
         if (isinstance(fov, bool) or not isinstance(fov, (int, float))
                 or not math.isfinite(fov) or not 0 < fov <= 360):
@@ -193,7 +193,7 @@ def _generate_flow_xt_samples(
                 cam_rot_deg=cam_rot,
                 config=layer_config,
                 rng=rng,
-                downsample=config.apply_dog_filter_post_downsample,
+                downsample=config.apply_dog_filter_after_downsample,
             )
             xt_tensor_list.append(xt)
 
@@ -221,7 +221,7 @@ class _DogBundleWriter:
         self.dog_filter = dog_filter
         config = generation_metadata['stimulus_config']
         self.high_filter = None
-        if not config['apply_dog_filter_post_downsample']:
+        if not config['apply_dog_filter_after_downsample']:
             self.high_filter = SupersampledDoG(dog_filter, config['stim_wid_px'],
                                                config['x_supersampling'])
         self.role = role

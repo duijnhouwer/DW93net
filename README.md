@@ -408,7 +408,7 @@ finer intensity levels to float32 precision. Raw patterns are held in memory
 and never written; saved DoG contrast is also float32. There is no raw Flow-XT dataset format or
 disk-backed compatibility path.
 
-`stimuli.apply_dog_filter_post_downsample = true` keeps the usual order:
+`stimuli.apply_dog_filter_after_downsample = true` keeps the usual order:
 downsample, then DoG. Set it to `false` to apply DoG at supersampled resolution
 before downsampling. The high-resolution path scales Gaussian sigmas/support
 to preserve their angular size, uses CPU float32 FFT convolution, and processes
