@@ -68,3 +68,14 @@ longer run is memory-bound; do not reduce scientific resolution.
 Near-panoramic FOVs such as 359° retain disconnected edges even when motion
 crosses the omitted angular gap. Subsequent nonpanoramic experiments will use
 FOVs below 350°. Circular high-resolution/pre-downsample DoG is unsupported.
+
+## Generation thread policy
+
+`full_force_first_set` has been removed and is rejected by recipe validation.
+All foreground generation (validation, any training set, and test) temporarily
+uses `parallel_generation.max_threads`; background lookahead starts at
+`min_threads` and adapts up to that same maximum. Effective limits are capped
+by the available generation CPU pool. Disabling lookahead does not disable
+thread limits. The active recipe specifies 1..8, so foreground generation uses
+8 rather than inheriting PyTorch's default or overriding it to 27.
+Training is stopped; this change does not restart it.

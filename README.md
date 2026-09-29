@@ -174,18 +174,21 @@ before an atomic directory rename makes that set current. Set
 `enabled = false` for sequential generation. Omitted settings default to
 sequential operation for older recipes.
 
-`min_threads` (default 1) and `max_threads` (default 8) bound the generator's
-PyTorch threads and Linux CPU allocation. The generator runs at niceness 10
-and requests best-effort low I/O priority. Its CPU pool excludes a portion of
-the available CPUs for training; training itself keeps its existing affinity.
-BLAS and inter-op thread pools are limited to one. CPU affinity uses logical
-CPUs, not topology-aware physical-core allocation.
+`min_threads` (default 1) and `max_threads` (default 8) apply to every
+stimulus-generation phase. Foreground validation, training-set, and test-set
+generation use the maximum while training is idle, restoring the previous
+PyTorch thread count afterward. This also applies when `enabled = false`;
+that switch controls lookahead, not the thread limits. The obsolete
+`full_force_first_set` option is rejected and must be removed from recipes.
 
-`full_force_first_set = true` temporarily gives synchronous generation of the
-first training set one fewer PyTorch thread than the logical CPUs allowed by
-the runner's affinity mask. The previous thread count is restored before CUDA
-training starts. Validation generation and background lookahead retain their
-normal thread policies.
+The background generator starts at the minimum and adjusts within the same
+bounds. Both limits are capped by the available generation CPU pool. The
+background worker runs at niceness 10 and requests best-effort low I/O priority.
+Its CPU pool excludes a portion of the available CPUs for training; training
+itself keeps its existing affinity. Background BLAS and inter-op thread pools
+are limited to one. CPU affinity uses logical CPUs, not topology-aware
+physical-core allocation. These settings control numerical-operation threads,
+not independent stimulus workers.
 
 Every 32 training batches, two consecutive windows with loader wait above 15%
 halve generator threads; four below 3% add one thread. Intermediate windows

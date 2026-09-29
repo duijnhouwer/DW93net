@@ -27,6 +27,14 @@ class ValidationWorkflowTests(unittest.TestCase):
             text = text.replace('minimum = 0.000001', 'minimum = 0.0005')
             text = text.replace('candidate_interval_epochs = 1', 'candidate_interval_epochs = 10')
             path.write_text(text)
+            text += '\n[parallel_generation]\nenabled = false\nmin_threads = 1\nmax_threads = 2\n'
+            path.write_text(text)
+            generation_threads = []
+            real_generate = module.generate_dog_dataset
+            def generate_with_thread_check(**kwargs):
+                generation_threads.append((kwargs['role'], torch.get_num_threads()))
+                return real_generate(**kwargs)
+            previous_threads = torch.get_num_threads()
             evaluation_order = []
             real_evaluate = module.evaluate_checkpoint
             def evaluate(checkpoint, cache, role, evaluation, commit):
@@ -40,10 +48,12 @@ class ValidationWorkflowTests(unittest.TestCase):
                 return result
             with patch.object(torch.cuda, 'is_available', return_value=False), \
                     patch.object(module, 'evaluate_checkpoint', side_effect=evaluate), \
-                    patch.object(module, 'generate_dog_dataset', wraps=module.generate_dog_dataset) as generate:
+                    patch.object(module, 'generate_dog_dataset', side_effect=generate_with_thread_check) as generate:
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
                              ['validate', 'train', 'test'])
+            self.assertEqual(generation_threads, [('validate', 2), ('train', 2), ('test', 2)])
+            self.assertEqual(torch.get_num_threads(), previous_threads)
             self.assertEqual(evaluation_order, [('validate', 1), ('validate', 2), ('test', 1)])
             network = root / 'output' / 'smoke'
             checkpoints = network / 'checkpoints'

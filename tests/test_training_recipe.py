@@ -151,7 +151,7 @@ class TrainingRecipeTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, key):
                             module.load_recipe(path)
 
-    def test_full_force_first_set_option_is_boolean(self):
+    def test_removed_full_force_first_set_option_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'recipe.toml'
             original = recipe_text(directory)
@@ -159,11 +159,8 @@ class TrainingRecipeTests(unittest.TestCase):
                 with self.subTest(value=value):
                     path.write_text(original + '\n[parallel_generation]\n'
                                     f'full_force_first_set = {value}\n')
-                    if value in ('true', 'false'):
+                    with self.assertRaisesRegex(ValueError, 'Unknown parallel_generation field.*full_force_first_set'):
                         module.load_recipe(path)
-                    else:
-                        with self.assertRaisesRegex(ValueError, 'full_force_first_set'):
-                            module.load_recipe(path)
 
     def test_tf32_switch_controls_matmul_and_convolution(self):
         from precision import configure_tf32

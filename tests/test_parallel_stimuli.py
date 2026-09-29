@@ -12,27 +12,31 @@ from parallel_stimuli import Prefetch, Throttle
 
 
 class ParallelStimuliTests(unittest.TestCase):
-    def test_full_force_first_set_uses_all_available_cpus_but_one_and_restores(self):
-        with tempfile.TemporaryDirectory() as directory:
-            recipe = dict(training_sets={'path': str(Path(directory) / 'train')},
+    def test_foreground_generation_obeys_shared_bounds_and_restores(self):
+        for enabled in (True, False):
+            recipe = dict(training_sets={'path': '/tmp/thread-policy-test/train'},
                           optimization={'num_workers': 0},
-                          parallel_generation={'enabled': True,
-                                               'full_force_first_set': True})
-            with patch('parallel_stimuli.os.sched_getaffinity', return_value=set(range(8))):
+                          parallel_generation={'enabled': enabled, 'min_threads': 1, 'max_threads': 8})
+            with patch('parallel_stimuli.os.sched_getaffinity', return_value=set(range(28))):
                 prefetch = Prefetch(recipe)
-                with (patch('torch.get_num_threads', return_value=3),
-                      patch('torch.set_num_threads') as set_threads):
-                    with prefetch.first_set_generation(0):
+            self.assertEqual(prefetch.throttle.minimum, 1)
+            self.assertEqual(prefetch.throttle.maximum, 8)
+            with (patch('torch.get_num_threads', return_value=20),
+                  patch('torch.set_num_threads') as set_threads):
+                # The same policy applies on every foreground call, regardless of set index.
+                for _ in range(2):
+                    with prefetch.foreground_generation():
                         pass
-                    self.assertEqual([call.args[0] for call in set_threads.call_args_list], [7, 3])
-                    set_threads.reset_mock()
-                    with prefetch.first_set_generation(1):
-                        pass
-                    set_threads.assert_not_called()
-                    with self.assertRaisesRegex(RuntimeError, 'generation failed'):
-                        with prefetch.first_set_generation(0):
-                            raise RuntimeError('generation failed')
-                    self.assertEqual([call.args[0] for call in set_threads.call_args_list], [7, 3])
+                self.assertEqual([call.args[0] for call in set_threads.call_args_list], [8, 20, 8, 20])
+                set_threads.reset_mock()
+                with self.assertRaisesRegex(RuntimeError, 'generation failed'):
+                    with prefetch.foreground_generation():
+                        raise RuntimeError('generation failed')
+                self.assertEqual([call.args[0] for call in set_threads.call_args_list], [8, 20])
+            with patch('parallel_stimuli.os.sched_getaffinity', return_value={0}):
+                limited = Prefetch(recipe)
+            self.assertEqual(limited.throttle.maximum, 1)
+            self.assertEqual(limited.throttle.minimum, 1)
 
     def test_interrupt_stops_real_worker_and_removes_partial_set(self):
         with tempfile.TemporaryDirectory() as directory:

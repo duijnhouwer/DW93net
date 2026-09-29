@@ -42,31 +42,27 @@ class Prefetch:
             Path(recipe['training_sets']['path']).name + '.next')
         self.process = self.temporary = None
         self.owns_stage = False
-        cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else []
+        cpus = (sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                else list(range(os.cpu_count() or 1)))
         reserve = min(max(1, recipe['optimization']['num_workers']), max(1, len(cpus) // 2))
         self.cpus = cpus[reserve:] or cpus
         maximum = min(self.settings.get('max_threads', 8), len(self.cpus) or 1)
         self.throttle = Throttle(min(self.settings.get('min_threads', 1), maximum), maximum)
 
     @contextmanager
-    def first_set_generation(self, set_index):
-        """Optionally use all available logical CPUs but one for set one."""
-        if set_index != 0 or not self.settings.get('full_force_first_set', False):
-            yield
-            return
+    def foreground_generation(self):
+        """Use the shared maximum while training is idle, then restore its threads."""
         import torch
-        available = (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
-                     else (os.cpu_count() or 1))
-        threads = max(1, available - 1)
         previous = torch.get_num_threads()
+        threads = self.throttle.maximum
         torch.set_num_threads(threads)
-        print(f'First training set generation: {threads} CPU threads '
-              f'({available} available; one reserved)', flush=True)
+        print(f'Foreground stimulus generation: {threads} CPU threads '
+              f'(configured range {self.throttle.minimum}..{self.throttle.maximum})', flush=True)
         try:
             yield
         finally:
             torch.set_num_threads(previous)
-            print(f'Restored {previous} CPU threads before training', flush=True)
+            print(f'Restored {previous} CPU threads after generation', flush=True)
 
     def start(self, section):
         if not self.enabled:

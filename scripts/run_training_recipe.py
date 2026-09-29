@@ -176,12 +176,9 @@ def load_recipe(path):
     parallel = recipe.get('parallel_generation', {})
     if not isinstance(parallel, dict):
         raise ValueError('parallel_generation must be a table')
-    _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads',
-                               'full_force_first_set'}, 'parallel_generation')
+    _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads'}, 'parallel_generation')
     if type(parallel.get('enabled', False)) is not bool:
         raise ValueError('parallel_generation.enabled must be boolean')
-    if type(parallel.get('full_force_first_set', False)) is not bool:
-        raise ValueError('parallel_generation.full_force_first_set must be boolean')
     for key in ('min_threads', 'max_threads'):
         _positive_int(parallel.get(key, 1 if key == 'min_threads' else 8),
                       f'parallel_generation.{key}')
@@ -526,8 +523,9 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     validation = recipe['validation_set'] | run_fields
     validation = validation | {'_detector': recipe['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
-    validation_cache = _prepare_dataset(validation_path, 'validate', validation,
-                                        stimuli, persistent=True)
+    with prefetch.foreground_generation():
+        validation_cache = _prepare_dataset(validation_path, 'validate', validation,
+                                            stimuli, persistent=True)
     log.append('validation_set_ready', path=str(validation_cache), seed=validation['seed'],
                n_samples=validation['n_samples'])
 
@@ -577,7 +575,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         log.append('training_set_preparing', training_set_index=set_index, training_seed=seed,
                    n_samples=training['samples_per_set'])
         prefetch.acquire(training_path, section)
-        with prefetch.first_set_generation(set_index):
+        with prefetch.foreground_generation():
             cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
         check_repository()
         if set_index + 1 < training['number_of_sets']:
@@ -630,7 +628,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     test = recipe['test_set'] | run_fields
     test = test | {'_detector': recipe['detector'], '_provenance': provenance}
     test_path = Path(test['path'])
-    test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
+    with prefetch.foreground_generation():
+        test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
     check_repository()
     model_path = final_dir / 'model.pt'
     results_path = final_dir / 'test-results.json'
