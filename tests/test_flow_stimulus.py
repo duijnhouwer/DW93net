@@ -110,6 +110,21 @@ class OneStepStimulusTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sample_motion(np.random.default_rng(0), (.001, .001), (0, 0), (rotation, rotation))
 
+    def test_zero_speed_supports_rotation_only_motion(self):
+        self.assertEqual(
+            sample_motion(np.random.default_rng(0), (0, 0), (0, 0), (1, 1)),
+            (0.0, 0.0, 1.0))
+        with self.assertRaisesRegex(ValueError, 'nonnegative'):
+            sample_motion(np.random.default_rng(0), (-.001, -.001), (0, 0), (1, 1))
+        with tempfile.TemporaryDirectory() as root:
+            cache = Path(generate_dog_dataset(
+                output_root=root, n_samples=1, speed_range=(0, 0),
+                heading_deg_range=(0, 0), rot_deg_range=(-1, 1), role='train', seed=42,
+                dog_bundle_size=1,
+                config=StimConfig(stim_wid_px=32, n_world_dots=4, x_supersampling=1)))
+            from stimuli.metadata import motion_scales
+            self.assertEqual(motion_scales(cache), (1.0, 1.0, 2.0))
+
     def test_near_exclusion_radius_bounds(self):
         for radius in (0, .04, .999999):
             self.assertEqual(StimConfig(near_exclusion_radius=radius).near_exclusion_radius, radius)
@@ -270,10 +285,10 @@ class OneStepStimulusTests(unittest.TestCase):
         self.assertAlmostEqual(quadrant['dx'], .005)
         self.assertAlmostEqual(quadrant['dz'], .005)
 
-    def test_rejects_zero_speed_and_invalid_heading_ranges(self):
+    def test_rejects_negative_speed_and_invalid_heading_ranges(self):
         config = StimConfig(stim_wid_px=32, n_world_dots=4, x_supersampling=1)
         with tempfile.TemporaryDirectory() as root:
-            for speeds, headings in [((0, .01), (-180, 180)),
+            for speeds, headings in [((-.001, .01), (-180, 180)),
                                      (0, (-180, 180)),
                                      ((.001, .01), 0),
                                      ((.001, .01), (-181, 180)),

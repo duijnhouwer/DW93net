@@ -30,7 +30,7 @@ def read_metadata(cache):
     speed = bounds(generation['speed_range'])
     heading = bounds(generation['heading_deg_range'])
     bounds(generation['rot_deg_range'])
-    if speed[0] <= 0 or heading[0] < -180 or heading[1] > 180:
+    if speed[0] < 0 or heading[0] < -180 or heading[1] > 180:
         raise ValueError('Invalid polar motion bounds')
     config = generation['stimulus_config']
     for key in ('stim_wid_px', 'fov_deg', 'near_exclusion_radius',
@@ -61,7 +61,8 @@ def motion_scales(cache):
     ranges = motion_ranges(generation)
     # A fixed speed and heading has zero span on both axes; use its physical
     # speed as the scale instead of inventing a value from a folder name.
-    translation_scale = max(ranges['dx'], ranges['dz']) or bounds(generation['speed_range'])[1]
+    translation_scale = (max(ranges['dx'], ranges['dz'])
+                         or bounds(generation['speed_range'])[1] or 1.)
     return (ranges['dx'] or translation_scale, ranges['dz'] or translation_scale,
             ranges['rot_deg'] or 1.)
 

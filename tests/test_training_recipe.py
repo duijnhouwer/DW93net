@@ -191,6 +191,18 @@ class TrainingRecipeTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'float32'):
                             module.load_recipe(path)
 
+    def test_zero_speed_recipe_is_valid_but_negative_speed_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'recipe.toml'
+            original = recipe_text(directory)
+            path.write_text(original.replace('speed_range = [0.001, 0.006]',
+                                             'speed_range = [0, 0]'))
+            self.assertEqual(module.load_recipe(path)['stimuli']['speed_range'], [0, 0])
+            path.write_text(original.replace('speed_range = [0.001, 0.006]',
+                                             'speed_range = [-0.001, 0]'))
+            with self.assertRaisesRegex(ValueError, 'nonnegative'):
+                module.load_recipe(path)
+
     def test_near_exclusion_radius_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'recipe.toml'

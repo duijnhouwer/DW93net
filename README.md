@@ -421,12 +421,12 @@ Translation is sampled in polar coordinates. The defaults draw speed uniformly
 from the half-open interval `[0.001, 0.015)` scene units per frame step and
 heading uniformly from `[-180, 180)` degrees. Heading 0 is forward (+Z), -90 is
 left (-X), and +90 is right (+X). Cartesian motion is then calculated as
-`dx = speed*sin(heading)` and `dz = speed*cos(heading)`. The strictly positive
-minimum avoids samples whose translation is zero or too close to zero to define
-a useful heading. Motion is sampled once, then `dx`, `dz`, and yaw are converted
-to their stored float32 values before rendering. There is no nano-unit grid or
-rejection loop. Speed bounds must remain finite and positive in float32; each
-converted translation must remain nonzero. Half-open ranges describe sampling
+`dx = speed*sin(heading)` and `dz = speed*cos(heading)`. A zero fixed speed is
+allowed for rotation-only experiments; positive speeds are required when heading
+or translation metrics are meaningful. Motion is sampled once, then `dx`, `dz`,
+and yaw are converted to their stored float32 values before rendering. There is
+no nano-unit grid or rejection loop. Speed bounds must remain finite and
+nonnegative in float32. Half-open ranges describe sampling
 before float32 rounding, which can move a stored value slightly across an endpoint.
 Samples have sequential numeric IDs; replay uses the same sampling/conversion code.
 

@@ -26,11 +26,13 @@ DEFAULT_DATA_ROOT = os.path.join(_REPO_ROOT, "stimuli")
 
 
 def validate_speed_float32(values):
-    """Reject positive speeds that cannot be stored as finite, nonzero float32."""
+    """Reject nonnegative speeds that cannot be stored as finite float32."""
+    source = np.asarray(values, dtype=np.float64)
     with np.errstate(over='ignore', under='ignore', invalid='ignore'):
-        stored = np.asarray(values, dtype=np.float32)
-    if not np.isfinite(stored).all() or np.any(stored <= 0):
-        raise ValueError('speed_range must remain finite and strictly positive in float32')
+        stored = source.astype(np.float32)
+    if (not np.isfinite(stored).all() or np.any(stored < 0)
+            or np.any((source > 0) & (stored == 0))):
+        raise ValueError('speed_range must remain finite and nonnegative in float32')
 
 
 def sample_motion(rng, speed_range, heading_deg_range, rot_deg_range):
@@ -52,8 +54,8 @@ def sample_motion(rng, speed_range, heading_deg_range, rot_deg_range):
         np.sin(np.deg2rad(heading)), np.cos(np.deg2rad(heading)))
     with np.errstate(over='ignore', under='ignore', invalid='ignore'):
         target = np.asarray([speed * sine, speed * cosine, rotation], dtype=np.float32)
-    if not np.isfinite(target).all() or not np.any(target[:2] != 0):
-        raise ValueError('Motion must have finite float32 targets and nonzero translation')
+    if not np.isfinite(target).all():
+        raise ValueError('Motion must have finite float32 targets')
     # Python floats preserve these float32 values exactly while keeping renderer
     # geometry calculations in float64, as before.
     return tuple(target.tolist())
@@ -130,8 +132,8 @@ def _generate_flow_xt_samples(
     heading_deg_range, heading_is_fixed = validate_range(
         'heading_deg_range', heading_deg_range)
     rot_deg_range, rot_is_fixed = validate_range('rot_deg_range', rot_deg_range)
-    if speed_range[0] <= 0:
-        raise ValueError("speed_range must have a strictly positive lower bound")
+    if speed_range[0] < 0:
+        raise ValueError("speed_range must have a nonnegative lower bound")
     validate_speed_float32(speed_range)
     if heading_deg_range[0] < -180 or heading_deg_range[1] > 180:
         raise ValueError("heading_deg_range must lie within [-180, 180]")
