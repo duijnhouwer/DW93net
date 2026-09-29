@@ -46,7 +46,7 @@ seed = 3000
 n_samples = 100000
 
 [optimization]
-batch_size = 64
+batch_size = 32
 # Enable AMP for exploratory training; disable to compare without AMP.
 allow_amp = true
 allow_tp32 = true
@@ -57,7 +57,7 @@ mirror_train_stimuli = true
 [parallel_generation]
 enabled = true
 min_threads = 1
-max_threads = 8
+max_threads = 4
 
 [learning_rate]
 initial = 0.001
@@ -74,6 +74,6 @@ candidate_interval_epochs = 1
 keep_previous_resumable = true
 
 [evaluation]
-batch_size = 64
+batch_size = 32
 num_workers = 8
 shuffle = false
