@@ -81,6 +81,25 @@ class PanoramaTests(unittest.TestCase):
         padded.sum().backward()
         torch.testing.assert_close(x.grad, torch.full_like(x, 4))
 
+    def test_raster_margins_fold_overlapping_footprints_before_downsampling(self):
+        # The rearward dots overlap each other across both edges. Their union
+        # must stay white rather than adding brightness or erasing either dot.
+        angles = np.deg2rad([-170, 170, 0])
+        positions = .5 * np.column_stack((np.sin(angles), np.cos(angles)))
+        rng = Mock()
+        rng.uniform.return_value = positions
+        config = StimConfig(fov_deg=360, stim_wid_px=8, n_world_dots=3, x_supersampling=4)
+        raw = generate_flow_xt_stim([0, 0], 0, config, rng, downsample=False)
+        expected = torch.zeros(2, 32)
+        expected[:, [29, 30, 31, 0, 1, 2, 14, 15, 16, 17]] = 1
+        torch.testing.assert_close(raw, expected, rtol=0, atol=0)
+        downsampled = generate_flow_xt_stim([0, 0], 0, config, rng)
+        torch.testing.assert_close(downsampled, expected.reshape(2, 8, 4).mean(-1), rtol=0, atol=0)
+        # When the core is only one output pixel wide, both folded margins
+        # land in that same pixel and must still saturate at one.
+        narrow = generate_flow_xt_stim([0, 0], 0, replace(config, stim_wid_px=1), rng)
+        torch.testing.assert_close(narrow, torch.ones(2, 1), rtol=0, atol=0)
+
     def test_dog_roll_equivariance_and_tiled_reference(self):
         dog = DoGFilter(boundary='circular')
         x = torch.randn(2, 1, 2, 64)

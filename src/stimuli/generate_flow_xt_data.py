@@ -18,7 +18,7 @@ from pathlib import Path
 from features.dog_motion import DoGFilter, SupersampledDoG
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.metadata import DATA_SCHEMA
-from features.spatial import resolve_boundary, modular_indices
+from features.spatial import resolve_boundary, modular_indices, fold_circular_margins
 
 # Repo root is two levels up from this file (src/stimuli/ -> repo root), so the
 # data folder tracks wherever the dw93net repo is checked out.
@@ -385,9 +385,12 @@ def generate_flow_xt_stim(
         size=(config.n_world_dots, 2)
     )
 
-    # Render at supersampled X resolution.
+    # A full dot-width margin on each side retains seam-crossing footprints.
+    # All dots can then use ordinary contiguous slice writes.
+    margin = x_supersampling if config.boundary == 'circular' else 0
+    raster_width = render_wid_px + 2 * margin
     image = np.zeros(
-        (2, render_wid_px),
+        (2, raster_width),
         dtype=np.float32
     )
 
@@ -439,21 +442,21 @@ def generate_flow_xt_stim(
             # Therefore at supersampled resolution it occupies
             # x_supersampling pixels.
             dot_width = x_supersampling
+            # Panorama bin i is centered on angular sample -pi + i*2pi/W.
+            half_width = (dot_width - 1) / 2 if config.boundary == 'circular' else dot_width / 2
 
             for xc in x_scaled:
-                # Panorama bin i is centered on angular sample -pi + i*2pi/W.
-                half_width = (dot_width - 1) / 2 if config.boundary == 'circular' else dot_width / 2
-                left = int(np.floor(xc - half_width))
+                left = int(np.floor(xc - half_width)) + margin
                 right = left + dot_width
-                if config.boundary == 'circular':
-                    image[t, modular_indices(np.arange(left, right), render_wid_px)] = 1.0
-                    continue
 
                 left = max(left, 0)
-                right = min(right, render_wid_px)
+                right = min(right, raster_width)
 
                 if left < right:
                     image[t, left:right] = 1.0
+
+    if margin:
+        image = fold_circular_margins(image, margin)
 
     # --------------------------------------------------------------
     # DOWNSAMPLE X ONLY

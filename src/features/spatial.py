@@ -1,6 +1,7 @@
 """Shared spatial boundary policy and periodic indexing for the flow pipeline."""
 import math
 
+import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -29,6 +30,21 @@ def modular_indices(indices, width):
 def circular_pad(x, left, right):
     indices = torch.arange(-left, x.shape[-1] + right, device=x.device)
     return x.index_select(-1, modular_indices(indices, x.shape[-1]))
+
+
+def fold_circular_margins(raster, margin):
+    """OR binary raster margins onto opposite edges in place; return the core view.
+
+    Footprints must be drawn into the margins before calling this function.
+    Maximum preserves the float32 0/1 representation and saturates overlaps.
+    """
+    width = raster.shape[-1] - 2 * margin
+    if not 0 < margin <= width:
+        raise ValueError('Circular raster margin must be positive and at most the core width')
+    core = raster[..., margin:margin + width]
+    np.maximum(core[..., -margin:], raster[..., :margin], out=core[..., -margin:])
+    np.maximum(core[..., :margin], raster[..., margin + width:], out=core[..., :margin])
+    return core
 
 
 class CircularAvgPool1d(nn.AvgPool1d):
