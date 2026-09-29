@@ -58,7 +58,7 @@ mirror_train_stimuli = true
 enabled = true
 min_threads = 1
 max_threads = 8
-full_force_first_set = true
+full_force_first_set = false
 
 [learning_rate]
 initial = 0.001
