@@ -49,6 +49,9 @@ class Prefetch:
         maximum = min(self.settings.get('max_threads', 8), len(self.cpus) or 1)
         self.throttle = Throttle(min(self.settings.get('min_threads', 1), maximum), maximum)
 
+    def _ordinary_stimuli(self):
+        return self.mission_plan['stimuli'] | {'duffy_wurtz_superimposition_enable': False}
+
     @contextmanager
     def foreground_generation(self):
         """Use the shared maximum while training is idle, then restore its threads."""
@@ -79,7 +82,7 @@ class Prefetch:
         self.request = Path(self.temporary.name) / 'request.json'
         self._write_control(self.throttle.threads)
         self.request.write_text(json.dumps(dict(
-            path=str(self.stage), section=section, stimuli=self.mission_plan['stimuli'],
+            path=str(self.stage), section=section, stimuli=self._ordinary_stimuli(),
             log_run_id=self.log_run_id,
             log_path=(str(Path(self.log_run_id).parent / 'training_log.jsonl')
                       if self.log_run_id else None),
@@ -122,7 +125,7 @@ class Prefetch:
             if not self.enabled or not state_path.is_file() or Path(destination).exists():
                 return False
             state = json.loads(state_path.read_text())
-            desired = dataset_spec('train', section, self.mission_plan['stimuli'])
+            desired = dataset_spec('train', section, self._ordinary_stimuli())
             if state.get('spec') != desired:
                 return False
             self.stage.rename(destination)

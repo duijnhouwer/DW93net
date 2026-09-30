@@ -39,7 +39,8 @@ TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', '
                   'validation_set', 'test_set', 'optimization', 'learning_rate',
                   'checkpoints', 'evaluation', 'parallel_generation', 'duffy_wurtz_1993_set'}
 STIMULI_KEYS = {'speed_range', 'heading_deg_range', 'rot_deg_range', 'fov_deg',
-                 'near_exclusion_radius', 'n_world_dots', 'superimpose',
+                 'near_exclusion_radius', 'n_world_dots',
+                 'duffy_wurtz_superimposition_enable', 'duffy_wurtz_rotation_pct',
                  'x_supersampling', 'dog_bundle_size', 'apply_dog_filter_after_downsample'}
 DETECTOR_KEYS = {'displacement_min_px', 'displacement_max_px', 'displacement_step_px',
                  'dog_sigma_center_px', 'dog_sigma_surround_px'}
@@ -112,6 +113,44 @@ def _validate_fixed_set(section, name):
     return _absolute_path(section.get('path'), f'{name}.path')
 
 
+def _validate_stimuli(stimuli, where):
+    for key in ('speed_range', 'heading_deg_range', 'rot_deg_range'):
+        if key not in stimuli:
+            raise ValueError(f'{where}.{key} is required')
+        _range(stimuli[key], f'{where}.{key}')
+    validate_speed_float32(stimuli['speed_range'])
+    _positive_int(stimuli.get('dog_bundle_size'), f'{where}.dog_bundle_size')
+    for key in ('n_world_dots', 'x_supersampling'):
+        if key in stimuli:
+            _positive_int(stimuli[key], f'{where}.{key}')
+    if 'fov_deg' in stimuli:
+        fov = stimuli['fov_deg']
+        _number(fov, f'{where}.fov_deg', positive=True)
+        if fov > 360:
+            raise ValueError(f'{where}.fov_deg must not exceed 360')
+    if 'near_exclusion_radius' in stimuli:
+        radius = stimuli['near_exclusion_radius']
+        _number(radius, f'{where}.near_exclusion_radius', nonnegative=True)
+        if radius >= 1:
+            raise ValueError(f'{where}.near_exclusion_radius must be less than 1')
+    if type(stimuli.get('duffy_wurtz_superimposition_enable', False)) is not bool:
+        raise ValueError(f'{where}.duffy_wurtz_superimposition_enable must be true or false')
+    _number(stimuli.get('duffy_wurtz_rotation_pct', 50),
+            f'{where}.duffy_wurtz_rotation_pct', nonnegative=True)
+    if stimuli.get('duffy_wurtz_rotation_pct', 50) > 100:
+        raise ValueError(f'{where}.duffy_wurtz_rotation_pct must not exceed 100')
+    if type(stimuli.get('apply_dog_filter_after_downsample', True)) is not bool:
+        raise ValueError(f'{where}.apply_dog_filter_after_downsample must be true or false')
+    StimConfig(**{key: value for key, value in stimuli.items()
+                  if key in StimConfig.__dataclass_fields__})
+
+
+def duffy_wurtz_stimuli(mission_plan):
+    """Overlay Duffy-Wurtz stimulus fields on the ordinary stimulus defaults."""
+    overrides = mission_plan['duffy_wurtz_1993_set']
+    return mission_plan['stimuli'] | {key: overrides[key] for key in STIMULI_KEYS & overrides.keys()}
+
+
 def load_mission_plan(path):
     """Parse and strictly validate a mission plan without changing the filesystem."""
     mission_plan = tomllib.loads(Path(path).read_text())
@@ -124,32 +163,7 @@ def load_mission_plan(path):
     output = _absolute_path(network.get('output_path'), 'network.output_path')
 
     stimuli = _section(mission_plan, 'stimuli', STIMULI_KEYS)
-    for key in ('speed_range', 'heading_deg_range', 'rot_deg_range'):
-        if key not in stimuli:
-            raise ValueError(f'stimuli.{key} is required')
-        _range(stimuli[key], f'stimuli.{key}')
-    validate_speed_float32(stimuli['speed_range'])
-    _positive_int(stimuli.get('dog_bundle_size'), 'stimuli.dog_bundle_size')
-    for key in ('n_world_dots', 'x_supersampling'):
-        if key in stimuli:
-            _positive_int(stimuli[key], f'stimuli.{key}')
-    if 'fov_deg' in stimuli:
-        fov = stimuli['fov_deg']
-        _number(fov, 'stimuli.fov_deg', positive=True)
-        if fov > 360:
-            raise ValueError('stimuli.fov_deg must not exceed 360')
-    if 'near_exclusion_radius' in stimuli:
-        radius = stimuli['near_exclusion_radius']
-        _number(radius, 'stimuli.near_exclusion_radius', nonnegative=True)
-        if radius >= 1:
-            raise ValueError('stimuli.near_exclusion_radius must be less than 1')
-    if 'superimpose' in stimuli and type(stimuli['superimpose']) is not bool:
-        raise ValueError('stimuli.superimpose must be true or false')
-    if type(stimuli.get('apply_dog_filter_after_downsample', True)) is not bool:
-        raise ValueError('stimuli.apply_dog_filter_after_downsample must be true or false')
-
-    StimConfig(**{key: value for key, value in stimuli.items()
-                  if key in StimConfig.__dataclass_fields__})
+    _validate_stimuli(stimuli, 'stimuli')
 
     detector = _section(mission_plan, 'detector', DETECTOR_KEYS)
     for key in ('displacement_min_px', 'displacement_max_px'):
@@ -195,8 +209,9 @@ def load_mission_plan(path):
 
     test = _section(mission_plan, 'test_set', FIXED_SET_KEYS)
     test_path = _validate_fixed_set(test, 'test_set')
-    duffy = _section(mission_plan, 'duffy_wurtz_1993_set', FIXED_SET_KEYS)
+    duffy = _section(mission_plan, 'duffy_wurtz_1993_set', FIXED_SET_KEYS | STIMULI_KEYS)
     duffy_path = _validate_fixed_set(duffy, 'duffy_wurtz_1993_set')
+    _validate_stimuli(duffy_wurtz_stimuli(mission_plan), 'duffy_wurtz_1993_set')
     seeds = [validation['seed'], test['seed'], duffy['seed']]
     if len(set(seeds)) != 3:
         raise ValueError('validation_set, test_set, and duffy_wurtz_1993_set seeds must differ')
@@ -414,6 +429,11 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
     return cache
 
 
+def _ordinary_stimuli(stimuli):
+    """Keep the Duffy-Wurtz overlay out of ordinary datasets."""
+    return stimuli | {'duffy_wurtz_superimposition_enable': False}
+
+
 def _validate_metrics(metrics, where):
     """Undefined heading is legitimate; nonfinite numeric metrics are not."""
     _positive_int(metrics.get('n_samples'), f'{where}.n_samples')
@@ -551,25 +571,30 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
     print(f'Network: {network_name}\nMission plan: {mission_plan_path}\nGit commit: {commit}', flush=True)
 
     stimuli, training = mission_plan['stimuli'], mission_plan['training_sets']
+    ordinary_stimuli = _ordinary_stimuli(stimuli)
     validation = mission_plan['validation_set'] | run_fields
     validation = validation | {'_detector': mission_plan['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
     finish.set_phase('preparing_validation')
     with prefetch.foreground_generation():
         validation_cache = _prepare_dataset(validation_path, 'validate', validation,
-                                            stimuli, persistent=True, progress_callback=lambda count: finish())
+                                            ordinary_stimuli, persistent=True, progress_callback=lambda count: finish())
     log.append('validation_set_ready', path=str(validation_cache), seed=validation['seed'],
                n_samples=validation['n_samples'])
 
     duffy = mission_plan['duffy_wurtz_1993_set'] | run_fields
+    duffy_stimuli = duffy_wurtz_stimuli(mission_plan)
     duffy = duffy | {'_detector': mission_plan['detector'], '_provenance': provenance}
     finish.set_phase('preparing_duffy_wurtz_1993')
     with prefetch.foreground_generation():
         duffy_cache = _prepare_dataset(Path(duffy['path']), 'duffy_wurtz_1993', duffy,
-                                       stimuli | {'superimpose': True}, persistent=True,
+                                       duffy_stimuli, persistent=True,
                                        progress_callback=lambda count: finish())
     log.append('duffy_wurtz_1993_set_ready', path=str(duffy_cache), seed=duffy['seed'],
-               n_samples=duffy['n_samples'], superimpose=True)
+               n_samples=duffy['n_samples'],
+               duffy_wurtz_superimposition_enable=duffy_stimuli.get(
+                   'duffy_wurtz_superimposition_enable', False),
+               duffy_wurtz_rotation_pct=duffy_stimuli.get('duffy_wurtz_rotation_pct', 50))
 
     def validate_epoch(checkpoint):
         check_repository()
@@ -623,7 +648,7 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
             finish.set_phase('preparing_training', training_set_index=set_index)
             prefetch.acquire(training_path, section, control_callback=finish.check_training)
             with prefetch.foreground_generation():
-                cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False,
+                cache = _prepare_dataset(training_path, 'train', section, ordinary_stimuli, persistent=False,
                                          progress_callback=lambda count: finish.check_training())
             check_repository()
             if set_index + 1 < training['number_of_sets'] and not finish():
@@ -696,7 +721,7 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
     test_path = Path(test['path'])
     finish.set_phase('preparing_final_test')
     with prefetch.foreground_generation():
-        test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True,
+        test_cache = _prepare_dataset(test_path, 'test', test, ordinary_stimuli, persistent=True,
                                       progress_callback=lambda count: finish())
     check_repository()
     model_path = final_dir / 'model.pt'

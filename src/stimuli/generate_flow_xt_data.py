@@ -68,7 +68,8 @@ class StimConfig:
     fov_deg: float = 120
     near_exclusion_radius: float = 0.04
     n_world_dots: int = 1000
-    superimpose: bool = False
+    duffy_wurtz_superimposition_enable: bool = False
+    duffy_wurtz_rotation_pct: float = 50
     x_supersampling: int = 255
     apply_dog_filter_after_downsample: bool = True
 
@@ -80,6 +81,12 @@ class StimConfig:
             raise ValueError('360° requires apply_dog_filter_after_downsample = true')
         if type(self.apply_dog_filter_after_downsample) is not bool:
             raise ValueError('apply_dog_filter_after_downsample must be true or false')
+        if type(self.duffy_wurtz_superimposition_enable) is not bool:
+            raise ValueError('duffy_wurtz_superimposition_enable must be true or false')
+        rotation_pct = self.duffy_wurtz_rotation_pct
+        if (isinstance(rotation_pct, bool) or not isinstance(rotation_pct, (int, float))
+                or not math.isfinite(rotation_pct) or not 0 <= rotation_pct <= 100):
+            raise ValueError('duffy_wurtz_rotation_pct must be finite and satisfy 0 <= value <= 100')
         radius = self.near_exclusion_radius
         if (isinstance(radius, bool) or not isinstance(radius, (int, float))
                 or not math.isfinite(radius) or not 0 <= radius < 1):
@@ -110,7 +117,7 @@ def _generate_flow_xt_samples(
     Each sample's resulting dx, dz and rot_deg are converted to float32 FIRST.
     Those exact Cartesian values are rendered and
     stored as targets, so the label always matches the stimulus. If
-    `superimpose` is True,
+    `duffy_wurtz_superimposition_enable` is True,
     generates separate rotational and translational flows and combines them by summing and
     clipping to [0, 1], preserving fractional antialiased intensities. Float32
     pairs are passed directly to ``sample_consumer`` and never saved.
@@ -176,19 +183,22 @@ def _generate_flow_xt_samples(
     for i in range(n_samples):
         dx, dz, rot_deg = sample_motion(rng, speed_range, heading_deg_range, rot_deg_range)
 
-        # Generate one or two tensors depending on `superimpose`
+        # The Duffy-Wurtz overlay splits the dot population between a yaw-only
+        # layer and a translation-only layer. Keep all dots, including when an
+        # odd total prevents an exact percentage split.
         xt_tensor_list = []
+        rotation_dot_count = math.floor(config.n_world_dots * config.duffy_wurtz_rotation_pct / 100 + .5)
+        layer_specs = ((config.n_world_dots, [dx, dz], rot_deg),)
+        if config.duffy_wurtz_superimposition_enable:
+            layer_specs = tuple(spec for spec in (
+                (rotation_dot_count, [0, 0], rot_deg),
+                (config.n_world_dots - rotation_dot_count, [dx, dz], 0),
+            ) if spec[0])
 
-        for layer in range(2 if config.superimpose else 1):
+        for dot_count, cam_trans, cam_rot in layer_specs:
             layer_config = config
-            cam_trans = [dx, dz]
-            cam_rot = rot_deg
-            if config.superimpose:
-                layer_config = replace(config, n_world_dots=config.n_world_dots // 2)
-                if layer == 0:
-                    cam_trans = [0, 0]
-                else:
-                    cam_rot = 0
+            if config.duffy_wurtz_superimposition_enable:
+                layer_config = replace(config, n_world_dots=dot_count)
 
             xt = generate_flow_xt_stim(
                 cam_trans_xz=cam_trans,
@@ -480,5 +490,5 @@ if __name__ == "__main__":
         speed_range=(0.001, 0.006),
         rot_deg_range=(0, 0),
         role="train",
-        config=StimConfig(superimpose=False),
+        config=StimConfig(duffy_wurtz_superimposition_enable=False),
     )

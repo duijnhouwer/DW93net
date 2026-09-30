@@ -19,6 +19,8 @@ speed_range = [0.001, 0.006]
 heading_deg_range = [-180, 180]
 rot_deg_range = [0, 0]
 dog_bundle_size = 64
+duffy_wurtz_superimposition_enable = false
+duffy_wurtz_rotation_pct = 50
 [detector]
 displacement_min_px = -60
 displacement_max_px = 60
@@ -42,6 +44,7 @@ selection_metric = "validation_loss"
 path = "{root}/stimuli/duffy_wurtz_1993_set"
 seed = 1000
 n_samples = 1000
+duffy_wurtz_superimposition_enable = true
 [test_set]
 path = "{root}/stimuli/test"
 seed = 3000
@@ -81,5 +84,3 @@ def candidate_checkpoint(commit, epoch=1):
                 validation={}, validation_loss=1., best_validation_loss=1.,
                 best_candidate='epoch-000001.pt', stop_reason=None,
                 detector={}, n_input_channels=3, model_state_dict={})
-
-

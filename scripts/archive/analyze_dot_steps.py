@@ -56,7 +56,7 @@ def rendered_x(positions: np.ndarray, config: dict) -> tuple[np.ndarray, np.ndar
 
 def analyze(dataset_root: Path, output_png: Path, output_json: Path) -> None:
     metadata = json.loads((dataset_root / "dog.json").read_text())["stimulus_generation"]
-    if metadata["stimulus_config"]["superimpose"]:
+    if metadata["stimulus_config"]["duffy_wurtz_superimposition_enable"]:
         raise ValueError("This replay currently supports non-superimposed stimuli only")
 
     labels = saved_labels(dataset_root)

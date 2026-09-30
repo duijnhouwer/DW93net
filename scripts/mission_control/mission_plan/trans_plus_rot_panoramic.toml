@@ -12,7 +12,8 @@ rot_deg_range = [-0.5, 0.5]
 fov_deg = 360
 near_exclusion_radius = 0.04
 n_world_dots = 1000
-superimpose = false
+duffy_wurtz_superimposition_enable = false
+duffy_wurtz_rotation_pct = 50
 x_supersampling = 255
 dog_bundle_size = 64
 apply_dog_filter_after_downsample = true
@@ -49,6 +50,7 @@ n_samples = 100000
 path = "/home/jacob/Documents/dw93net_stimuli/duffy_wurtz_1993_set"
 seed = 1000
 n_samples = 100000
+duffy_wurtz_superimposition_enable = true
 
 [optimization]
 batch_size = 32

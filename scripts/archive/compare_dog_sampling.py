@@ -78,7 +78,7 @@ def main():
     cfg = StimConfig(**{k: v for k, v in stim.items() if k not in
         ('speed_range', 'heading_deg_range', 'rot_deg_range', 'dog_bundle_size')})
     cfg.x_supersampling = args.supersampling
-    if cfg.superimpose:
+    if cfg.duffy_wurtz_superimposition_enable:
         raise ValueError('This experiment requires non-superimposed stimuli')
     s, width = args.supersampling, cfg.stim_wid_px
     center, surround = detector['dog_sigma_center_px'], detector['dog_sigma_surround_px']

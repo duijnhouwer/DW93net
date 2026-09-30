@@ -41,13 +41,16 @@ transparent-motion dataset:
 path = "/home/jacob/Documents/dw93net_stimuli/duffy_wurtz_1993_set"
 seed = 1000
 n_samples = 100000
+duffy_wurtz_superimposition_enable = true
 ```
 
 It is generated immediately after the validation set, before training begins.
-It inherits the mission plan's stimulus ranges and preprocessing, with `superimpose`
-forced to `true`: half the dots undergo translation only and half rotation only.
-The existing generator uses integer division for each half, so an odd configured
-dot count produces one fewer dot. Neither this dataset nor the test dataset is
+It inherits every omitted setting from `[stimuli]`; any `[stimuli]` setting may
+be repeated here to override it only for this dataset. Its
+`duffy_wurtz_superimposition_enable` setting enables separate translation-only and
+yaw-only layers, while `duffy_wurtz_rotation_pct` selects the percentage of world
+dots in the yaw-only layer (0 through 100, inclusive). The nearest whole-dot split
+uses every configured dot. Neither this dataset nor the test dataset is
 used for training, learning-rate scheduling, or checkpoint selection. All three
 held-out seeds must differ, and training seeds must start above all three.
 
@@ -115,7 +118,7 @@ labels, not errors against a single rigid-camera motion. They are not a paired
 baseline subtraction and by themselves do not establish the perceptual illusion.
 
 Ordinary evaluation still requires an exact dataset contract. Only the named
-Duffy-Wurtz protocol permits the intended `superimpose=true` difference; all other
+Duffy-Wurtz protocol permits the intended superimposition difference; all other
 geometry, DoG, detector, and revision checks remain in force.
 
 This adds a required mission plan section and does not retrofit already-running Python

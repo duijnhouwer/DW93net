@@ -212,15 +212,17 @@ class OneStepStimulusTests(unittest.TestCase):
             self.assertTrue(torch.any(raw != quantized))
 
     def test_generation_writes_only_dog_bundles(self):
-        for superimpose in (False, True):
-            with self.subTest(superimpose=superimpose), tempfile.TemporaryDirectory() as root:
+        for enable, rotation_pct in ((False, 50), (True, 0), (True, 50), (True, 100)):
+            with self.subTest(enable=enable, rotation_pct=rotation_pct), tempfile.TemporaryDirectory() as root:
                 cache = Path(generate_dog_dataset(
                     output_root=root, n_samples=2,
                     speed_range=(0.001, 0.002), heading_deg_range=(0, 1),
                     rot_deg_range=(0, 0), role='train', seed=42,
                     dog_bundle_size=2,
                     config=StimConfig(stim_wid_px=128, n_world_dots=120,
-                                      x_supersampling=10, superimpose=superimpose)))
+                                      x_supersampling=10,
+                                      duffy_wurtz_superimposition_enable=enable,
+                                      duffy_wurtz_rotation_pct=rotation_pct)))
                 self.assertFalse(list(Path(root).rglob('*.pt')))
                 self.assertEqual(len(list((cache / 'train').glob('*.npy'))), 1)
                 metadata = json.loads((cache / 'dog.json').read_text())['stimulus_generation']
@@ -229,6 +231,21 @@ class OneStepStimulusTests(unittest.TestCase):
                 self.assertEqual(metadata['heading_deg_range']['convention'],
                                  '0=+Z_forward,-90=-X_left,+90=+X_right')
                 self.assertEqual(metadata['role'], 'train')
+
+    def test_duffy_wurtz_rotation_percentage_assigns_all_dots(self):
+        observed = []
+        def render(**kwargs):
+            observed.append((kwargs['config'].n_world_dots, kwargs['cam_trans_xz'],
+                             kwargs['cam_rot_deg']))
+            return torch.zeros((2, 12), dtype=torch.float32)
+        with patch('stimuli.generate_flow_xt_data.generate_flow_xt_stim', side_effect=render):
+            _generate_flow_xt_samples(
+                n_samples=1, seed=42, speed_range=(1, 1), heading_deg_range=(0, 0),
+                rot_deg_range=(1, 1), role='duffy_wurtz_1993',
+                config=StimConfig(n_world_dots=9, duffy_wurtz_superimposition_enable=True,
+                                  duffy_wurtz_rotation_pct=33),
+                sample_consumer=lambda *_: None)
+        self.assertEqual(observed, [(3, [0, 0], 1.0), (6, [0.0, 1.0], 0)])
 
     def test_polar_sampling_avoids_zero_speed_and_obeys_heading_convention(self):
         with tempfile.TemporaryDirectory() as root:

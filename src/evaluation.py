@@ -32,14 +32,15 @@ class NonfiniteEvaluationError(ValueError):
 
 
 def validate_inference_contract(checkpoint, metadata, protocol=None):
-    """Only the named transparent-flow experiment may change superimposition."""
+    """Only the named transparent-flow experiment may change Duffy-Wurtz flow."""
     expected = checkpoint['data_contract']
     if protocol == 'duffy_wurtz_1993':
         generation = metadata['stimulus_generation']
         if (generation['role'] != protocol
-                or generation['stimulus_config'].get('superimpose') is not True):
+                or generation['stimulus_config'].get('duffy_wurtz_superimposition_enable') is not True):
             raise ValueError('Duffy-Wurtz evaluation requires its named superimposed split')
-        expected = expected | {'geometry': expected['geometry'] | {'superimpose': True}}
+        expected = expected | {'geometry': expected['geometry'] | {
+            'duffy_wurtz_superimposition_enable': True}}
     elif protocol is not None:
         raise ValueError(f'Unknown evaluation protocol: {protocol}')
     if expected != data_contract(metadata):

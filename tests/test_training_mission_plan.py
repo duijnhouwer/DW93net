@@ -88,6 +88,57 @@ class TrainingMissionPlanTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'apply_dog_filter_after_downsample'):
                         module.load_mission_plan(path)
 
+    def test_duffy_wurtz_overlay_options_require_valid_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
+            for value in ('true', 'false'):
+                path.write_text(original.replace(
+                    'duffy_wurtz_superimposition_enable = false',
+                    f'duffy_wurtz_superimposition_enable = {value}'))
+                self.assertEqual(module.load_mission_plan(path)['stimuli'][
+                    'duffy_wurtz_superimposition_enable'], value == 'true')
+            for value in ('1', '"true"'):
+                path.write_text(original.replace(
+                    'duffy_wurtz_superimposition_enable = false',
+                    f'duffy_wurtz_superimposition_enable = {value}'))
+                with self.assertRaisesRegex(ValueError, 'duffy_wurtz_superimposition_enable'):
+                    module.load_mission_plan(path)
+            for value in ('0', '50', '100', '12.5'):
+                path.write_text(original.replace('duffy_wurtz_rotation_pct = 50',
+                                                 f'duffy_wurtz_rotation_pct = {value}'))
+                self.assertEqual(module.load_mission_plan(path)['stimuli'][
+                    'duffy_wurtz_rotation_pct'], float(value))
+            for value in ('-0.1', '100.1', 'true', '"50"'):
+                path.write_text(original.replace('duffy_wurtz_rotation_pct = 50',
+                                                 f'duffy_wurtz_rotation_pct = {value}'))
+                with self.assertRaisesRegex(ValueError, 'duffy_wurtz_rotation_pct'):
+                    module.load_mission_plan(path)
+
+    def test_legacy_superimpose_option_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace(
+                'duffy_wurtz_superimposition_enable = false', 'superimpose = true', 1))
+            with self.assertRaisesRegex(ValueError, 'Unknown stimuli field.*superimpose'):
+                module.load_mission_plan(path)
+
+    def test_duffy_wurtz_set_overrides_any_stimulus_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace(
+                'duffy_wurtz_superimposition_enable = true',
+                'duffy_wurtz_superimposition_enable = true\n'
+                'duffy_wurtz_rotation_pct = 25\n'
+                'fov_deg = 360\n'
+                'n_world_dots = 101'))
+            mission_plan = module.load_mission_plan(path)
+            stimuli = module.duffy_wurtz_stimuli(mission_plan)
+            self.assertEqual(stimuli['duffy_wurtz_rotation_pct'], 25)
+            self.assertEqual(stimuli['fov_deg'], 360)
+            self.assertEqual(stimuli['n_world_dots'], 101)
+            self.assertTrue(stimuli['duffy_wurtz_superimposition_enable'])
+
     def test_precision_options_are_required_booleans(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'mission_plan.toml'

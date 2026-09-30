@@ -92,7 +92,7 @@ class FinishTrainingTests(unittest.TestCase):
             generated = []
 
             def generate(**kwargs):
-                generated.append((kwargs['role'], kwargs['config'].superimpose))
+                generated.append((kwargs['role'], kwargs['config'].duffy_wurtz_superimposition_enable))
                 if kwargs['role'] == 'validate':
                     os.kill(os.getpid(), signal.SIGUSR1)
                 return original(**kwargs)
@@ -200,16 +200,20 @@ class FinishTrainingTests(unittest.TestCase):
             self.assertEqual([e['global_epoch'] for e in log.events('epoch_completed')], [1, 2, 3])
 
     def test_named_protocol_only_relaxes_superimposition(self):
-        geometry = dict(superimpose=False, fov_deg=360, stim_wid_px=21600)
+        geometry = dict(duffy_wurtz_superimposition_enable=False,
+                        duffy_wurtz_rotation_pct=50, fov_deg=360, stim_wid_px=21600)
         checkpoint = {'data_contract': dict(schema='schema', boundary='circular',
                                             git_commit='c' * 40, geometry=geometry)}
         metadata = dict(storage_format='schema', boundary='circular', git_commit='c' * 40,
                         stimulus_generation=dict(role='duffy_wurtz_1993',
-                                                 stimulus_config=geometry | {'superimpose': True}))
+                                                 stimulus_config=geometry | {
+                                                     'duffy_wurtz_superimposition_enable': True}))
         validate_inference_contract(checkpoint, metadata, 'duffy_wurtz_1993')
         with self.assertRaises(ValueError):
             validate_inference_contract(checkpoint, metadata)
-        for key, value in (('fov_deg', 120), ('stim_wid_px', 7200), ('superimpose', False)):
+        for key, value in (('fov_deg', 120), ('stim_wid_px', 7200),
+                           ('duffy_wurtz_superimposition_enable', False),
+                           ('duffy_wurtz_rotation_pct', 25)):
             altered = copy.deepcopy(metadata)
             altered['stimulus_generation']['stimulus_config'][key] = value
             with self.assertRaises(ValueError):
