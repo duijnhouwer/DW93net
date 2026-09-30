@@ -9,7 +9,7 @@ import torch
 
 spec = importlib.util.spec_from_file_location(
     'run_training_recipe',
-    Path(__file__).resolve().parents[1] / 'scripts/mission_control/run_training_recipe.py')
+    Path(__file__).resolve().parents[1] / 'scripts/mission_control/backend/run_training_recipe.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
@@ -526,7 +526,7 @@ x_supersampling = 4''')
             self.assertIn('breakdowns', measurements[0])
             self.assertFalse(list(report_path.rglob('*.json')))
             report_spec = importlib.util.spec_from_file_location(
-                'report_training_log', module.ROOT / 'scripts/mission_control/report_training_log.py')
+                'report_training_log', module.ROOT / 'scripts/mission_control/backend/report_training_log.py')
             report_module = importlib.util.module_from_spec(report_spec)
             report_spec.loader.exec_module(report_module)
             # No data/checkpoints needed: the report consumes only event records.

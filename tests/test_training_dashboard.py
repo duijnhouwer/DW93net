@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import unquote, urlparse
 
-from scripts.mission_control.report_training_log import dashboard_data, write_dashboard, show_dashboard
+from scripts.mission_control.backend.report_training_log import dashboard_data, write_dashboard, show_dashboard
 
 
 class DashboardTests(unittest.TestCase):
@@ -68,7 +68,7 @@ class DashboardTests(unittest.TestCase):
             log = Path(directory) / 'training_log.jsonl'
             log.write_text(''.join(json.dumps(e) + '\n' for e in self.events()))
             before = log.read_bytes()
-            script = Path(__file__).resolve().parents[1] / 'scripts/mission_control/report_training_log.py'
+            script = Path(__file__).resolve().parents[1] / 'scripts/mission_control/backend/report_training_log.py'
             result = subprocess.run([sys.executable, str(script), str(log)],
                                     check=True, capture_output=True, text=True)
             self.assertIn('# Training log progress', result.stdout)
@@ -104,7 +104,7 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(paths[0].parent.exists())
 
     def test_gui_flag_is_explicit_and_old_output_options_are_rejected(self):
-        from scripts.mission_control import report_training_log as script
+        from scripts.mission_control.backend import report_training_log as script
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / 'training_log.jsonl'
             log.write_text(''.join(json.dumps(e) + '\n' for e in self.events()))

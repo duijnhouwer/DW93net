@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from test_training_recipe import module, recipe_text
-from scripts.mission_control.run_lock import run_lock
+from scripts.mission_control.backend.run_lock import run_lock
 
 
 class RunLockTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class RunLockTests(unittest.TestCase):
                 child.communicate(timeout=10)
 
     def test_process_death_releases_lock(self):
-        script = ('from scripts.mission_control.run_lock import run_lock; import sys; '
+        script = ('from scripts.mission_control.backend.run_lock import run_lock; import sys; '
                   'ctx=run_lock(); ctx.__enter__(); '
                   'print("locked", flush=True); sys.stdin.read()')
         child = subprocess.Popen([sys.executable, '-c', script],

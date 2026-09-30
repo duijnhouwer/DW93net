@@ -264,7 +264,7 @@ def launch_runner(mode='train', *, root=None):
         raise ValueError('mode must be train or evaluate')
     # Import only for a launch: refreshing the menu does not load Torch.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from scripts.mission_control.run_training_recipe import load_recipe, _initialize_output
+    from scripts.mission_control.backend.run_training_recipe import load_recipe, _initialize_output
     from run_revision import committed_revision
     commit = committed_revision(root)
     recipe_path, _, network = _recipe_info(root, commit)
@@ -288,7 +288,7 @@ def launch_runner(mode='train', *, root=None):
         # so the child can validate and reuse the directory at startup.
         _initialize_output(recipe, recipe_path.stem, commit, root=root,
                            git_branch=repository_git_status(root)['branch'])
-        command = [sys.executable, '-u', str(root / 'scripts/mission_control/run_training_recipe.py')]
+        command = [sys.executable, '-u', str(root / 'scripts/mission_control/backend/run_training_recipe.py')]
         if mode == 'evaluate':
             command.append('--evaluate')
         with log_path.open('a') as output:
@@ -318,7 +318,7 @@ def show_training_log(network, output=print):
     if not log_path.is_file():
         output(f'No training log found: {log_path}')
         return
-    script = Path(__file__).with_name('report_training_log.py')
+    script = Path(__file__).parent / 'backend' / 'report_training_log.py'
     result = subprocess.run([sys.executable, str(script), str(log_path),
                              '--run-id', str(network / 'checkpoints'),
                              '--dashboard-gui'])

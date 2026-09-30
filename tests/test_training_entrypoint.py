@@ -35,7 +35,7 @@ class TrainingEntrypointTests(unittest.TestCase):
     def test_generation_and_prefetch_refuse_changed_repository_before_writing(self):
         from unittest.mock import patch
         from test_training_recipe import module, recipe_text, DETECTOR
-        from scripts.mission_control.parallel_stimuli import Prefetch
+        from scripts.mission_control.backend.parallel_stimuli import Prefetch
         with tempfile.TemporaryDirectory() as directory:
             recipe_path = Path(directory) / 'recipe.toml'
             recipe_path.write_text(recipe_text(directory) + '\n[parallel_generation]\nenabled = true\n')

@@ -229,7 +229,7 @@ Besides absolute errors and RMSE, they include:
 Print a readable terminal report without loading checkpoints or rerunning inference:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/mission_control/report_training_log.py \
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/backend/report_training_log.py \
   /home/jacob/Documents/dw93net_output/RUN_DIRECTORY/training_log.jsonl
 ```
 

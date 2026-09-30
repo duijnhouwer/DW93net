@@ -14,12 +14,12 @@ import tomllib
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
-from scripts.mission_control.parallel_stimuli import Prefetch
-from scripts.mission_control.run_lock import run_lock
+from scripts.mission_control.backend.parallel_stimuli import Prefetch
+from scripts.mission_control.backend.run_lock import run_lock
 from scripts.mission_control.mission_control import RunnerControl, RunnerStopped, EvaluationRequested, repository_git_status
 from run_revision import revision, run_directory_name
 

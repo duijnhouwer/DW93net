@@ -175,7 +175,7 @@ class Prefetch:
 def worker(request_path):
     request = json.loads(Path(request_path).read_text())
     from contextlib import nullcontext
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src'))
     from training_log import training_log
     with (training_log(request['log_path'], request.get('log_run_id'))
           if request.get('log_path') else nullcontext()):
@@ -197,8 +197,8 @@ def _worker(request):
         print('Generator I/O priority unavailable; CPU priority remains lowered', flush=True)
     import torch
     torch.set_num_interop_threads(1)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from scripts.mission_control.run_training_recipe import _prepare_dataset
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from scripts.mission_control.backend.run_training_recipe import _prepare_dataset
     current = None
 
     def progress(count):

@@ -171,7 +171,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
                     patch('subprocess.run', return_value=Mock(returncode=0)) as report_process:
                 control.mission_control(root=root, input_fn=lambda _: next(choices), output=output.append)
             command = report_process.call_args.args[0]
-            self.assertEqual(command[:3], [sys.executable, str(Path(control.__file__).with_name('report_training_log.py')), str(log)])
+            self.assertEqual(command[:3], [sys.executable, str(Path(control.__file__).parent / 'backend' / 'report_training_log.py'), str(log)])
             self.assertIn(str(network / 'checkpoints'), command)
             self.assertIn('--dashboard-gui', command)
             self.assertNotIn('--output', command)
@@ -206,7 +206,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
                 patch('subprocess.Popen', return_value=child) as launch:
             self.assertIs(control.launch_runner(root=root), child)
         args, kwargs = launch.call_args
-        self.assertEqual(args[0][-1], str(root / 'scripts/mission_control/run_training_recipe.py'))
+        self.assertEqual(args[0][-1], str(root / 'scripts/mission_control/backend/run_training_recipe.py'))
         self.assertTrue(kwargs['start_new_session'])
         self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
         self.assertEqual(kwargs['stderr'], subprocess.STDOUT)

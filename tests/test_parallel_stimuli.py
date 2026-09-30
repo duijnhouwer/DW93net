@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from test_training_recipe import module, recipe_text, DETECTOR
-from scripts.mission_control.parallel_stimuli import Prefetch, Throttle
+from scripts.mission_control.backend.parallel_stimuli import Prefetch, Throttle
 
 
 class ParallelStimuliTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class ParallelStimuliTests(unittest.TestCase):
             recipe = dict(training_sets={'path': '/tmp/thread-policy-test/train'},
                           optimization={'num_workers': 0},
                           parallel_generation={'enabled': enabled, 'min_threads': 1, 'max_threads': 8})
-            with patch('scripts.mission_control.parallel_stimuli.os.sched_getaffinity', return_value=set(range(28))):
+            with patch('scripts.mission_control.backend.parallel_stimuli.os.sched_getaffinity', return_value=set(range(28))):
                 prefetch = Prefetch(recipe)
             self.assertEqual(prefetch.throttle.minimum, 1)
             self.assertEqual(prefetch.throttle.maximum, 8)
@@ -33,7 +33,7 @@ class ParallelStimuliTests(unittest.TestCase):
                     with prefetch.foreground_generation():
                         raise RuntimeError('generation failed')
                 self.assertEqual([call.args[0] for call in set_threads.call_args_list], [8, 20])
-            with patch('scripts.mission_control.parallel_stimuli.os.sched_getaffinity', return_value={0}):
+            with patch('scripts.mission_control.backend.parallel_stimuli.os.sched_getaffinity', return_value={0}):
                 limited = Prefetch(recipe)
             self.assertEqual(limited.throttle.maximum, 1)
             self.assertEqual(limited.throttle.minimum, 1)
