@@ -13,7 +13,7 @@ Each managed dataset contains the compact detector stage used by training:
 
 ```text
 <dataset-path>/
-  dog/          # dog.json and one train/validate/test role
+  dog/          # dog.json and one train/validate/test/duffy_wurtz_1993 role
 ```
 
 The orchestrator renders Flow-XT stimuli and applies the DoG filter in memory,
@@ -25,18 +25,107 @@ points to `<dataset-path>/dog/`. Directory names have no scientific meaning.
 
 Exactly one TOML file may exist directly under `recipe/` in a commit. Its
 filename stem is the network name. The recipe gives the common stimulus ranges,
-absolute training/validation/test paths, a sequence of training seeds, epoch
+absolute training/validation/test/Duffy-Wurtz paths, a sequence of training seeds, epoch
 counts, dynamic learning-rate settings, and an absolute output root. The runner
-takes no arguments and discovers that one file.
+discovers that one file; mission control chooses training or evaluation mode.
 
 The shared topology outputs `[dx, dz, rot]`. `rot_deg_range` controls yaw in
 degrees per frame step; `[0, 0]` trains a translation-only dataset, while a
 nonzero range trains translation and yaw estimation together.
 
+The required `[duffy_wurtz_1993_set]` section specifies a separate persistent
+transparent-motion dataset:
+
+```toml
+[duffy_wurtz_1993_set]
+path = "/home/jacob/Documents/dw93net_stimuli/duffy_wurtz_1993_set"
+seed = 1000
+n_samples = 100000
+```
+
+It is generated immediately after the validation set, before training begins.
+It inherits the recipe's stimulus ranges and preprocessing, with `superimpose`
+forced to `true`: half the dots undergo translation only and half rotation only.
+The existing generator uses integer division for each half, so an odd configured
+dot count produces one fewer dot. Neither this dataset nor the test dataset is
+used for training, learning-rate scheduling, or checkpoint selection. All three
+held-out seeds must differ, and training seeds must start above all three.
+
+### Mission control
+
+From the repository root, use the training environment:
+
+```bash
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control.py
+```
+
+The menu shows the active recipe and phase (preparing datasets, training,
+validation, final_test, or duffy_wurtz_1993). It also shows the saved run’s branch
+and commit, the current checkout’s branch and commit, and clean/dirty status.
+Dirty includes staged, unstaged, and nonignored untracked files and blocks
+starting/resuming. A saved-run commit mismatch is flagged separately. Older runs
+without recorded branch metadata show “not recorded”; branch names are saved
+when new runs are created.
+
+
+- **1 — Start / Stop / Resume training:** start a new recipe, stop the active worker, or
+  resume training from the latest completed checkpoint.
+- **2 — Evaluate now:** interrupt training and evaluate the **best validation
+  checkpoint**, first on the final test set and then the Duffy-Wurtz set. Requires
+  a completed checkpoint. When idle, launch evaluation without training.
+- **3 — Refresh:** reread worker status and display the menu again.
+- **Q — Exit mission control:** exit the menu; the background worker continues.
+  Ctrl+C has the same effect in the menu.
+
+Each action returns to the menu. Stop takes effect at the next safe poll (normally
+one training/evaluation batch or dataset-generation bundle), followed by worker
+cleanup. An unfinished epoch is discarded. Once stopped, **Resume training** continues
+training immediately, even if an evaluation was interrupted. Optimizer, scheduler,
+and precision state come from `checkpoints/latest.pt`; training does not rewind to
+the best checkpoint selected for evaluation. An unfinished training set is reused.
+The configured set limit and minimum-learning-rate stop remain terminal.
+
+The detached worker writes console output to
+`<output_path>/<recipe-name>-mission-control.log`. The menu itself does not need
+Torch to refresh status. Launching requires the training environment and the same
+clean, committed recipe/source identity as the runner. Existing run artifacts are
+never replaced to bypass a revision mismatch.
+
+For Python callers, `scripts.mission_control.request_finish_training()` requests
+evaluation and `request_stop()` requests a stop. The helper discovers the active
+runner, validates its process identity and signal handlers, and uses a Linux PID
+file descriptor to prevent signaling a reused PID. Commands return after delivery;
+refresh to check progress. The menu controls one runner per user on this machine.
+It cannot retrofit old, already-running Python processes without these handlers.
+
+The updated runner uses SIGUSR1 for evaluation and SIGUSR2 for stopping; its signal
+handlers only set flags. Requests are not persisted across restarts: starting the
+runner normally resumes training; `--evaluate` explicitly selects evaluation.
+
+The final results are cached separately as `final/test-results.json` and
+`final/duffy_wurtz_1993-results.json`, identified by exact model/dataset hashes,
+evaluation settings, and revision. Both are also recorded in `training_log.jsonl`.
+Duffy-Wurtz results include circular signed heading bias grouped by overlay retinal
+direction (positive `rot_deg` moves toward increasing columns in this renderer). Positive aligned bias
+means toward the overlay motion. These are deviations from the separate component
+labels, not errors against a single rigid-camera motion. They are not a paired
+baseline subtraction and by themselves do not establish the perceptual illusion.
+
+Ordinary evaluation still requires an exact dataset contract. Only the named
+Duffy-Wurtz protocol permits the intended `superimpose=true` difference; all other
+geometry, DoG, detector, and revision checks remain in force.
+
+This adds a required recipe section and does not retrofit already-running Python
+processes. Existing runs retain their strict recipe/revision identity: changing
+the recipe or committing this code does not authorize resuming old checkpoints
+under the new revision. Preserve existing run artifacts and use matching source
+for them; historical archived recipes must be updated explicitly before use with
+the new runner.
+
 Edit the recipe, commit the recipe and all code changes, then run:
 
 ```bash
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/run_training_recipe.py
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control.py
 ```
 
 Only one recipe run per user may be active on this machine, regardless of
@@ -161,9 +250,10 @@ published just before a logging interruption restores its missing log records;
 unrecorded checkpoint-save/wall timings remain explicitly unavailable rather than
 being invented. Completed candidates belong to this run and must not be manually
 replaced. `validation_completed` records candidate selection and
-`test_result` records the final test measurement. Rerunning restarts
+`test_result` and `duffy_wurtz_1993_result` record the final measurements. Rerunning restarts
 only an interrupted epoch and otherwise resumes from the recorded training-set
-index and seed. Final testing is recomputed each time selection finishes.
+index and seed unless finalization was requested. Final evaluations reuse results
+only when the complete cache identity matches; otherwise they are recomputed.
 
 ## Training behavior
 

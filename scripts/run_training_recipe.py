@@ -19,10 +19,11 @@ sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from parallel_stimuli import Prefetch
 from run_lock import run_lock
+from mission_control import RunnerControl, RunnerStopped, EvaluationRequested, repository_git_status
 
 from checkpoints import load_checkpoint
 from training_log import EventLog, training_log
-from evaluation import inference_batches, summary_metrics, METRIC_DEFINITIONS
+from evaluation import inference_batches, summary_metrics, duffy_wurtz_summary, METRIC_DEFINITIONS
 from stimuli.metadata import motion_scales, require_current_schema
 from stimuli.preprocessing_provenance import capture_provenance
 from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset, validate_speed_float32
@@ -34,7 +35,7 @@ from train.train_flow_xt_net import (
 
 TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', 'training_sets',
                   'validation_set', 'test_set', 'optimization', 'learning_rate',
-                  'checkpoints', 'evaluation', 'parallel_generation'}
+                  'checkpoints', 'evaluation', 'parallel_generation', 'duffy_wurtz_1993_set'}
 STIMULI_KEYS = {'speed_range', 'heading_deg_range', 'rot_deg_range', 'fov_deg',
                  'near_exclusion_radius', 'n_world_dots', 'superimpose',
                  'x_supersampling', 'dog_bundle_size', 'apply_dog_filter_after_downsample'}
@@ -192,13 +193,16 @@ def load_recipe(path):
 
     test = _section(recipe, 'test_set', FIXED_SET_KEYS)
     test_path = _validate_fixed_set(test, 'test_set')
-    if validation['seed'] == test['seed']:
-        raise ValueError('validation_set.seed and test_set.seed must differ')
-    # Positive increments keep every training set above both held-out seeds,
+    duffy = _section(recipe, 'duffy_wurtz_1993_set', FIXED_SET_KEYS)
+    duffy_path = _validate_fixed_set(duffy, 'duffy_wurtz_1993_set')
+    seeds = [validation['seed'], test['seed'], duffy['seed']]
+    if len(set(seeds)) != 3:
+        raise ValueError('validation_set, test_set, and duffy_wurtz_1993_set seeds must differ')
+    # Positive increments keep every training set above all held-out seeds,
     # regardless of how many sets are configured. No sequence enumeration needed.
-    if training['start_seed'] <= max(validation['seed'], test['seed']):
-        raise ValueError('training_sets.start_seed must be greater than both '
-                         'validation_set.seed and test_set.seed')
+    if training['start_seed'] <= max(seeds):
+        raise ValueError('training_sets.start_seed must be greater than all '
+                         'validation_set.seed, test_set.seed, and duffy_wurtz_1993_set.seed')
 
     optimization = _section(recipe, 'optimization', OPTIMIZATION_KEYS)
     _positive_int(optimization.get('batch_size'), 'optimization.batch_size')
@@ -237,7 +241,8 @@ def load_recipe(path):
         raise ValueError('evaluation.shuffle must be false')
 
     paths = {'network.output_path': output, 'training_sets.path': training_path,
-             'validation_set.path': validation_path, 'test_set.path': test_path}
+             'validation_set.path': validation_path, 'test_set.path': test_path,
+             'duffy_wurtz_1993_set.path': duffy_path}
     if parallel.get('enabled', False):
         paths['parallel_generation.staging'] = training_path.with_name(training_path.name + '.next')
     entries = list(paths.items())
@@ -265,7 +270,7 @@ def discover_recipe(root=ROOT):
     return path
 
 
-def _initialize_output(recipe, network_name, commit):
+def _initialize_output(recipe, network_name, commit, *, git_branch=None):
     output_root = Path(recipe['network']['output_path']).resolve()
     if not output_root.is_dir() or not os.access(output_root, os.W_OK):
         raise ValueError(f'output_path must already exist and be writable: {output_root}')
@@ -280,7 +285,7 @@ def _initialize_output(recipe, network_name, commit):
             raise ValueError(f'Output recipe or Git commit does not match: {network_dir}')
     else:
         network_dir.mkdir()
-        _atomic_json(manifest, expected)
+        _atomic_json(manifest, expected | {'git_branch': git_branch})
     checkpoint_dir, final_dir = network_dir / 'checkpoints', network_dir / 'final'
     checkpoint_dir.mkdir(exist_ok=True)
     final_dir.mkdir(exist_ok=True)
@@ -308,15 +313,17 @@ def _atomic_torch_save(value, path):
     os.replace(temporary, path)
 
 
-def _sha256_file(path):
+def _sha256_file(path, control_callback=None):
     digest = hashlib.sha256()
     with Path(path).open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            if control_callback is not None:
+                control_callback()
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _dataset_sha256(cache_root, role):
+def _dataset_sha256(cache_root, role, control_callback=None):
     """Hash the exact metadata, index, and tensor payloads used for evaluation."""
     cache_root = Path(cache_root).resolve()
     paths = [cache_root / 'dog.json', *sorted((cache_root / role).glob('*'))]
@@ -327,7 +334,7 @@ def _dataset_sha256(cache_root, role):
         relative = path.relative_to(cache_root).as_posix().encode()
         digest.update(len(relative).to_bytes(8, 'big'))
         digest.update(relative)
-        digest.update(bytes.fromhex(_sha256_file(path)))
+        digest.update(bytes.fromhex(_sha256_file(path, control_callback)))
     return digest.hexdigest()
 
 
@@ -415,21 +422,25 @@ def _validate_metrics(metrics, where):
         _number(metrics.get(key), f'{where}.{key}', nonnegative=True)
 
 
-def evaluate_model(model_path, cache_root, role, evaluation, commit):
+def evaluate_model(model_path, cache_root, role, evaluation, commit, *, control_callback=None):
     """Evaluate a candidate/final model without shuffling or retaining predictions."""
     checkpoint = load_checkpoint(model_path, 'cpu', expected_commit=commit)
-    return evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit)
+    return evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit,
+                               **({"control_callback": control_callback} if control_callback else {}))
 
 
-def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit):
+def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, control_callback=None):
     """All held-out evaluations use consistent full float32, even after fallback."""
     started = time.perf_counter()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dataset = DoGDataset(Path(cache_root) / role)
     batches = inference_batches(checkpoint | {'allow_tp32': False}, dataset, device=device,
                                 batch_size=evaluation['batch_size'],
-                                num_workers=evaluation['num_workers'])
-    metrics = summary_metrics(batches, motion_scales(cache_root))
+                                num_workers=evaluation['num_workers'],
+                                protocol='duffy_wurtz_1993' if role == 'duffy_wurtz_1993' else None,
+                                control_callback=control_callback)
+    summarize = duffy_wurtz_summary if role == 'duffy_wurtz_1993' else summary_metrics
+    metrics = summarize(batches, motion_scales(cache_root))
     _validate_metrics(metrics, f'{role} evaluation of epoch {checkpoint["global_epoch"]}')
     return metrics | {'checkpoint_git_commit': checkpoint['git_commit'],
                       'evaluator_git_commit': commit, 'global_epoch': checkpoint['global_epoch'],
@@ -460,7 +471,9 @@ def _select_final(checkpoint_dir, final_dir, recipe, commit):
     return True
 
 
-def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
+def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, mode='train'):
+    if mode not in ('train', 'evaluate'):
+        raise ValueError('mode must be train or evaluate')
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
     recipe = load_recipe(recipe_path)
     with run_lock() as lock_fds:
@@ -478,16 +491,25 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True):
             prefetch = Prefetch(recipe, lock_fds=lock_fds)
             prefetch.log_run_id = run_id
             log.append('run_started', recipe_path=str(recipe_path), git_commit=commit)
-            try:
-                result = _run_recipe(recipe_path, root=root, commit=commit,
-                                     require_clean=require_clean, prefetch=prefetch, recipe=recipe)
-            finally:
-                prefetch.close()
-            log.append('run_completed', git_commit=commit)
+            with RunnerControl(log, recipe_path, Path(run_id) / 'latest.pt', mode) as finish:
+                try:
+                    result = _run_recipe(recipe_path, root=root, commit=commit,
+                                         require_clean=require_clean, prefetch=prefetch,
+                                         recipe=recipe, finish=finish)
+                except RunnerStopped as error:
+                    finish.set_phase('stopping')
+                    log.append('run_stopped', git_commit=commit, reason='mission_control')
+                    print(str(error), flush=True)
+                    result = None
+                finally:
+                    prefetch.close()
+            if not finish.stop_requested:
+                log.append('run_completed', git_commit=commit)
             return result
 
 
-def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe):
+
+def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe, finish):
     """Execute or resume the one committed recipe in ``root/recipe``."""
     root = Path(root).resolve()
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
@@ -512,9 +534,13 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     if require_clean:
         run_fields['_repo_root'] = str(root)
     network_name = recipe_path.stem
-    checkpoint_dir, final_dir = _initialize_output(recipe, network_name, commit)
+    checkpoint_dir, final_dir = _initialize_output(recipe, network_name, commit,
+                                                   git_branch=repository_git_status(root)['branch'])
     log = EventLog(Path(recipe['network']['output_path']) / 'training_log.jsonl',
                    str(checkpoint_dir.resolve()))
+    finish.check_stop()
+    if finish.record['mode'] == 'evaluate' and not (checkpoint_dir / 'latest.pt').is_file():
+        raise ValueError('No completed checkpoint to evaluate; start training first')
     provenance = capture_provenance(checkpoint_dir.parent, ROOT)
     prefetch.provenance = provenance
     print(f'Network: {network_name}\nRecipe: {recipe_path}\nGit commit: {commit}', flush=True)
@@ -523,15 +549,28 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     validation = recipe['validation_set'] | run_fields
     validation = validation | {'_detector': recipe['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
+    finish.set_phase('preparing_validation')
     with prefetch.foreground_generation():
         validation_cache = _prepare_dataset(validation_path, 'validate', validation,
-                                            stimuli, persistent=True)
+                                            stimuli, persistent=True, progress_callback=lambda count: finish())
     log.append('validation_set_ready', path=str(validation_cache), seed=validation['seed'],
                n_samples=validation['n_samples'])
 
+    duffy = recipe['duffy_wurtz_1993_set'] | run_fields
+    duffy = duffy | {'_detector': recipe['detector'], '_provenance': provenance}
+    finish.set_phase('preparing_duffy_wurtz_1993')
+    with prefetch.foreground_generation():
+        duffy_cache = _prepare_dataset(Path(duffy['path']), 'duffy_wurtz_1993', duffy,
+                                       stimuli | {'superimpose': True}, persistent=True,
+                                       progress_callback=lambda count: finish())
+    log.append('duffy_wurtz_1993_set_ready', path=str(duffy_cache), seed=duffy['seed'],
+               n_samples=duffy['n_samples'], superimpose=True)
+
     def validate_epoch(checkpoint):
         check_repository()
-        metrics = evaluate_checkpoint(checkpoint, validation_cache, 'validate', recipe['evaluation'], commit)
+        finish.set_phase('validation', global_epoch=checkpoint['global_epoch'])
+        metrics = evaluate_checkpoint(checkpoint, validation_cache, 'validate', recipe['evaluation'], commit,
+                                      control_callback=finish.check_training)
         check_repository()
         print(f'Validation performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
         return metrics
@@ -554,8 +593,9 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
                 raise ValueError('Latest checkpoint training seed does not match the recipe')
             if not 0 <= latest['epoch_within_set'] <= training['epochs_per_set']:
                 raise ValueError('Latest checkpoint has an invalid epoch position')
-            if latest['stop_reason'] == 'learning_rate_minimum':
-                stop_reason = 'learning_rate_minimum'
+            if latest['stop_reason'] == 'learning_rate_minimum' or finish():
+                stop_reason = ('learning_rate_minimum' if latest['stop_reason'] == 'learning_rate_minimum'
+                               else 'user_requested')
                 break
             complete = (latest_index > set_index or (latest_index == set_index and
                         latest['epoch_within_set'] >= training['epochs_per_set']))
@@ -574,91 +614,124 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
               flush=True)
         log.append('training_set_preparing', training_set_index=set_index, training_seed=seed,
                    n_samples=training['samples_per_set'])
-        prefetch.acquire(training_path, section)
-        with prefetch.foreground_generation():
-            cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False)
+        try:
+            finish.set_phase('preparing_training', training_set_index=set_index)
+            prefetch.acquire(training_path, section, control_callback=finish.check_training)
+            with prefetch.foreground_generation():
+                cache = _prepare_dataset(training_path, 'train', section, stimuli, persistent=False,
+                                         progress_callback=lambda count: finish.check_training())
+            check_repository()
+            if set_index + 1 < training['number_of_sets'] and not finish():
+                prefetch.start(section | {'seed': seed + training['seed_increment']})
+            optimization, lr, checkpoints = (recipe['optimization'], recipe['learning_rate'],
+                                             recipe['checkpoints'])
+            def training_progress(loader_wait):
+                finish()
+                if prefetch.enabled:
+                    prefetch.observe(loader_wait)
+
+            train_recipe_set(RecipeTrainingSettings(
+                root_folder=str(cache), checkpoint_dir=str(checkpoint_dir), git_commit=commit,
+                log_path=str(Path(recipe['network']['output_path']) / 'training_log.jsonl'),
+                training_set_index=set_index, training_seed=seed,
+                is_final_training_set=set_index == training['number_of_sets'] - 1,
+                epochs_per_set=training['epochs_per_set'], shuffle_seed=training['shuffle_seed'],
+                candidate_interval_epochs=checkpoints['candidate_interval_epochs'],
+                keep_previous_resumable=checkpoints['keep_previous_resumable'],
+                batch_size=optimization['batch_size'], allow_amp=optimization['allow_amp'],
+                allow_tp32=optimization['allow_tp32'],
+                profile_batches=optimization['profile_batches'], num_workers=optimization['num_workers'],
+                learning_rate=lr['initial'], learning_rate_factor=lr['factor'],
+                learning_rate_patience=lr['patience_epochs'], learning_rate_minimum=lr['minimum'],
+                learning_rate_threshold=lr['relative_improvement_threshold'],
+                mirror_train_stimuli=optimization['mirror_train_stimuli'],
+                dx_values=tuple(range(recipe['detector']['displacement_min_px'],
+                                      recipe['detector']['displacement_max_px'] + 1,
+                                      recipe['detector']['displacement_step_px']))),
+                validate_epoch=validate_epoch, should_finish=finish,
+                control_callback=finish.check_training,
+                epoch_callback=lambda epoch: finish.set_phase('training', global_epoch=epoch),
+                progress_callback=training_progress)
+        except EvaluationRequested:
+            log.append('training_interrupted_for_evaluation', training_set_index=set_index)
+            stop_reason = 'user_requested'
+            break
         check_repository()
-        if set_index + 1 < training['number_of_sets']:
-            prefetch.start(section | {'seed': seed + training['seed_increment']})
-        optimization, lr, checkpoints = (recipe['optimization'], recipe['learning_rate'],
-                                         recipe['checkpoints'])
-        train_recipe_set(RecipeTrainingSettings(
-            root_folder=str(cache), checkpoint_dir=str(checkpoint_dir), git_commit=commit,
-            log_path=str(Path(recipe['network']['output_path']) / 'training_log.jsonl'),
-            training_set_index=set_index, training_seed=seed,
-            is_final_training_set=set_index == training['number_of_sets'] - 1,
-            epochs_per_set=training['epochs_per_set'], shuffle_seed=training['shuffle_seed'],
-            candidate_interval_epochs=checkpoints['candidate_interval_epochs'],
-            keep_previous_resumable=checkpoints['keep_previous_resumable'],
-            batch_size=optimization['batch_size'], allow_amp=optimization['allow_amp'],
-            allow_tp32=optimization['allow_tp32'],
-            profile_batches=optimization['profile_batches'], num_workers=optimization['num_workers'],
-            learning_rate=lr['initial'], learning_rate_factor=lr['factor'],
-            learning_rate_patience=lr['patience_epochs'], learning_rate_minimum=lr['minimum'],
-            learning_rate_threshold=lr['relative_improvement_threshold'],
-            mirror_train_stimuli=optimization['mirror_train_stimuli'],
-            dx_values=tuple(range(recipe['detector']['displacement_min_px'],
-                                  recipe['detector']['displacement_max_px'] + 1,
-                                  recipe['detector']['displacement_step_px']))),
-            validate_epoch=validate_epoch,
-            **({'progress_callback': prefetch.observe} if prefetch.enabled else {}))
-        check_repository()
+        latest = load_checkpoint(latest_path, resume=True, expected_commit=commit)
+        if latest['stop_reason'] == 'learning_rate_minimum' or finish():
+            stop_reason = ('learning_rate_minimum' if latest['stop_reason'] == 'learning_rate_minimum'
+                           else 'user_requested')
+            break
         _safe_delete_managed(training_path)
         print(f'Training set {set_index + 1} complete and deleted', flush=True)
         log.append('training_set_completed', training_set_index=set_index, training_seed=seed,
                    dataset_deleted=True)
-        latest = load_checkpoint(latest_path, resume=True, expected_commit=commit)
-        if latest['stop_reason'] == 'learning_rate_minimum':
-            stop_reason = 'learning_rate_minimum'
-            break
 
     prefetch.close()
     log.append('training_stopped', reason=stop_reason)
 
-    # A restart after the last checkpoint but before dataset cleanup skips
-    # every set above. All training is now complete, so remove that leftover.
+    # A manual evaluation pause may leave epochs in the current set. Keep its
+    # exact data for continuation; completed sets can use the normal cleanup.
+    latest = load_checkpoint(latest_path, resume=True, expected_commit=commit)
+    keep_current_set = (stop_reason == 'user_requested'
+                        and latest['epoch_within_set'] < training['epochs_per_set'])
     training_path = Path(training['path'])
-    if training_path.exists() and (training_path / MANAGED_MARKER).is_file():
+    if (not keep_current_set and training_path.exists()
+            and (training_path / MANAGED_MARKER).is_file()):
         _safe_delete_managed(training_path)
 
     check_repository()
+    finish.set_phase('selecting_best_checkpoint')
+    finish.check_stop()
     _select_final(checkpoint_dir, final_dir, recipe, commit)
 
     check_repository()
     test = recipe['test_set'] | run_fields
     test = test | {'_detector': recipe['detector'], '_provenance': provenance}
     test_path = Path(test['path'])
+    finish.set_phase('preparing_final_test')
     with prefetch.foreground_generation():
-        test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True)
+        test_cache = _prepare_dataset(test_path, 'test', test, stimuli, persistent=True,
+                                      progress_callback=lambda count: finish())
     check_repository()
     model_path = final_dir / 'model.pt'
-    results_path = final_dir / 'test-results.json'
-    identity = {'model_sha256': _sha256_file(model_path),
-                'dataset_sha256': _dataset_sha256(test_cache, 'test'),
-                'evaluation': recipe['evaluation'], 'evaluator_git_commit': commit,
-                'split': 'test'}
-    check_repository()
-    metrics = _cached_test_result(results_path, identity)
-    reused = metrics is not None
-    if reused:
-        print('Reusing final test result', flush=True)
-    else:
-        print('Testing final model', flush=True)
-        metrics = evaluate_model(model_path, test_cache, 'test', recipe['evaluation'], commit)
+    for role, cache in (('test', test_cache), ('duffy_wurtz_1993', duffy_cache)):
+        finish.check_stop()
+        finish.set_phase('final_test' if role == 'test' else role)
+        results_path = final_dir / f'{role}-results.json'
+        identity = {'model_sha256': _sha256_file(model_path, finish.check_stop),
+                    'dataset_sha256': _dataset_sha256(cache, role, finish.check_stop),
+                    'evaluation': recipe['evaluation'], 'evaluator_git_commit': commit,
+                    'split': role}
         check_repository()
-        _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
-    log.append('test_result', git_commit=commit, cached=reused,
-               model_sha256=identity['model_sha256'],
-               dataset_sha256=identity['dataset_sha256'],
-               model_path=str(final_dir / 'model.pt'), metrics=metrics)
-    print(f'Test performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
+        metrics = _cached_test_result(results_path, identity)
+        reused = metrics is not None
+        if reused:
+            print(f'Reusing final {role} result', flush=True)
+        else:
+            print(f'Evaluating final model: {role}', flush=True)
+            metrics = evaluate_model(model_path, cache, role, recipe['evaluation'], commit,
+                                     control_callback=finish.check_stop)
+            check_repository()
+            _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
+        log.append(f'{role}_result', git_commit=commit, cached=reused,
+                   model_sha256=identity['model_sha256'],
+                   dataset_sha256=identity['dataset_sha256'],
+                   model_path=str(final_dir / 'model.pt'), metrics=metrics)
+        label = 'Test' if role == 'test' else 'Duffy-Wurtz 1993'
+        print(f'{label} performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
+    check_repository()
+    finish.check_stop()
+    finish.set_phase('completed')
     print('Training recipe complete.', flush=True)
 
 
 def main():
-    if len(sys.argv) != 1:
-        raise SystemExit('This command takes no arguments; it runs the sole recipe/*.toml file')
-    run_recipe()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--evaluate', action='store_true', help='Evaluate the best saved checkpoint without training')
+    args = parser.parse_args()
+    run_recipe(mode='evaluate' if args.evaluate else 'train')
 
 
 if __name__ == '__main__':

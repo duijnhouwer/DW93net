@@ -166,7 +166,8 @@ class PanoramaTests(unittest.TestCase):
         for key, value in [('speed_range', [.001, .006]), ('heading_deg_range', [-180, 180]),
                            ('rot_deg_range', [-.5, .5])]:
             self.assertEqual(recipe['stimuli'][key], value)
-        archived = module.load_recipe(root / 'recipe/archive/rot_only.toml')
+        # Historical recipe is preserved; it predates the required Duffy-Wurtz section.
+        archived = module.tomllib.loads((root / 'recipe/archive/rot_only.toml').read_text())
         self.assertEqual(recipe['detector'], archived['detector'])
         self.assertEqual(recipe['training_sets'], archived['training_sets'])
 

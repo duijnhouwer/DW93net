@@ -114,7 +114,7 @@ class Prefetch:
             print(f'Generator allocation: {threads} threads; '
                   f'loader wait {wait_fraction:.1%}', flush=True)
 
-    def acquire(self, destination, section):
+    def acquire(self, destination, section, control_callback=None):
         from stimuli.dataset_identity import dataset_spec
 
         if self.process is None:
@@ -131,7 +131,14 @@ class Prefetch:
         start = time.perf_counter()
         if self.process.poll() is None:
             self._write_control(self.throttle.maximum)
-        status = self.process.wait()
+        while True:
+            if control_callback is not None:
+                control_callback()
+            try:
+                status = self.process.wait(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                pass
         if status:
             raise RuntimeError(f'Background stimulus generation failed: exit {status}')
         # The child publishes dataset state last; never promote partial output.

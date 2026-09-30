@@ -139,8 +139,8 @@ def _generate_flow_xt_samples(
     validate_speed_float32(speed_range)
     if heading_deg_range[0] < -180 or heading_deg_range[1] > 180:
         raise ValueError("heading_deg_range must lie within [-180, 180]")
-    if role not in {"train", "validate", "test"}:
-        raise ValueError(f"role must be train, validate, or test. Got: {role}")
+    if role not in {"train", "validate", "test", "duffy_wurtz_1993"}:
+        raise ValueError(f"role must be train, validate, test, or duffy_wurtz_1993. Got: {role}")
 
     if seed is None:
         import time

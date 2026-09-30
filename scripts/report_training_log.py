@@ -45,9 +45,9 @@ def report(events, run_id=None):
             if e['event'] == 'validation_result':
                 m = e['result']
                 split = 'validate'
-            elif e['event'] == 'test_result':
+            elif e['event'] in ('test_result', 'duffy_wurtz_1993_result'):
                 m = e['metrics']
-                split = 'test'
+                split = 'test' if e['event'] == 'test_result' else 'duffy_wurtz_1993'
             elif e['event'] == 'progress_evaluation_result':
                 m = e['metrics']
                 selection = (f'{e["split"]} / session {e["evaluation_id"]} / '

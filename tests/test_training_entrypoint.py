@@ -81,6 +81,6 @@ class TrainingEntrypointTests(unittest.TestCase):
                     patch.object(module, '_select_final') as select:
                 with self.assertRaisesRegex(SystemExit, 'ERROR: Repository changed'):
                     module.run_recipe(recipe_path, root=root)
-            self.assertEqual(generate.call_count, 2)
+            self.assertEqual(generate.call_count, 3)
             select.assert_not_called()
             self.assertEqual(latest.read_bytes(), b'last completed checkpoint')

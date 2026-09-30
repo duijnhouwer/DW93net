@@ -37,7 +37,7 @@ class ValidationWorkflowTests(unittest.TestCase):
             previous_threads = torch.get_num_threads()
             evaluation_order = []
             real_evaluate = module.evaluate_checkpoint
-            def evaluate(checkpoint, cache, role, evaluation, commit):
+            def evaluate(checkpoint, cache, role, evaluation, commit, **kwargs):
                 evaluation_order.append((role, checkpoint['global_epoch']))
                 if role == 'validate':
                     self.assertFalse((root / 'stimuli' / 'test').exists())
@@ -51,10 +51,10 @@ class ValidationWorkflowTests(unittest.TestCase):
                     patch.object(module, 'generate_dog_dataset', side_effect=generate_with_thread_check) as generate:
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
-                             ['validate', 'train', 'test'])
-            self.assertEqual(generation_threads, [('validate', 2), ('train', 2), ('test', 2)])
+                             ['validate', 'duffy_wurtz_1993', 'train', 'test'])
+            self.assertEqual(generation_threads, [('validate', 2), ('duffy_wurtz_1993', 2), ('train', 2), ('test', 2)])
             self.assertEqual(torch.get_num_threads(), previous_threads)
-            self.assertEqual(evaluation_order, [('validate', 1), ('validate', 2), ('test', 1)])
+            self.assertEqual(evaluation_order, [('validate', 1), ('validate', 2), ('test', 1), ('duffy_wurtz_1993', 1)])
             network = root / 'output' / 'smoke'
             checkpoints = network / 'checkpoints'
             latest = torch.load(checkpoints / 'latest.pt', weights_only=True)

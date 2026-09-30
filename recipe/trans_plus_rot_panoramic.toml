@@ -29,7 +29,7 @@ path = "/home/jacob/Documents/dw93net_stimuli/training"
 number_of_sets = 10000
 samples_per_set = 100000
 epochs_per_set = 5
-# Training seeds must start above both validation and test seeds.
+# Training seeds must start above all held-out seeds.
 start_seed = 4000
 seed_increment = 1
 shuffle_seed = 7000
@@ -43,6 +43,11 @@ selection_metric = "validation_loss"
 [test_set]
 path = "/home/jacob/Documents/dw93net_stimuli/test"
 seed = 3000
+n_samples = 100000
+
+[duffy_wurtz_1993_set]
+path = "/home/jacob/Documents/dw93net_stimuli/duffy_wurtz_1993_set"
+seed = 1000
 n_samples = 100000
 
 [optimization]

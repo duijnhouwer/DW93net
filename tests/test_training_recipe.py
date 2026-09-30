@@ -48,6 +48,10 @@ path = "{root}/stimuli/validation"
 seed = 2000
 n_samples = 1000
 selection_metric = "validation_loss"
+[duffy_wurtz_1993_set]
+path = "{root}/stimuli/duffy_wurtz_1993_set"
+seed = 1000
+n_samples = 1000
 [test_set]
 path = "{root}/stimuli/test"
 seed = 3000
@@ -233,7 +237,7 @@ class TrainingRecipeTests(unittest.TestCase):
             for start in (0, 1999, 2000, 2500, 3000):
                 with self.subTest(start=start):
                     path.write_text(original.replace('start_seed = 4000', f'start_seed = {start}'))
-                    with self.assertRaisesRegex(ValueError, 'greater than both'):
+                    with self.assertRaisesRegex(ValueError, 'greater than all'):
                         module.load_recipe(path)
             path.write_text(original.replace('seed = 3000', 'seed = 2000'))
             with self.assertRaisesRegex(ValueError, 'must differ'):
