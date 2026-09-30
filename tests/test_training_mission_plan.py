@@ -415,7 +415,7 @@ class TrainingMissionPlanTests(unittest.TestCase):
                         module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
                     self.assertEqual(train.call_count, 1)
                     self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
-                                     ['test'])
+                                     ['test', 'duffy_wurtz_1993'])
                 latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
                 log = (root / 'output' / TEST_RUN_NAME / 'training_log.jsonl').read_text()
                 self.assertEqual(log.count('Starting/resuming training mission plan:'), 2)

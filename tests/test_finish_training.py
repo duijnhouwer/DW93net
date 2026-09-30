@@ -63,7 +63,7 @@ class FinishTrainingTests(unittest.TestCase):
             latest_path = network / 'checkpoints/latest.pt'
             self.assertEqual(torch.load(latest_path, weights_only=True)['global_epoch'], 1)
             self.assertFalse((network / 'final/duffy_wurtz_1993-results.json').exists())
-            self.assertEqual(order, [('validate', 1), ('test', 1), ('duffy_wurtz_1993', 1)])
+            self.assertEqual(order, [('validate', 1), ('test', 1)])
             for n, handler in original_handlers.items():
                 self.assertEqual(signal.getsignal(n), handler)
             # Resume must train epoch 2 before any pending evaluation.
@@ -78,9 +78,41 @@ class FinishTrainingTests(unittest.TestCase):
                                 for state in latest['optimizer_state_dict']['state'].values()))
             # Explicit evaluation never advances training.
             with patch.object(module, 'train_mission_plan_set', side_effect=AssertionError('no training')):
-                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False, mode='evaluate')
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False, mode='duffy_wurtz_1993')
             self.assertEqual(torch.load(latest_path, weights_only=True)['global_epoch'], 2)
             self.assertTrue((network / 'final/duffy_wurtz_1993-results.json').is_file())
+            for name, role in [('final_test_log.jsonl', 'test'),
+                               ('duffy_wurtz_log.jsonl', 'duffy_wurtz_1993')]:
+                report = module.EventLog(network / 'final' / name, str(network / 'checkpoints'))
+                events = report.events()
+                start_index = max(index for index, event in enumerate(events)
+                                  if event['event'] == 'evaluation_started')
+                started = events[start_index]
+                rows = [event for event in events[start_index + 1:]
+                        if event['event'] == 'stimulus_result']
+                completed = report.events('evaluation_completed')[-1]
+                self.assertEqual(started['role'], role)
+                self.assertEqual(started['checkpoint']['global_epoch'], 2)
+                self.assertEqual(len(report.events('evaluation_started')), 1)
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(completed['n_stimulus_results'], 2)
+                self.assertEqual(set(rows[0]) & {'dx', 'dz', 'yaw',
+                                                 'output_dx', 'output_dz', 'output_yaw'},
+                                 {'dx', 'dz', 'yaw', 'output_dx', 'output_dz', 'output_yaw'})
+
+    def test_evaluation_log_requires_matching_completion_at_eof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'final_test_log.jsonl'
+            run_id = 'run'
+            identity = {'model_sha256': 'a', 'dataset_sha256': 'b'}
+            report = module.EventLog(path, run_id)
+            report.append('evaluation_started', identity=identity, role='test')
+            report.append('evaluation_completed', identity=identity, role='test',
+                          n_stimulus_results=0, metrics={})
+            self.assertTrue(module._evaluation_log_is_complete(path, run_id, identity, 'test'))
+            with path.open('ab') as stream:
+                stream.write(b'{\"interrupted\": true}')
+            self.assertFalse(module._evaluation_log_is_complete(path, run_id, identity, 'test'))
 
     def test_signal_before_first_epoch_still_produces_one_healthy_checkpoint(self):
         self.addCleanup(torch.set_num_threads, torch.get_num_threads())
@@ -99,8 +131,7 @@ class FinishTrainingTests(unittest.TestCase):
 
             with patch.object(module, 'generate_dog_dataset', side_effect=generate):
                 module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
-            self.assertEqual(generated, [('validate', False), ('duffy_wurtz_1993', True),
-                                         ('train', False), ('test', False)])
+            self.assertEqual(generated, [('validate', False), ('train', False), ('test', False)])
             checkpoint = torch.load(root / 'output' / TEST_RUN_NAME / 'checkpoints/latest.pt', weights_only=True)
             self.assertEqual(checkpoint['global_epoch'], 1)
 
@@ -195,7 +226,7 @@ class FinishTrainingTests(unittest.TestCase):
                     final = torch.load(network / 'final/model.pt', weights_only=True)
                     self.assertEqual(final['global_epoch'], 1)
             self.assertEqual(generation_roles, [
-                ['validate', 'duffy_wurtz_1993', 'train', 'test'], [], ['train']])
+                ['validate', 'train', 'test'], [], ['train']])
             log = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(network / 'checkpoints'))
             self.assertEqual([e['global_epoch'] for e in log.events('epoch_completed')], [1, 2, 3])
 

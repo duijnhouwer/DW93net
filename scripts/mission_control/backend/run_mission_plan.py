@@ -444,14 +444,20 @@ def _validate_metrics(metrics, where):
         _number(metrics.get(key), f'{where}.{key}', nonnegative=True)
 
 
-def evaluate_model(model_path, cache_root, role, evaluation, commit, *, control_callback=None):
-    """Evaluate a candidate/final model without shuffling or retaining predictions."""
+def evaluate_model(model_path, cache_root, role, evaluation, commit, *, control_callback=None,
+                   sample_callback=None):
+    """Evaluate a candidate/final model, optionally streaming each result."""
     checkpoint = load_checkpoint(model_path, 'cpu', expected_commit=commit)
-    return evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit,
-                               **({"control_callback": control_callback} if control_callback else {}))
+    kwargs = {}
+    if control_callback is not None:
+        kwargs['control_callback'] = control_callback
+    if sample_callback is not None:
+        kwargs['sample_callback'] = sample_callback
+    return evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, **kwargs)
 
 
-def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, control_callback=None):
+def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, control_callback=None,
+                        sample_callback=None):
     """All held-out evaluations use consistent full float32, even after fallback."""
     started = time.perf_counter()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -461,6 +467,13 @@ def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, con
                                 num_workers=evaluation['num_workers'],
                                 protocol='duffy_wurtz_1993' if role == 'duffy_wurtz_1993' else None,
                                 control_callback=control_callback)
+    if sample_callback is not None:
+        raw_batches = batches
+        def recorded_batches():
+            for prediction, target in raw_batches:
+                sample_callback(prediction, target)
+                yield prediction, target
+        batches = recorded_batches()
     summarize = duffy_wurtz_summary if role == 'duffy_wurtz_1993' else summary_metrics
     metrics = summarize(batches, motion_scales(cache_root))
     _validate_metrics(metrics, f'{role} evaluation of epoch {checkpoint["global_epoch"]}')
@@ -472,6 +485,59 @@ def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, con
                                   'generation': dataset.storage_metadata['stimulus_generation'],
                                   'selection': 'all'}, 'metric_definitions': METRIC_DEFINITIONS}
 
+
+
+def _evaluation_log_is_complete(path, run_id, identity, role):
+    """Require the current report to end with the exact successful evaluation."""
+    path = Path(path)
+    try:
+        if not path.read_bytes().endswith(b'\n'):
+            return False
+        events = EventLog(path, run_id).read()
+    except (OSError, ValueError, TypeError):
+        return False
+    if not events:
+        return False
+    completed = events[-1]
+    if (completed.get('run_id') != run_id or completed.get('event') != 'evaluation_completed'
+            or completed.get('role') != role or completed.get('identity') != identity):
+        return False
+    for event in reversed(events[:-1]):
+        if event.get('run_id') != run_id:
+            continue
+        if event.get('event') == 'evaluation_started':
+            return event.get('role') == role and event.get('identity') == identity
+    return False
+
+
+def _discard_evaluation_log(path):
+    """A stale or interrupted report cannot be mixed with a new evaluation."""
+    Path(path).unlink(missing_ok=True)
+
+
+def _record_evaluation_log(path, run_id, identity, model_path, checkpoint, role, evaluate):
+    """Append one complete, streamable per-stimulus evaluation report."""
+    log = EventLog(path, run_id)
+    log.append('evaluation_started', identity=identity, role=role,
+               checkpoint=dict(path=str(Path(model_path).resolve()),
+                               global_epoch=checkpoint['global_epoch'],
+                               git_commit=checkpoint['git_commit'],
+                               validation_loss=checkpoint['validation_loss']))
+    index = 0
+
+    def record_samples(prediction, target):
+        nonlocal index
+        for expected, output in zip(target, prediction):
+            log.append('stimulus_result', stimulus_index=index,
+                       dx=float(expected[0]), dz=float(expected[1]), yaw=float(expected[2]),
+                       output_dx=float(output[0]), output_dz=float(output[1]),
+                       output_yaw=float(output[2]))
+            index += 1
+
+    metrics = evaluate(sample_callback=record_samples)
+    log.append('evaluation_completed', identity=identity, role=role,
+               n_stimulus_results=index, metrics=metrics)
+    return metrics
 
 def _select_final(checkpoint_dir, final_dir, mission_plan, commit):
     """Promote only the best candidate committed by a healthy completed epoch."""
@@ -493,8 +559,8 @@ def _select_final(checkpoint_dir, final_dir, mission_plan, commit):
 
 
 def run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require_clean=True, mode='train'):
-    if mode not in ('train', 'evaluate'):
-        raise ValueError('mode must be train or evaluate')
+    if mode not in ('train', 'test', 'duffy_wurtz_1993'):
+        raise ValueError('mode must be train, test, or duffy_wurtz_1993')
     mission_plan_path = discover_mission_plan(root) if mission_plan_path is None else Path(mission_plan_path).resolve()
     mission_plan = load_mission_plan(mission_plan_path)
     with run_lock() as lock_fds:
@@ -561,10 +627,10 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
     if require_clean:
         run_fields['_repo_root'] = str(root)
     network_name = mission_plan_path.stem
-    log = EventLog(checkpoint_dir.parent / 'training_log.jsonl',
-                   str(checkpoint_dir.resolve()))
+    run_id = str(checkpoint_dir.resolve())
+    log = EventLog(checkpoint_dir.parent / 'training_log.jsonl', run_id)
     finish.check_stop()
-    if finish.record['mode'] == 'evaluate' and not (checkpoint_dir / 'latest.pt').is_file():
+    if finish.record['mode'] != 'train' and not (checkpoint_dir / 'latest.pt').is_file():
         raise ValueError('No completed checkpoint to evaluate; start training first')
     provenance = capture_provenance(checkpoint_dir.parent, ROOT)
     prefetch.provenance = provenance
@@ -572,6 +638,63 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
 
     stimuli, training = mission_plan['stimuli'], mission_plan['training_sets']
     ordinary_stimuli = _ordinary_stimuli(stimuli)
+
+    def evaluate_best(role):
+        check_repository()
+        finish.set_phase('selecting_best_checkpoint')
+        finish.check_stop()
+        _select_final(checkpoint_dir, final_dir, mission_plan, commit)
+        if role == 'test':
+            section = mission_plan['test_set'] | run_fields
+            section = section | {'_detector': mission_plan['detector'], '_provenance': provenance}
+            role_stimuli, phase = ordinary_stimuli, 'preparing_final_test'
+        elif role == 'duffy_wurtz_1993':
+            section = mission_plan['duffy_wurtz_1993_set'] | run_fields
+            section = section | {'_detector': mission_plan['detector'], '_provenance': provenance}
+            role_stimuli, phase = duffy_wurtz_stimuli(mission_plan), role
+        else:
+            raise ValueError(f'Unknown evaluation role: {role}')
+        finish.set_phase(phase)
+        with prefetch.foreground_generation():
+            cache = _prepare_dataset(Path(section['path']), role, section, role_stimuli,
+                                     persistent=True, progress_callback=lambda count: finish())
+        check_repository()
+        finish.set_phase('final_test' if role == 'test' else role)
+        model_path = final_dir / 'model.pt'
+        results_path = final_dir / f'{role}-results.json'
+        identity = {'model_sha256': _sha256_file(model_path, finish.check_stop),
+                    'dataset_sha256': _dataset_sha256(cache, role, finish.check_stop),
+                    'evaluation': mission_plan['evaluation'], 'evaluator_git_commit': commit,
+                    'split': role}
+        log_path = final_dir / ('final_test_log.jsonl' if role == 'test' else 'duffy_wurtz_log.jsonl')
+        log_complete = _evaluation_log_is_complete(log_path, run_id, identity, role)
+        metrics = _cached_test_result(results_path, identity)
+        reused = metrics is not None and log_complete
+        if reused:
+            print(f'Reusing final {role} result and complete per-stimulus log', flush=True)
+        else:
+            if not log_complete:
+                _discard_evaluation_log(log_path)
+            print(f'Evaluating final model: {role}', flush=True)
+            checkpoint = load_checkpoint(model_path, 'cpu', expected_commit=commit)
+            metrics = _record_evaluation_log(
+                log_path, run_id, identity, model_path, checkpoint, role,
+                lambda *, sample_callback: evaluate_model(
+                    model_path, cache, role, mission_plan['evaluation'], commit,
+                    control_callback=finish.check_stop, sample_callback=sample_callback))
+            check_repository()
+            _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
+        log.append(f'{role}_result', git_commit=commit, cached=reused,
+                   model_sha256=identity['model_sha256'], dataset_sha256=identity['dataset_sha256'],
+                   model_path=str(model_path), metrics=metrics)
+        label = 'Test' if role == 'test' else 'Duffy-Wurtz 1993'
+        print(f'{label} performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
+
+    requested_role = finish.evaluation_action()
+    if requested_role:
+        evaluate_best(requested_role)
+        finish.set_phase('completed')
+        return
     validation = mission_plan['validation_set'] | run_fields
     validation = validation | {'_detector': mission_plan['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
@@ -581,20 +704,6 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
                                             ordinary_stimuli, persistent=True, progress_callback=lambda count: finish())
     log.append('validation_set_ready', path=str(validation_cache), seed=validation['seed'],
                n_samples=validation['n_samples'])
-
-    duffy = mission_plan['duffy_wurtz_1993_set'] | run_fields
-    duffy_stimuli = duffy_wurtz_stimuli(mission_plan)
-    duffy = duffy | {'_detector': mission_plan['detector'], '_provenance': provenance}
-    finish.set_phase('preparing_duffy_wurtz_1993')
-    with prefetch.foreground_generation():
-        duffy_cache = _prepare_dataset(Path(duffy['path']), 'duffy_wurtz_1993', duffy,
-                                       duffy_stimuli, persistent=True,
-                                       progress_callback=lambda count: finish())
-    log.append('duffy_wurtz_1993_set_ready', path=str(duffy_cache), seed=duffy['seed'],
-               n_samples=duffy['n_samples'],
-               duffy_wurtz_superimposition_enable=duffy_stimuli.get(
-                   'duffy_wurtz_superimposition_enable', False),
-               duffy_wurtz_rotation_pct=duffy_stimuli.get('duffy_wurtz_rotation_pct', 50))
 
     def validate_epoch(checkpoint):
         check_repository()
@@ -710,46 +819,9 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
             and (training_path / MANAGED_MARKER).is_file()):
         _safe_delete_managed(training_path)
 
-    check_repository()
-    finish.set_phase('selecting_best_checkpoint')
-    finish.check_stop()
-    _select_final(checkpoint_dir, final_dir, mission_plan, commit)
-
-    check_repository()
-    test = mission_plan['test_set'] | run_fields
-    test = test | {'_detector': mission_plan['detector'], '_provenance': provenance}
-    test_path = Path(test['path'])
-    finish.set_phase('preparing_final_test')
-    with prefetch.foreground_generation():
-        test_cache = _prepare_dataset(test_path, 'test', test, ordinary_stimuli, persistent=True,
-                                      progress_callback=lambda count: finish())
-    check_repository()
-    model_path = final_dir / 'model.pt'
-    for role, cache in (('test', test_cache), ('duffy_wurtz_1993', duffy_cache)):
-        finish.check_stop()
-        finish.set_phase('final_test' if role == 'test' else role)
-        results_path = final_dir / f'{role}-results.json'
-        identity = {'model_sha256': _sha256_file(model_path, finish.check_stop),
-                    'dataset_sha256': _dataset_sha256(cache, role, finish.check_stop),
-                    'evaluation': mission_plan['evaluation'], 'evaluator_git_commit': commit,
-                    'split': role}
-        check_repository()
-        metrics = _cached_test_result(results_path, identity)
-        reused = metrics is not None
-        if reused:
-            print(f'Reusing final {role} result', flush=True)
-        else:
-            print(f'Evaluating final model: {role}', flush=True)
-            metrics = evaluate_model(model_path, cache, role, mission_plan['evaluation'], commit,
-                                     control_callback=finish.check_stop)
-            check_repository()
-            _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
-        log.append(f'{role}_result', git_commit=commit, cached=reused,
-                   model_sha256=identity['model_sha256'],
-                   dataset_sha256=identity['dataset_sha256'],
-                   model_path=str(final_dir / 'model.pt'), metrics=metrics)
-        label = 'Test' if role == 'test' else 'Duffy-Wurtz 1993'
-        print(f'{label} performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
+    requested_role = finish.evaluation_action()
+    for role in ((requested_role,) if requested_role else ('test', 'duffy_wurtz_1993')):
+        evaluate_best(role)
     check_repository()
     finish.check_stop()
     finish.set_phase('completed')
@@ -759,9 +831,12 @@ def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--evaluate', action='store_true', help='Evaluate the best saved checkpoint without training')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--test', action='store_true', help='Test the best saved checkpoint')
+    group.add_argument('--duffy_wurtz_1993', action='store_true', help='Present Duffy-Wurtz 1993 using the best saved checkpoint')
     args = parser.parse_args()
-    run_mission_plan(mode='evaluate' if args.evaluate else 'train')
+    mode = 'test' if args.test else 'duffy_wurtz_1993' if args.duffy_wurtz_1993 else 'train'
+    run_mission_plan(mode=mode)
 
 
 if __name__ == '__main__':

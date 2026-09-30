@@ -61,7 +61,8 @@ def active_runner():
 def _send_command(action, expected_identity=None):
     if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
         raise RuntimeError('Mission control requires Linux pidfd support')
-    signum = {'stop': signal.SIGUSR2, 'evaluate': signal.SIGUSR1}[action]
+    signum = {'stop': signal.SIGUSR2, 'test': signal.SIGUSR1,
+              'duffy_wurtz_1993': signal.SIGUSR1}[action]
     with _control_lock() as path:
         record = _read_active(path)
         if record is None:
@@ -70,9 +71,11 @@ def _send_command(action, expected_identity=None):
             raise RuntimeError('The active runner changed; refresh before sending a command')
         if not record.get('ready'):
             raise RuntimeError('Runner is starting; refresh shortly')
-        if action == 'evaluate' and not Path(record['checkpoint']).is_file():
+        if action in ('test', 'duffy_wurtz_1993') and not Path(record['checkpoint']).is_file():
             raise RuntimeError('No completed checkpoint yet; evaluation is not available')
-        if action == 'evaluate' and record['phase'] in ('final_test', 'duffy_wurtz_1993'):
+        if action == 'test' and record['phase'] == 'final_test':
+            return record['pid']
+        if action == 'duffy_wurtz_1993' and record['phase'] == 'duffy_wurtz_1993':
             return record['pid']  # Already doing the requested work.
         pid = record['pid']
         try:
@@ -85,8 +88,8 @@ def _send_command(action, expected_identity=None):
                               if line.startswith('SigCgt:'))
                 if not int(caught, 16) & (1 << (signum - 1)):
                     raise RuntimeError('Runner has no command handler; no signal sent')
-                signal.pidfd_send_signal(descriptor, signum)
                 _write_json(path, record | {'requested_action': action})
+                signal.pidfd_send_signal(descriptor, signum)
             finally:
                 os.close(descriptor)
         except (OSError, StopIteration, ValueError) as error:
@@ -94,9 +97,14 @@ def _send_command(action, expected_identity=None):
     return pid
 
 
-def request_finish_training():
-    """Request test and Duffy-Wurtz evaluation using the selected saved weights."""
-    return _send_command('evaluate')
+def request_test():
+    """Request final-test evaluation using the best candidate named by latest.pt."""
+    return _send_command('test')
+
+
+def request_duffy_wurtz_1993():
+    """Request Duffy-Wurtz evaluation using the best candidate named by latest.pt."""
+    return _send_command('duffy_wurtz_1993')
 
 
 def request_stop():
@@ -121,7 +129,7 @@ class EvaluationRequested(Exception):
 class RunnerControl:
     def __init__(self, log, mission_plan_path, checkpoint, mode='train'):
         self.log = log
-        self.pending = mode == 'evaluate'
+        self.pending = mode if mode in ('test', 'duffy_wurtz_1993') else None
         self.stop_requested = False
         self.announced = False
         self.checkpoint = Path(checkpoint)
@@ -154,7 +162,7 @@ class RunnerControl:
                     signal.signal(signum, handler)
 
     def _evaluate(self, signum, frame):
-        self.pending = True
+        self.pending = 'requested'
 
     def _stop(self, signum, frame):
         self.stop_requested = True
@@ -174,16 +182,31 @@ class RunnerControl:
     def check_training(self):
         self.check_stop()
         if self() and self.checkpoint.is_file():
-            raise EvaluationRequested('Evaluate saved checkpoint now')
+            raise EvaluationRequested('Evaluate the requested saved checkpoint now')
+
+    def evaluation_action(self):
+        if not self.pending:
+            return None
+        if self.pending == 'requested':
+            with _control_lock() as path:
+                current = _read_active(path)
+                action = current and current.get('requested_action')
+            if action is None:
+                action = 'test'
+            if action not in ('test', 'duffy_wurtz_1993'):
+                raise RuntimeError('Unknown requested evaluation action')
+            self.pending = action
+        return self.pending
 
     def __call__(self):
         self.check_stop()
-        if self.pending and not self.announced:
+        action = self.evaluation_action()
+        if action and not self.announced:
             self.announced = True
-            self.log.append('evaluation_requested')
-            print('Evaluation requested: use saved weights; unfinished epoch is discarded. '
+            self.log.append('evaluation_requested', role=action)
+            print(f'{action} evaluation requested: use saved weights; unfinished epoch is discarded. '
                   'If no checkpoint exists, complete the first epoch.', flush=True)
-        return self.pending
+        return action is not None
 
 
 def _lock_busy():
@@ -260,8 +283,8 @@ def launch_runner(mode='train', *, root=None):
     import subprocess
     import sys
     root = Path(root or Path(__file__).resolve().parents[2]).resolve()
-    if mode not in ('train', 'evaluate'):
-        raise ValueError('mode must be train or evaluate')
+    if mode not in ('train', 'test', 'duffy_wurtz_1993'):
+        raise ValueError('mode must be train, test, or duffy_wurtz_1993')
     # Import only for a launch: refreshing the menu does not load Torch.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from scripts.mission_control.backend.run_mission_plan import load_mission_plan, _initialize_output
@@ -275,7 +298,7 @@ def launch_runner(mode='train', *, root=None):
                {'mission_plan': mission_plan, 'git_commit': commit}.items()):
             raise RuntimeError('Existing run mission plan/revision differs; its artifacts are preserved')
     checkpoint = network / 'checkpoints/latest.pt'
-    if mode == 'evaluate' and not checkpoint.is_file():
+    if mode in ('test', 'duffy_wurtz_1993') and not checkpoint.is_file():
         raise RuntimeError('No completed checkpoint to evaluate; start training first')
     output_root = Path(mission_plan['network']['output_path'])
     if not output_root.is_dir():
@@ -289,8 +312,8 @@ def launch_runner(mode='train', *, root=None):
         _initialize_output(mission_plan, mission_plan_path.stem, commit, root=root,
                            git_branch=repository_git_status(root)['branch'])
         command = [sys.executable, '-u', str(root / 'scripts/mission_control/backend/run_mission_plan.py')]
-        if mode == 'evaluate':
-            command.append('--evaluate')
+        if mode != 'train':
+            command.append(f'--{mode}')
         with log_path.open('a') as output:
             child = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL,
                                      stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
@@ -357,11 +380,14 @@ def mission_control(*, root=None, input_fn=input, output=print):
                     output(f'\nMission plan: {mission_plan_path.stem}\nStatus: {status}')
                     output(f'Run directory: {network}')
                 show_git_status(root, network, output)
-                output(f'1: Report training log\n2: {option}\n3: Evaluate now\n4: Refresh\nQ: Exit mission control')
+                action_label = 'Start training' if option == 'Start' else option
+                output(f'1: Report training log\n2: {action_label}\n'
+                       '3: Test best validated model\n'
+                       '4: Present Duffy & Wurtz 1993\n5: Refresh\nQ: Exit mission control')
                 choice = input_fn('Choice: ').strip().upper()
                 if choice == 'Q':
                     break
-                if choice == '4':
+                if choice == '5':
                     continue
                 try:
                     if choice == '1':
@@ -369,15 +395,17 @@ def mission_control(*, root=None, input_fn=input, output=print):
                     elif choice == '2' and current:
                         _send_command('stop', current['identity'])
                         output('Stop requested. Resume training becomes available once cleanup finishes.')
-                    elif choice in ('2', '3'):
+                    elif choice in ('2', '3', '4'):
                         if current:
-                            _send_command('evaluate', current['identity'])
-                            output('Evaluation requested.')
+                            action = {'3': 'test', '4': 'duffy_wurtz_1993'}[choice]
+                            _send_command(action, current['identity'])
+                            output(f'{action} evaluation requested.')
                         else:
-                            children.append(launch_runner('train' if choice == '2' else 'evaluate', root=root))
+                            mode = {'2': 'train', '3': 'test', '4': 'duffy_wurtz_1993'}[choice]
+                            children.append(launch_runner(mode, root=root))
                             output('Runner launched in the background.')
                     else:
-                        output('Choose 1, 2, 3, 4, or Q.')
+                        output('Choose 1, 2, 3, 4, 5, or Q.')
                 except (RuntimeError, OSError, ValueError, KeyError, SystemExit) as error:
                     output(f'Cannot perform action: {error}')
             except (RuntimeError, OSError, ValueError, KeyError, SystemExit) as error:

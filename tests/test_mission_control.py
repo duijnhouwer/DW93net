@@ -49,7 +49,7 @@ class MissionControlTests(unittest.TestCase):
     def test_absent_runner_does_not_signal(self):
         with patch.object(control.signal, 'pidfd_send_signal') as send:
             with self.assertRaisesRegex(RuntimeError, 'No ready training runner'):
-                control.request_finish_training()
+                control.request_test()
             send.assert_not_called()
 
     def test_real_runner_is_found_signaled_and_unregistered(self):
@@ -71,22 +71,22 @@ with control.RunnerControl(None, 'mission_plan.toml', checkpoint) as finish:
             if line == 'READY':
                 break
         self.assertEqual(line, 'READY')
-        self.assertEqual(control.request_finish_training(), child.pid)
-        self.assertEqual(control.request_finish_training(), child.pid)
+        self.assertEqual(control.request_test(), child.pid)
+        self.assertEqual(control.request_test(), child.pid)
         self.assertEqual(control.request_stop(), child.pid)
         output, errors = child.communicate('\n', timeout=10)
         self.assertEqual(child.returncode, 0, errors)
-        self.assertIn('REQUESTED=True', output)
+        self.assertIn('REQUESTED=requested', output)
         self.assertIn('STOPPED=True', output)
         self.assertFalse((self.registry / 'runner-control.json').exists())
         with self.assertRaisesRegex(RuntimeError, 'No ready training runner'):
-            control.request_finish_training()
+            control.request_test()
 
     def test_stale_identity_never_signals_reused_pid(self):
         self.register(os.getpid(), identity={'start_ticks': '0', 'boot_id': 'old'})
         with patch.object(control.signal, 'pidfd_send_signal') as send:
             with self.assertRaisesRegex(RuntimeError, 'No ready training runner'):
-                control.request_finish_training()
+                control.request_test()
             send.assert_not_called()
 
     def test_unsupported_process_and_dead_runner_are_rejected(self):
@@ -94,24 +94,25 @@ with control.RunnerControl(None, 'mission_plan.toml', checkpoint) as finish:
         self.assertEqual(child.stdout.readline().strip(), 'READY')
         self.register(child.pid)
         with self.assertRaisesRegex(RuntimeError, 'no command handler'):
-            control.request_finish_training()
+            control.request_test()
         self.assertIsNone(child.poll())
         child.communicate('\n', timeout=10)
         with self.assertRaisesRegex(RuntimeError, 'No ready training runner'):
-            control.request_finish_training()
+            control.request_test()
 
-    def test_menu_active_stop_evaluate_refresh_and_exit(self):
+    def test_menu_active_stop_test_duffy_refresh_and_exit(self):
         record = dict(mission_plan='/repo/scripts/mission_control/mission_plan/test.toml', phase='duffy_wurtz_1993',
                       pid=123, identity={'start_ticks': '123'}, global_epoch=12)
         output = []
         with patch.object(control, 'active_runner', return_value=record) as active, \
                 patch.object(control, '_send_command') as send, \
                 patch.object(control, 'launch_runner') as launch:
-            choices = iter(['2', '3', '4', 'q'])
+            choices = iter(['2', '3', '4', '5', 'q'])
             control.mission_control(input_fn=lambda _: next(choices), output=output.append)
-        self.assertEqual(active.call_count, 4)
+        self.assertEqual(active.call_count, 5)
         self.assertEqual([c.args for c in send.call_args_list],
-                         [('stop', record['identity']), ('evaluate', record['identity'])])
+                         [('stop', record['identity']), ('test', record['identity']),
+                          ('duffy_wurtz_1993', record['identity'])])
         launch.assert_not_called()
         self.assertTrue(any('duffy_wurtz_1993' in line and 'test' in line for line in output))
         self.assertTrue(any('2: Stop' in line for line in output))
@@ -122,7 +123,8 @@ with control.RunnerControl(None, 'mission_plan.toml', checkpoint) as finish:
         (root / 'scripts/mission_control/mission_plan/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
         for existed, choice, mode, label in [(False, '2', 'train', 'Start'),
                                               (True, '2', 'train', 'Resume training'),
-                                              (True, '3', 'evaluate', 'Resume training')]:
+                                              (True, '3', 'test', 'Resume training'),
+                                              (True, '4', 'duffy_wurtz_1993', 'Resume training')]:
             if existed:
                 (root / ('test-20000101000000-' + 'c' * 40)).mkdir(exist_ok=True)
                 (root / ('test-20000101000000-' + 'c' * 40) / 'run.json').touch()
@@ -289,7 +291,7 @@ with control.RunnerControl(None, 'mission_plan.toml', checkpoint) as finish:
         (self.registry / 'latest.pt').unlink()
         with patch.object(control.signal, 'pidfd_send_signal') as send:
             with self.assertRaisesRegex(RuntimeError, 'No completed checkpoint'):
-                control.request_finish_training()
+                control.request_test()
             with self.assertRaisesRegex(RuntimeError, 'runner changed'):
                 control._send_command('stop', {'start_ticks': 'old'})
             send.assert_not_called()

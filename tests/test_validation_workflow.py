@@ -57,8 +57,9 @@ class ValidationWorkflowTests(unittest.TestCase):
                     patch.object(module, 'generate_dog_dataset', side_effect=generate_with_thread_check) as generate:
                 module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
-                             ['validate', 'duffy_wurtz_1993', 'train', 'test'])
-            self.assertEqual(generation_threads, [('validate', 2), ('duffy_wurtz_1993', 2), ('train', 2), ('test', 2)])
+                             ['validate', 'train', 'test', 'duffy_wurtz_1993'])
+            self.assertEqual(generation_threads, [('validate', 2), ('train', 2), ('test', 2),
+                                                  ('duffy_wurtz_1993', 2)])
             self.assertEqual(torch.get_num_threads(), previous_threads)
             self.assertEqual(evaluation_order, [('validate', 1), ('validate', 2), ('test', 1), ('duffy_wurtz_1993', 1)])
             network = root / 'output' / TEST_RUN_NAME

@@ -74,12 +74,13 @@ when new runs are created.
 - **1 — Report training log:** run `report_training_log.py` for the displayed run,
   with `--dashboard-gui` to open a dedicated dashboard window. Closing the window
   deletes its temporary files and returns to the menu.
-- **2 — Start / Stop / Resume training:** start a new mission plan, stop the active worker, or
+- **2 — Start training / Stop / Resume training:** start a new mission plan, stop the active worker, or
   resume training from the latest completed checkpoint.
-- **3 — Evaluate now:** interrupt training and evaluate the **best validation
-  checkpoint**, first on the final test set and then the Duffy-Wurtz set. Requires
-  a completed checkpoint. When idle, launch evaluation without training.
-- **4 — Refresh:** reread worker status and display the menu again.
+- **3 — Test best validated model:** interrupt training and evaluate the candidate named by
+  `latest.pt` on the final test set. The set is generated if absent.
+- **4 — Present Duffy & Wurtz 1993:** interrupt training and evaluate that same candidate
+  on the Duffy-Wurtz set. The set is generated if absent.
+- **5 — Refresh:** reread worker status and display the menu again.
 - **Q — Exit mission control:** exit the menu; the background worker continues.
   Ctrl+C has the same effect in the menu.
 
@@ -97,20 +98,30 @@ Torch to refresh status. Launching requires the training environment and the sam
 clean, committed mission plan/source identity as the runner. Existing run artifacts are
 never replaced to bypass a revision mismatch.
 
-For Python callers, `scripts.mission_control.mission_control.request_finish_training()` requests
-evaluation and `request_stop()` requests a stop. The helper discovers the active
+For Python callers, `scripts.mission_control.mission_control.request_test()` requests final-test
+evaluation, `request_duffy_wurtz_1993()` requests Duffy-Wurtz evaluation, and `request_stop()`
+requests a stop. The helper discovers the active
 runner, validates its process identity and signal handlers, and uses a Linux PID
 file descriptor to prevent signaling a reused PID. Commands return after delivery;
 refresh to check progress. The menu controls one runner per user on this machine.
 It cannot retrofit old, already-running Python processes without these handlers.
 
-The updated runner uses SIGUSR1 for evaluation and SIGUSR2 for stopping; its signal
+The updated runner uses SIGUSR1 for the requested evaluation and SIGUSR2 for stopping; its signal
 handlers only set flags. Requests are not persisted across restarts: starting the
-runner normally resumes training; `--evaluate` explicitly selects evaluation.
+runner normally resumes training; `--test` and `--duffy_wurtz_1993` explicitly select evaluation.
 
-The final results are cached separately as `final/test-results.json` and
+The final aggregate results are cached separately as `final/test-results.json` and
 `final/duffy_wurtz_1993-results.json`, identified by exact model/dataset hashes,
-evaluation settings, and revision. Both are also recorded in `training_log.jsonl`.
+evaluation settings, and revision. Per-stimulus report streams live beside them:
+`final/final_test_log.jsonl` and `final/duffy_wurtz_log.jsonl`. Each evaluation begins
+with `evaluation_started`, including the selected model path, epoch, commit, validation
+loss, and evaluation identity; it then records one `stimulus_result` per item with
+`dx`, `dz`, `yaw`, `output_dx`, `output_dz`, and `output_yaw`, followed by
+`evaluation_completed` with aggregate metrics. The final event must be that matching
+completion record and must end in a newline. Otherwise mission control deletes the
+interrupted or stale report and recreates it for the best candidate in `latest.pt`.
+A cached aggregate is reused only with that complete report. Both aggregate results are
+also recorded in `training_log.jsonl`.
 Duffy-Wurtz results include circular signed heading bias grouped by overlay retinal
 direction (positive `rot_deg` moves toward increasing columns in this renderer). Positive aligned bias
 means toward the overlay motion. These are deviations from the separate component
