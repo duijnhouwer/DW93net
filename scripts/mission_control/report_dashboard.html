@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Training progress</title>
+<style>
+:root{color-scheme:light;--bg:#f3f5f8;--ink:#172438;--muted:#596779;--line:#dee4ec;--blue:#1668bd;--orange:#bc520b;--green:#15806b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:32px}h1{font-size:32px;letter-spacing:-1px;margin:6px 0}h2{font-size:17px;margin:0 0 4px}p{color:var(--muted);line-height:1.5;margin:6px 0 18px}.eyebrow{text-transform:uppercase;letter-spacing:2px;font-size:12px;color:var(--green);font-weight:700}.controls{display:flex;flex-wrap:wrap;gap:14px;margin:24px 0}label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}select,input,button{font:inherit;color:var(--ink);background:white;border:1px solid #b5c0ce;border-radius:7px;padding:9px}select{max-width:100%}.wide{flex:1 1 380px;min-width:0}input{width:100px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}.stat,.chart{background:white;border:1px solid var(--line);border-radius:13px;padding:20px}.stat span{display:block;color:var(--muted);font-size:12px}.stat strong{display:block;font-size:25px;font-weight:600;margin:7px 0}.stat small{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.chart p{font-size:12px;margin:0 0 8px}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;min-height:22px}.legend span:before{content:'';display:inline-block;width:16px;height:3px;background:var(--color);vertical-align:middle;margin-right:6px}.plot{position:relative}svg{display:block;width:100%;height:auto;overflow:visible}svg text{font:12px system-ui;fill:var(--muted)}.tip{position:absolute;pointer-events:none;background:#172438;color:white;padding:10px;border-radius:8px;font-size:12px;white-space:pre-line;max-width:260px;z-index:2;box-shadow:0 4px 20px #0002}.note{font-size:12px;margin-top:20px}button{cursor:pointer;align-self:end}#path{overflow-wrap:anywhere} @media(max-width:800px){main{padding:18px}.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}@media print{.controls{display:none}.chart,.stat{break-inside:avoid}main{padding:0}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">DW93NET / Training observatory</div><h1>Training progress</h1>
+<p id="path"></p>
+<div class="controls">
+<label class="wide">Run<select id="run"></select></label>
+<label class="wide">Validation dataset<select id="dataset"></select></label>
+<label>Horizontal axis<select id="axis"><option value="epoch">Epoch</option><option value="hours">Elapsed hours</option></select></label>
+<label>Loss scale<select id="scale"><option value="log">Logarithmic</option><option value="linear">Linear</option></select></label>
+<label>Speed / vector errors<select id="units"><option value="relative">Relative (%)</option><option value="absolute">Absolute</option></select></label>
+<label>First epoch<input id="first" type="number" min="0" step="1"></label>
+<label>Last epoch<input id="last" type="number" min="0" step="1"></label>
+<button id="reset">Show all epochs</button>
+</div>
+<div class="stats" id="stats"></div><div class="grid" id="charts"></div>
+<p class="note">Snapshot of recorded measurements only. Rerun the report to refresh. Hover over a chart for values. Dashed vertical markers indicate the best validation-loss checkpoint for the selected dataset. Latest record per epoch is shown; missing values are gaps. Test and sampled progress evaluations are excluded from these validation curves. Elapsed hours include pauses and dataset generation; epoch durations do not include between-set generation. Speed and vector percentages are mean per-sample errors relative to true speed and can exceed 100%.</p>
+</main>
+<script id="training-data" type="application/json">__TRAINING_DATA__</script>
+<script>
+'use strict';
+const runs=JSON.parse(document.getElementById('training-data').textContent);
+const $=id=>document.getElementById(id), ns='http://www.w3.org/2000/svg';
+const colors=['#1668bd','#bc520b','#15806b'];
+const fmt=n=>n==null?'Not recorded':Number(n).toLocaleString(undefined,{maximumSignificantDigits:5});
+function option(el,text,value){const o=document.createElement('option');o.textContent=text;o.value=value;el.append(o)}
+runs.forEach((r,i)=>option($('run'),r.name+' — '+r.id,i));
+function current(){return runs[Number($('run').value)]}
+function validation(){const r=current();return r.validation[Number($('dataset').value)]?.rows||[]}
+function resetRange(){const rows=[...current().training,...validation()];$('first').value=rows.length?Math.min(...rows.map(r=>r.epoch)):0;$('last').value=rows.length?Math.max(...rows.map(r=>r.epoch)):0}
+function chooseRun(){const r=current();$('dataset').replaceChildren();r.validation.forEach((g,i)=>option($('dataset'),g.label,i));if(!r.validation.length)option($('dataset'),'No validation measurements',0);$('dataset').value=Math.max(0,r.validation.length-1);resetRange();draw()}
+function svgNode(tag,attrs,text){const el=document.createElementNS(ns,tag);for(const [key,value] of Object.entries(attrs))el.setAttribute(key,value);if(text!==undefined)el.textContent=text;return el}
+function card(label,value,detail){const el=document.createElement('div');el.className='stat';for(const [tag,text] of [['span',label],['strong',value],['small',detail]]){const n=document.createElement(tag);n.textContent=text;el.append(n)}$('stats').append(el)}
+function draw(){
+ const r=current(),v=validation(),good=v.filter(p=>p.validation_loss!=null),best=good.reduce((a,b)=>!a||b.validation_loss<a.validation_loss?b:a,null);
+ $('path').textContent=r.id+' · Last log event: '+(r.latest==null?'not recorded':new Date(r.latest*1000).toLocaleString());
+ $('stats').replaceChildren();const t=r.training.at(-1),latest=v.at(-1);
+ card('Completed epochs',String(r.training.length),t?'Latest completed: '+t.epoch:'No completed epochs');
+ card('Best validation loss',fmt(best?.validation_loss),best?'Checkpoint epoch '+best.epoch:'No validation measurements');
+ card('Latest validation loss',fmt(latest?.validation_loss),latest?'Checkpoint epoch '+latest.epoch:'No validation measurements');
+ card('Latest epoch duration',t?.epoch_wall_duration_s!=null?fmt(t.epoch_wall_duration_s)+' s':'Not recorded','Includes validation, retries and saving');
+ $('charts').replaceChildren();const relative=$('units').value==='relative';
+ const specs=[
+ ['Training & validation loss','Normalized MSE',[['Training',r.training,'training_loss'],['Validation',v,'validation_loss']],$('scale').value==='log'],
+ ['Heading error','Mean absolute wrapped error (degrees)',[['Validation',v,'heading_mae_deg']],false],
+ ['Speed error',relative?'Mean relative absolute error (%)':'Mean absolute error (scene units / step)',[['Validation',v,relative?'speed_relative_mae_pct':'translation_speed_mae']],false],
+ ['Yaw error','Mean absolute rotation error (degrees / step)',[['Validation',v,'rotation_mae_deg']],false],
+ ['Translation-vector error (dx, dz)',relative?'Mean relative Euclidean vector-tip error (%)':'Mean Euclidean vector-tip error (scene units / step)',[['Validation',v,relative?'vector_tip_relative_mae_pct':'translation_vector_tip_mae']],false],
+ ['Epoch duration','Seconds',[['Total wall time',r.training,'epoch_wall_duration_s'],['Training',r.training,'training_duration_s'],['Validation',r.training,'validation_duration_s']],false]];
+ for(const [title,unit,series,log,divisor=1] of specs)chart(title,unit,series,log,divisor,best);
+}
+function chart(title,unit,series,log,divisor=1,best=null){
+ // The optional divisor is explicit so duration and metric charts share the renderer.
+ const article=document.createElement('section');article.className='chart';const h=document.createElement('h2');h.textContent=title;article.append(h);const subtitle=document.createElement('p');subtitle.textContent=unit;article.append(subtitle);
+ const legend=document.createElement('div');legend.className='legend';series.forEach(([label],i)=>{const span=document.createElement('span');span.textContent=label;span.style.setProperty('--color',colors[i]);legend.append(span)});article.append(legend);
+ const wrap=document.createElement('div');wrap.className='plot';article.append(wrap);const svg=svgNode('svg',{viewBox:'0 0 640 280',role:'img','aria-label':title+' over '+($('axis').value==='epoch'?'epochs':'elapsed hours')});wrap.append(svg);$('charts').append(article);
+ const lo=Number($('first').value),hi=Number($('last').value),r=current(),hours=$('axis').value==='hours';
+ const xValue=p=>hours?(p.time==null||r.start==null?null:(p.time-r.start)/3600):p.epoch;
+ const groups=series.map(([label,rows,key])=>({label,points:rows.filter(p=>p.epoch>=lo&&p.epoch<=hi).map(p=>({epoch:p.epoch,x:xValue(p),y:p[key]==null?null:p[key]/divisor}))}));
+ const valid=groups.flatMap(g=>g.points).filter(p=>p.x!=null&&p.y!=null&&(!log||p.y>0));
+ if(!valid.length){svg.append(svgNode('text',{x:320,y:135,'text-anchor':'middle'},'No recorded values in this range'));return}
+ let xmin=Math.min(...valid.map(p=>p.x)),xmax=Math.max(...valid.map(p=>p.x));if(xmin===xmax){xmin-=.5;xmax+=.5}
+ const yval=y=>log?Math.log10(y):y;let ymin=log?Math.min(...valid.map(p=>yval(p.y))):0,ymax=Math.max(...valid.map(p=>yval(p.y)));if(ymax===ymin)ymax=ymin+1;const pad=(ymax-ymin)*.08;ymax+=pad;if(log)ymin-=pad;
+ const left=76,right=622,top=14,bottom=235,X=x=>left+(x-xmin)/(xmax-xmin)*(right-left),Y=y=>bottom-(yval(y)-ymin)/(ymax-ymin)*(bottom-top);
+ for(let i=0;i<=4;i++){const y=bottom-(bottom-top)*i/4,value=ymin+(ymax-ymin)*i/4;svg.append(svgNode('line',{x1:left,x2:right,y1:y,y2:y,stroke:'#e5e9ef'}));svg.append(svgNode('text',{x:left-10,y:y+4,'text-anchor':'end'},Number(log?10**value:value).toLocaleString(undefined,{maximumSignificantDigits:3})));const x=xmin+(xmax-xmin)*i/4;svg.append(svgNode('text',{x:X(x),y:bottom+20,'text-anchor':'middle'},Number(x).toLocaleString(undefined,{maximumFractionDigits:1})))}
+ svg.append(svgNode('text',{x:350,y:278,'text-anchor':'middle'},hours?'Elapsed hours since first recorded event':'Epoch'));
+ if(best){const bx=xValue(best);if(bx!=null&&bx>=xmin&&bx<=xmax)svg.append(svgNode('line',{x1:X(bx),x2:X(bx),y1:top,y2:bottom,stroke:'#83918e','stroke-dasharray':'4 5'}))}
+ groups.forEach((g,i)=>{let d='',connected=false;for(const p of g.points){if(p.x==null||p.y==null||(log&&p.y<=0)){connected=false;continue}d+=(connected?'L':'M')+X(p.x)+' '+Y(p.y)+' ';connected=true}svg.append(svgNode('path',{d,fill:'none',stroke:colors[i],'stroke-width':2,'stroke-linejoin':'round'}));for(const p of g.points){if(p.x==null||p.y==null||(log&&p.y<=0))continue;const dot=svgNode('circle',{cx:X(p.x),cy:Y(p.y),r:2.3,fill:colors[i]});dot.append(svgNode('title',{},g.label+' · epoch '+p.epoch+': '+fmt(p.y)));svg.append(dot)}});
+ const tip=document.createElement('div');tip.className='tip';tip.hidden=true;wrap.append(tip);const cursor=svgNode('line',{y1:top,y2:bottom,stroke:'#596779','stroke-dasharray':'2 3',visibility:'hidden'});svg.append(cursor);
+ svg.addEventListener('pointermove',event=>{const box=svg.getBoundingClientRect(),px=(event.clientX-box.left)/box.width*640,x=xmin+(px-left)/(right-left)*(xmax-xmin);const nearest=valid.reduce((a,b)=>Math.abs(b.x-x)<Math.abs(a.x-x)?b:a);cursor.setAttribute('x1',X(nearest.x));cursor.setAttribute('x2',X(nearest.x));cursor.setAttribute('visibility','visible');const lines=['Epoch '+nearest.epoch+(hours?' · '+fmt(nearest.x)+' h':'')];groups.forEach(g=>{const p=g.points.find(p=>p.epoch===nearest.epoch);lines.push(g.label+': '+fmt(p?.y))});tip.textContent=lines.join('\n');tip.hidden=false;tip.style.left=Math.max(0,Math.min(event.clientX-box.left+12,box.width-260))+'px';tip.style.top='12px'});
+ svg.addEventListener('pointerleave',()=>{tip.hidden=true;cursor.setAttribute('visibility','hidden')});
+}
+$('run').addEventListener('change',chooseRun);$('dataset').addEventListener('change',()=>{resetRange();draw()});for(const id of ['axis','scale','units','first','last'])$(id).addEventListener('change',draw);$('reset').addEventListener('click',()=>{resetRange();draw()});chooseRun();
+</script></body></html>

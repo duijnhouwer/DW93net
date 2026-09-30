@@ -11,11 +11,16 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from test_training_recipe import module, recipe_text
+from test_training_recipe import module, recipe_text, TEST_RUN_NAME
 from evaluation import duffy_wurtz_summary, validate_inference_contract
 
 
 class FinishTrainingTests(unittest.TestCase):
+    def setUp(self):
+        timestamp = patch('run_revision.commit_timestamp', return_value='20000101000000')
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
+
     def tiny_recipe(self, directory):
         root = Path(directory)
         (root / 'output').mkdir()
@@ -53,7 +58,7 @@ class FinishTrainingTests(unittest.TestCase):
             with patch.object(engine, '_save_latest', side_effect=save), \
                     patch.object(module, 'evaluate_checkpoint', side_effect=evaluate):
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
-            network = root / 'output/smoke'
+            network = root / 'output' / TEST_RUN_NAME
             latest_path = network / 'checkpoints/latest.pt'
             self.assertEqual(torch.load(latest_path, weights_only=True)['global_epoch'], 1)
             self.assertFalse((network / 'final/duffy_wurtz_1993-results.json').exists())
@@ -94,7 +99,7 @@ class FinishTrainingTests(unittest.TestCase):
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(generated, [('validate', False), ('duffy_wurtz_1993', True),
                                          ('train', False), ('test', False)])
-            checkpoint = torch.load(root / 'output/smoke/checkpoints/latest.pt', weights_only=True)
+            checkpoint = torch.load(root / 'output' / TEST_RUN_NAME / 'checkpoints/latest.pt', weights_only=True)
             self.assertEqual(checkpoint['global_epoch'], 1)
 
     def test_stop_mid_training_discards_epoch_and_skips_evaluation(self):
@@ -112,7 +117,7 @@ class FinishTrainingTests(unittest.TestCase):
             with patch.object(engine, '_save_latest', side_effect=save), \
                     patch.object(module, 'evaluate_model', side_effect=AssertionError('no final evaluation')):
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
-            latest_path = root / 'output/smoke/checkpoints/latest.pt'
+            latest_path = root / 'output' / TEST_RUN_NAME / 'checkpoints/latest.pt'
             before = latest_path.read_bytes()
             real_train = module.train_recipe_set
 
@@ -127,7 +132,7 @@ class FinishTrainingTests(unittest.TestCase):
                     patch.object(module, 'evaluate_checkpoint', side_effect=AssertionError('no evaluation')):
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(latest_path.read_bytes(), before)
-            events = module.EventLog(root / 'output/training_log.jsonl', str(latest_path.parent))
+            events = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(latest_path.parent))
             self.assertEqual(len(events.events('run_stopped')), 2)
             self.assertEqual(len(events.events('run_completed')), 0)
 
@@ -167,7 +172,7 @@ class FinishTrainingTests(unittest.TestCase):
                 real_save(checkpoint, *args)
                 os.kill(os.getpid(), signal.SIGUSR1)
 
-            network = root / 'output/smoke'
+            network = root / 'output' / TEST_RUN_NAME
             generation_roles = []
             with patch.object(module, 'evaluate_checkpoint', side_effect=evaluate), \
                     patch.object(engine, '_save_latest', side_effect=save):
@@ -187,7 +192,7 @@ class FinishTrainingTests(unittest.TestCase):
                     self.assertEqual(final['global_epoch'], 1)
             self.assertEqual(generation_roles, [
                 ['validate', 'duffy_wurtz_1993', 'train', 'test'], [], ['train']])
-            log = module.EventLog(root / 'output/training_log.jsonl', str(network / 'checkpoints'))
+            log = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(network / 'checkpoints'))
             self.assertEqual([e['global_epoch'] for e in log.events('epoch_completed')], [1, 2, 3])
 
     def test_named_protocol_only_relaxes_superimposition(self):

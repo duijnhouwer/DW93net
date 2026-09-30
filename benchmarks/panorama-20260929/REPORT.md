@@ -19,15 +19,11 @@ These are one-batch feasibility checks, not throughput or accuracy benchmarks.
 Only about 224–232 MiB separated peak reserved memory from initially free memory.
 Other GPU applications, persistent training state, or allocator behavior may
 consume that margin during a longer run. If that occurs, explicitly reduce the
-batch size (for example to 32) and repeat the preflight; keep 21,600 columns.
+batch size (for example to 32) and recheck GPU memory usage; keep 21,600 columns.
 
 The probe was run against the implementation working tree based on commit
 `3c21b01`. CUDA required execution outside the desktop filesystem sandbox.
 Raw results are in `amp.json` and `float32.json`.
 
-Reproduce from the repository root:
-
-```bash
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/preflight_panorama.py --batch-size 64
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/preflight_panorama.py --batch-size 64 --float32
-```
+The standalone probe script was subsequently removed; these results are retained
+as a historical record.

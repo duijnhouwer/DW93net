@@ -14,12 +14,14 @@ import tomllib
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
-from parallel_stimuli import Prefetch
-from run_lock import run_lock
-from mission_control import RunnerControl, RunnerStopped, EvaluationRequested, repository_git_status
+from scripts.mission_control.parallel_stimuli import Prefetch
+from scripts.mission_control.run_lock import run_lock
+from scripts.mission_control.mission_control import RunnerControl, RunnerStopped, EvaluationRequested, repository_git_status
+from run_revision import revision, run_directory_name
 
 from checkpoints import load_checkpoint
 from training_log import EventLog, training_log
@@ -270,11 +272,11 @@ def discover_recipe(root=ROOT):
     return path
 
 
-def _initialize_output(recipe, network_name, commit, *, git_branch=None):
+def _initialize_output(recipe, network_name, commit, *, git_branch=None, root=ROOT):
     output_root = Path(recipe['network']['output_path']).resolve()
     if not output_root.is_dir() or not os.access(output_root, os.W_OK):
         raise ValueError(f'output_path must already exist and be writable: {output_root}')
-    network_dir = output_root / network_name
+    network_dir = output_root / run_directory_name(network_name, commit, root=root)
     expected = {'recipe': recipe, 'git_commit': commit}
     manifest = network_dir / 'run.json'
     if network_dir.exists():
@@ -453,8 +455,7 @@ def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, con
 
 def _select_final(checkpoint_dir, final_dir, recipe, commit):
     """Promote only the best candidate committed by a healthy completed epoch."""
-    log = EventLog(Path(recipe.get('network', {}).get('output_path', checkpoint_dir.parent))
-                   / 'training_log.jsonl', str(checkpoint_dir.resolve()))
+    log = EventLog(checkpoint_dir.parent / 'training_log.jsonl', str(checkpoint_dir.resolve()))
     latest = load_checkpoint(checkpoint_dir / 'latest.pt', resume=True, expected_commit=commit)
     name = latest['best_candidate']
     if not re.fullmatch(r'epoch-\d+\.pt', name):
@@ -480,14 +481,18 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, 
         output_root = Path(recipe['network']['output_path'])
         if not output_root.is_dir() or not os.access(output_root, os.W_OK):
             raise ValueError(f'output_path must already exist and be writable: {output_root}')
-        run_id = str((Path(recipe['network']['output_path']) / recipe_path.stem / 'checkpoints').resolve())
-        with training_log(Path(recipe['network']['output_path']) / 'training_log.jsonl', run_id) as log:
+        if require_clean:
+            commit = committed_revision(root, commit)
+            if load_recipe(recipe_path) != recipe:
+                raise RuntimeError('Recipe changed while starting training')
+        elif commit is None:
+            commit = revision(root)
+        checkpoint_dir, final_dir = _initialize_output(
+            recipe, recipe_path.stem, commit,
+            git_branch=repository_git_status(root)['branch'], root=root)
+        run_id = str(checkpoint_dir.resolve())
+        with training_log(checkpoint_dir.parent / 'training_log.jsonl', run_id) as log:
             print(f'Starting/resuming training recipe: {recipe_path}', flush=True)
-            if require_clean:
-                commit = committed_revision(root, commit)
-                # Re-read after checking Git so the run uses the verified recipe.
-                if load_recipe(recipe_path) != recipe:
-                    raise RuntimeError('Recipe changed while starting training')
             prefetch = Prefetch(recipe, lock_fds=lock_fds)
             prefetch.log_run_id = run_id
             log.append('run_started', recipe_path=str(recipe_path), git_commit=commit)
@@ -495,7 +500,8 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, 
                 try:
                     result = _run_recipe(recipe_path, root=root, commit=commit,
                                          require_clean=require_clean, prefetch=prefetch,
-                                         recipe=recipe, finish=finish)
+                                         recipe=recipe, finish=finish,
+                                         checkpoint_dir=checkpoint_dir, final_dir=final_dir)
                 except RunnerStopped as error:
                     finish.set_phase('stopping')
                     log.append('run_stopped', git_commit=commit, reason='mission_control')
@@ -509,7 +515,8 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, 
 
 
 
-def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe, finish):
+def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe, finish,
+                checkpoint_dir, final_dir):
     """Execute or resume the one committed recipe in ``root/recipe``."""
     root = Path(root).resolve()
     recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
@@ -534,9 +541,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     if require_clean:
         run_fields['_repo_root'] = str(root)
     network_name = recipe_path.stem
-    checkpoint_dir, final_dir = _initialize_output(recipe, network_name, commit,
-                                                   git_branch=repository_git_status(root)['branch'])
-    log = EventLog(Path(recipe['network']['output_path']) / 'training_log.jsonl',
+    log = EventLog(checkpoint_dir.parent / 'training_log.jsonl',
                    str(checkpoint_dir.resolve()))
     finish.check_stop()
     if finish.record['mode'] == 'evaluate' and not (checkpoint_dir / 'latest.pt').is_file():
@@ -632,7 +637,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
 
             train_recipe_set(RecipeTrainingSettings(
                 root_folder=str(cache), checkpoint_dir=str(checkpoint_dir), git_commit=commit,
-                log_path=str(Path(recipe['network']['output_path']) / 'training_log.jsonl'),
+                log_path=str(checkpoint_dir.parent / 'training_log.jsonl'),
                 training_set_index=set_index, training_seed=seed,
                 is_final_training_set=set_index == training['number_of_sets'] - 1,
                 epochs_per_set=training['epochs_per_set'], shuffle_seed=training['shuffle_seed'],

@@ -56,7 +56,7 @@ held-out seeds must differ, and training seeds must start above all three.
 From the repository root, use the training environment:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/mission_control.py
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/mission_control.py
 ```
 
 The menu shows the active recipe and phase (preparing datasets, training,
@@ -68,12 +68,15 @@ without recorded branch metadata show “not recorded”; branch names are saved
 when new runs are created.
 
 
-- **1 — Start / Stop / Resume training:** start a new recipe, stop the active worker, or
+- **1 — Report training log:** run `report_training_log.py` for the displayed run,
+  with `--dashboard-gui` to open a dedicated dashboard window. Closing the window
+  deletes its temporary files and returns to the menu.
+- **2 — Start / Stop / Resume training:** start a new recipe, stop the active worker, or
   resume training from the latest completed checkpoint.
-- **2 — Evaluate now:** interrupt training and evaluate the **best validation
+- **3 — Evaluate now:** interrupt training and evaluate the **best validation
   checkpoint**, first on the final test set and then the Duffy-Wurtz set. Requires
   a completed checkpoint. When idle, launch evaluation without training.
-- **3 — Refresh:** reread worker status and display the menu again.
+- **4 — Refresh:** reread worker status and display the menu again.
 - **Q — Exit mission control:** exit the menu; the background worker continues.
   Ctrl+C has the same effect in the menu.
 
@@ -86,12 +89,12 @@ the best checkpoint selected for evaluation. An unfinished training set is reuse
 The configured set limit and minimum-learning-rate stop remain terminal.
 
 The detached worker writes console output to
-`<output_path>/<recipe-name>-mission-control.log`. The menu itself does not need
+`<output_path>/<run-directory-name>/mission-control.log`. The menu itself does not need
 Torch to refresh status. Launching requires the training environment and the same
 clean, committed recipe/source identity as the runner. Existing run artifacts are
 never replaced to bypass a revision mismatch.
 
-For Python callers, `scripts.mission_control.request_finish_training()` requests
+For Python callers, `scripts.mission_control.mission_control.request_finish_training()` requests
 evaluation and `request_stop()` requests a stop. The helper discovers the active
 runner, validates its process identity and signal handlers, and uses a Linux PID
 file descriptor to prevent signaling a reused PID. Commands return after delivery;
@@ -125,7 +128,7 @@ the new runner.
 Edit the recipe, commit the recipe and all code changes, then run:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/mission_control.py
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/mission_control.py
 ```
 
 Only one recipe run per user may be active on this machine, regardless of
@@ -138,7 +141,22 @@ users, or standalone tools that do not acquire it.
 
 The runner requires a clean commit and CUDA by default. For a recipe named
 `translation_only.toml`, it creates
-`<output_path>/translation_only/{checkpoints,final,provenance}` plus `run.json`.
+`<output_path>/translation_only-<YYYYmmDDHHMMSS>-<full-commit-id>/`, containing
+`checkpoints/`, `final/`, `provenance/`, `run.json`, and `training_log.jsonl`. The timestamp is the Git
+commit's **committer time in UTC**, not the training start time. The commit ID is
+all 40 lowercase hexadecimal characters. For example:
+`trans_rot-20260930131523-0123456789abcdef0123456789abcdef01234567`.
+The same recipe and commit resolve to the same run directory; a new commit gets
+a separate directory. Mission control uses this identity for start/resume,
+evaluation, reports, and console-log naming. Each run owns its `training_log.jsonl`, inside that commit-specific directory.
+Training, background generation, and evaluation all write to this file; its run ID
+is the absolute checkpoint-directory path.
+
+Existing recipe-only directories are preserved but are not automatically resumed
+or migrated by this naming scheme. The standalone log reporter can still report
+their recorded measurements by their original run IDs. Existing shared logs at
+the output root are preserved; new runs do not append to them.
+
 The manifest records the exact Git commit and recipe. Resume requires that same
 commit and a clean working tree. Do not edit the repository while a run is active.
 Before each dataset generation (including background generation), training-set
@@ -160,7 +178,7 @@ including optimizer, gradient-scaler, and scheduler tensors when present.
 
 The fallback stays active for all later epochs, datasets, and restarts, even if
 the recipe permits AMP/TF32. Actual precision flags are saved in checkpoints;
-`<output_path>/training_log.jsonl` records each numerical failure and the precision
+`<output_path>/<run-directory-name>/training_log.jsonl` records each numerical failure and the precision
 switch before retrying. On restart it supplies the persistent fallback policy;
 keep this file alongside the checkpoints. The recipe and learning-rate policy
 are not changed by recovery.
@@ -208,15 +226,35 @@ Besides absolute errors and RMSE, they include:
 - Counts excluded from direction or relative metrics because the relevant vector
   length is effectively zero (`<= 1e-12`); undefined aggregates are JSON `null`.
 
-Inspect recorded progress without loading checkpoints or rerunning inference:
+Print a readable terminal report without loading checkpoints or rerunning inference:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/report_training_log.py \
-  /home/jacob/Documents/dw93net_output/training_log.jsonl
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/report_training_log.py \
+  /home/jacob/Documents/dw93net_output/RUN_DIRECTORY/training_log.jsonl
 ```
 
-This prints a Markdown report with separate runs, epoch timings, failures/fallbacks,
-and evaluation tables. `--run-id /absolute/path/to/checkpoints` selects one run.
+Text is the default and creates no files or windows. The report includes completed
+and latest epochs, duration in seconds, the best checkpoint and its validation
+errors for each dataset, epoch timings/losses, failures/fallbacks, and evaluation
+tables. `--run-id /absolute/path/to/checkpoints` selects one run.
+
+Add `--dashboard-gui` to open the graphical dashboard in a dedicated window. Its
+`dw92net_trainging_dashboard.html` file lives in a unique system temporary directory,
+which is deleted when the window closes, on viewer failure, or on Ctrl+C. The
+command waits for the window to close; nothing is saved beside training artifacts.
+The GUI requires Linux GJS, GTK 3, and WebKit2 4.1 (available on this machine);
+terminal reporting needs only Python's standard library. No network connection is
+needed. The old `--text`, `--output`, and `--no-open` options are removed.
+
+The dashboard shows training and validation loss, validation heading/speed/yaw/
+translation-vector errors, and epoch durations in seconds. Choose epoch or elapsed
+hours, linear or logarithmic loss, absolute or relative speed/vector errors, and
+an epoch range. Hover for exact values. Best validation-loss checkpoints are marked.
+Separate validation datasets have separate selections; test and sampled progress
+evaluations are not mixed into these curves. Only loss is recorded for training;
+the error charts show validation measurements. The report is a snapshot: rerun it
+to refresh.
+
 Compare measurements only on matching datasets/splits and sample selections.
 Validation runs after every epoch; final testing evaluates only the selected model.
 Use validation, rather than repeated test-set feedback, when making model-selection decisions.
@@ -339,8 +377,8 @@ publishing `dog.json`, and the loader validates shape and dtype.
 From the repository root, evaluate saved checkpoints with:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py \
-  --checkpoints /absolute/output/translation_only/checkpoints \
+/home/jacob/venvs/nvidia/bin/python scripts/archive/evaluate_progress.py \
+  --checkpoints /absolute/output/translation_only-YYYYmmDDHHMMSS-FULL_COMMIT_ID/checkpoints \
   --data /absolute/validation/cache/parameter-set/dog
 ```
 
@@ -352,7 +390,7 @@ simple translation recovery works.
 
 The command uses 256 seeded validation examples, CPU inference, and no worker
 processes by default. It appends a sample manifest and per-checkpoint metrics,
-timings, and bin breakdowns to the central `training_log.jsonl` in the run's output
+timings, and bin breakdowns to the run’s `training_log.jsonl` in its commit-specific output
 folder (`--log` overrides the path). Each evaluation has a unique session ID, so
 different subsets or splits are not silently mixed. Reports and plots are derived
 from those logged results; no separate metric JSON files are written.

@@ -5,6 +5,10 @@ import fcntl
 import os
 from pathlib import Path
 import signal
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+from run_revision import run_directory_name
 
 
 def _registry():
@@ -193,14 +197,14 @@ def _lock_busy():
         return False
 
 
-def _recipe_info(root):
+def _recipe_info(root, commit=None):
     import tomllib
     paths = sorted((root / 'recipe').glob('*.toml'))
     if len(paths) != 1:
         raise RuntimeError('Expected exactly one recipe/*.toml file')
     recipe_path = paths[0]
     recipe = tomllib.loads(recipe_path.read_text())
-    network = Path(recipe['network']['output_path']) / recipe_path.stem
+    network = Path(recipe['network']['output_path']) / run_directory_name(recipe_path.stem, commit, root=root)
     return recipe_path, recipe, network
 
 
@@ -255,16 +259,16 @@ def launch_runner(mode='train', *, root=None):
     """Launch a detached runner; output goes to its mission-control log."""
     import subprocess
     import sys
-    root = Path(root or Path(__file__).resolve().parents[1]).resolve()
+    root = Path(root or Path(__file__).resolve().parents[2]).resolve()
     if mode not in ('train', 'evaluate'):
         raise ValueError('mode must be train or evaluate')
     # Import only for a launch: refreshing the menu does not load Torch.
-    sys.path.insert(0, str(root / 'scripts'))
-    from run_training_recipe import load_recipe
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.mission_control.run_training_recipe import load_recipe, _initialize_output
     from run_revision import committed_revision
-    recipe_path, _, network = _recipe_info(root)
-    recipe = load_recipe(recipe_path)
     commit = committed_revision(root)
+    recipe_path, _, network = _recipe_info(root, commit)
+    recipe = load_recipe(recipe_path)
     if network.exists():
         manifest = json.loads((network / 'run.json').read_text())
         if any(manifest.get(key) != value for key, value in
@@ -276,11 +280,15 @@ def launch_runner(mode='train', *, root=None):
     output_root = Path(recipe['network']['output_path'])
     if not output_root.is_dir():
         raise RuntimeError('Configured output directory must already exist')
-    log_path = output_root / f'{recipe_path.stem}-mission-control.log'
+    log_path = network / 'mission-control.log'
     with _control_lock() as path:
         if _read_active(path) is not None or _lock_busy():
             raise RuntimeError('A runner or its generator is already active; refresh')
-        command = [sys.executable, '-u', str(root / 'scripts/run_training_recipe.py')]
+        # Publish the manifest before opening the transcript inside the run directory,
+        # so the child can validate and reuse the directory at startup.
+        _initialize_output(recipe, recipe_path.stem, commit, root=root,
+                           git_branch=repository_git_status(root)['branch'])
+        command = [sys.executable, '-u', str(root / 'scripts/mission_control/run_training_recipe.py')]
         if mode == 'evaluate':
             command.append('--evaluate')
         with log_path.open('a') as output:
@@ -298,8 +306,28 @@ def launch_runner(mode='train', *, root=None):
     return child
 
 
+def show_training_log(network, output=print):
+    """Launch the report script with the same Python environment as the menu."""
+    import subprocess
+    import sys
+
+    if network is None:
+        raise RuntimeError('No run output directory available for the training report')
+    network = Path(network).resolve()
+    log_path = network / 'training_log.jsonl'
+    if not log_path.is_file():
+        output(f'No training log found: {log_path}')
+        return
+    script = Path(__file__).with_name('report_training_log.py')
+    result = subprocess.run([sys.executable, str(script), str(log_path),
+                             '--run-id', str(network / 'checkpoints'),
+                             '--dashboard-gui'])
+    if result.returncode:
+        raise RuntimeError(f'Training report exited with status {result.returncode}')
+
+
 def mission_control(*, root=None, input_fn=input, output=print):
-    root = Path(root or Path(__file__).resolve().parents[1]).resolve()
+    root = Path(root or Path(__file__).resolve().parents[2]).resolve()
     children = []
     try:
         while True:
@@ -327,27 +355,29 @@ def mission_control(*, root=None, input_fn=input, output=print):
                     status = ('Runner/generator is active but not controllable; wait for cleanup or use its original tools'
                               if busy else 'Stopped / idle' if option == 'Resume training' else 'Not started')
                     output(f'\nRecipe: {recipe_path.stem}\nStatus: {status}')
-                    output(f'Log: {Path(recipe["network"]["output_path"]) / (recipe_path.stem + "-mission-control.log")}')
+                    output(f'Run directory: {network}')
                 show_git_status(root, network, output)
-                output(f'1: {option}\n2: Evaluate now\n3: Refresh\nQ: Exit mission control')
+                output(f'1: Report training log\n2: {option}\n3: Evaluate now\n4: Refresh\nQ: Exit mission control')
                 choice = input_fn('Choice: ').strip().upper()
                 if choice == 'Q':
                     break
-                if choice == '3':
+                if choice == '4':
                     continue
                 try:
-                    if choice == '1' and current:
+                    if choice == '1':
+                        show_training_log(network, output)
+                    elif choice == '2' and current:
                         _send_command('stop', current['identity'])
                         output('Stop requested. Resume training becomes available once cleanup finishes.')
-                    elif choice in ('1', '2'):
+                    elif choice in ('2', '3'):
                         if current:
                             _send_command('evaluate', current['identity'])
                             output('Evaluation requested.')
                         else:
-                            children.append(launch_runner('train' if choice == '1' else 'evaluate', root=root))
+                            children.append(launch_runner('train' if choice == '2' else 'evaluate', root=root))
                             output('Runner launched in the background.')
                     else:
-                        output('Choose 1, 2, 3, or Q.')
+                        output('Choose 1, 2, 3, 4, or Q.')
                 except (RuntimeError, OSError, ValueError, KeyError, SystemExit) as error:
                     output(f'Cannot perform action: {error}')
             except (RuntimeError, OSError, ValueError, KeyError, SystemExit) as error:

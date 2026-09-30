@@ -8,11 +8,17 @@ import tempfile
 import unittest
 from unittest.mock import patch, Mock
 
-from scripts import mission_control as control
+from scripts.mission_control import mission_control as control
 
 
 class MissionControlTests(unittest.TestCase):
     def setUp(self):
+        timestamp = patch('run_revision.commit_timestamp', return_value='20000101000000')
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
+        revision = patch('run_revision.revision', return_value='c' * 40)
+        revision.start()
+        self.addCleanup(revision.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.registry = Path(temporary.name)
@@ -50,7 +56,7 @@ class MissionControlTests(unittest.TestCase):
         child = self.child('''
 import sys
 from pathlib import Path
-from scripts import mission_control as control
+from scripts.mission_control import mission_control as control
 control._registry = lambda: Path(sys.argv[1])
 checkpoint = Path(sys.argv[1]) / 'latest.pt'
 checkpoint.touch()
@@ -101,25 +107,25 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         with patch.object(control, 'active_runner', return_value=record) as active, \
                 patch.object(control, '_send_command') as send, \
                 patch.object(control, 'launch_runner') as launch:
-            choices = iter(['1', '2', '3', 'q'])
+            choices = iter(['2', '3', '4', 'q'])
             control.mission_control(input_fn=lambda _: next(choices), output=output.append)
         self.assertEqual(active.call_count, 4)
         self.assertEqual([c.args for c in send.call_args_list],
                          [('stop', record['identity']), ('evaluate', record['identity'])])
         launch.assert_not_called()
         self.assertTrue(any('duffy_wurtz_1993' in line and 'test' in line for line in output))
-        self.assertTrue(any('1: Stop' in line for line in output))
+        self.assertTrue(any('2: Stop' in line for line in output))
 
     def test_menu_start_resume_and_idle_evaluation(self):
         root = self.registry
         (root / 'recipe').mkdir()
         (root / 'recipe/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
-        for existed, choice, mode, label in [(False, '1', 'train', 'Start'),
-                                              (True, '1', 'train', 'Resume training'),
-                                              (True, '2', 'evaluate', 'Resume training')]:
+        for existed, choice, mode, label in [(False, '2', 'train', 'Start'),
+                                              (True, '2', 'train', 'Resume training'),
+                                              (True, '3', 'evaluate', 'Resume training')]:
             if existed:
-                (root / 'test').mkdir(exist_ok=True)
-                (root / 'test/run.json').touch()
+                (root / ('test-20000101000000-' + 'c' * 40)).mkdir(exist_ok=True)
+                (root / ('test-20000101000000-' + 'c' * 40) / 'run.json').touch()
             output = []
             child = Mock()
             child.poll.return_value = None
@@ -129,17 +135,56 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
                 control.mission_control(root=root, input_fn=lambda _: next(choices), output=output.append)
             launch.assert_called_once_with(mode, root=root)
             child.terminate.assert_not_called()
-            self.assertTrue(any('1: ' + label in line for line in output))
+            self.assertTrue(any('2: ' + label in line for line in output))
 
     def test_action_failure_refreshes_the_full_menu(self):
         record = dict(recipe='test.toml', phase='training', pid=123, identity={})
         output = []
-        choices = iter(['2', 'Q'])
+        choices = iter(['3', 'Q'])
         with patch.object(control, 'active_runner', return_value=record), \
                 patch.object(control, '_send_command', side_effect=RuntimeError('No checkpoint')):
             control.mission_control(input_fn=lambda _: next(choices), output=output.append)
-        self.assertEqual(sum('1: Stop' in line for line in output), 2)
+        self.assertEqual(sum('2: Stop' in line for line in output), 2)
         self.assertTrue(any('No checkpoint' in line for line in output))
+
+    def test_menu_reports_selected_run_without_launching_or_signaling(self):
+        root = self.registry
+        (root / 'recipe').mkdir()
+        (root / 'recipe/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
+        network = root / ('test-20000101000000-' + 'c' * 40)
+        record = dict(recipe=str(root / 'recipe/test.toml'), phase='training', pid=123,
+                      identity={}, checkpoint=str(network / 'checkpoints/latest.pt'))
+        events = [dict(version=1, event='epoch_completed', run_id=str(path / 'checkpoints'),
+                       global_epoch=epoch, training_duration_s=120, epoch_wall_duration_s=150)
+                  for path, epoch in [(network, 7), (root / 'other', 999)]]
+        network.mkdir()
+        log = network / 'training_log.jsonl'
+        log.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        original = log.read_bytes()
+        for current in (None, record):
+            output = []
+            choices = iter(['1', 'Q'])
+            with patch.object(control, 'active_runner', return_value=current), \
+                    patch.object(control, '_send_command') as send, \
+                    patch.object(control, 'launch_runner') as launch, \
+                    patch.object(control, 'show_git_status'), \
+                    patch('subprocess.run', return_value=Mock(returncode=0)) as report_process:
+                control.mission_control(root=root, input_fn=lambda _: next(choices), output=output.append)
+            command = report_process.call_args.args[0]
+            self.assertEqual(command[:3], [sys.executable, str(Path(control.__file__).with_name('report_training_log.py')), str(log)])
+            self.assertIn(str(network / 'checkpoints'), command)
+            self.assertIn('--dashboard-gui', command)
+            self.assertNotIn('--output', command)
+            self.assertEqual(sum('1: Report training log' in line for line in output), 2)
+            send.assert_not_called()
+            launch.assert_not_called()
+        self.assertEqual(log.read_bytes(), original)
+
+    def test_report_handles_missing_log_without_creating_it(self):
+        output = []
+        control.show_training_log(self.registry / 'test', output.append)
+        self.assertIn('No training log found', output[0])
+        self.assertFalse((self.registry / 'test' / 'training_log.jsonl').exists())
 
     def test_menu_ctrl_c_never_stops_worker(self):
         record = dict(recipe='test.toml', phase='training', pid=123, identity={})
@@ -157,10 +202,11 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         recipe_path.write_text(recipe_text(str(root)))
         child = Mock(pid=os.getpid())
         with patch('run_revision.committed_revision', return_value='c' * 40), \
+                patch.object(control, 'repository_git_status', return_value={'branch': 'test'}), \
                 patch('subprocess.Popen', return_value=child) as launch:
             self.assertIs(control.launch_runner(root=root), child)
         args, kwargs = launch.call_args
-        self.assertEqual(args[0][-1], str(root / 'scripts/run_training_recipe.py'))
+        self.assertEqual(args[0][-1], str(root / 'scripts/mission_control/run_training_recipe.py'))
         self.assertTrue(kwargs['start_new_session'])
         self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
         self.assertEqual(kwargs['stderr'], subprocess.STDOUT)
@@ -168,6 +214,16 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         self.assertFalse(record['ready'])
         self.assertEqual(record['phase'], 'starting')
         self.assertEqual(record['recipe'], str(recipe_path))
+        network = Path(record['checkpoint']).parent.parent
+        self.assertEqual(record['log_path'], str(network / 'mission-control.log'))
+        self.assertTrue((network / 'mission-control.log').is_file())
+        self.assertEqual(kwargs['stdout'].name, str(network / 'mission-control.log'))
+        self.assertEqual(json.loads((network / 'run.json').read_text())['git_commit'], 'c' * 40)
+        # The runner must accept the directory pre-created by mission control.
+        checkpoints, _ = module._initialize_output(module.load_recipe(recipe_path), 'test',
+                                                    'c' * 40, root=root)
+        self.assertEqual(checkpoints, network / 'checkpoints')
+        self.assertFalse(list((root / 'output').glob('*-mission-control.log')))
         with self.assertRaisesRegex(RuntimeError, 'starting'):
             control.request_stop()
 

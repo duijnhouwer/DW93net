@@ -9,9 +9,11 @@ import torch
 
 spec = importlib.util.spec_from_file_location(
     'run_training_recipe',
-    Path(__file__).resolve().parents[1] / 'scripts/run_training_recipe.py')
+    Path(__file__).resolve().parents[1] / 'scripts/mission_control/run_training_recipe.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+
+TEST_RUN_NAME = 'smoke-20000101000000-' + 'c' * 40
 
 DETECTOR = {'displacement_min_px': -60, 'displacement_max_px': 60,
             'displacement_step_px': 1, 'dog_sigma_center_px': 1.0,
@@ -94,6 +96,11 @@ def candidate_checkpoint(commit, epoch=1):
 
 
 class TrainingRecipeTests(unittest.TestCase):
+    def setUp(self):
+        timestamp = patch('run_revision.commit_timestamp', return_value='20000101000000')
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
+
     def test_final_test_cache_requires_exact_model_and_dataset_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'test-results.json'
@@ -289,8 +296,10 @@ class TrainingRecipeTests(unittest.TestCase):
                              (checkpoints, final))
             manifest = json.loads((checkpoints.parent / 'run.json').read_text())
             self.assertEqual(manifest['git_commit'], 'a' * 40)
-            with self.assertRaisesRegex(ValueError, 'Git commit'):
-                module._initialize_output(recipe, 'translation_only', 'b' * 40)
+            other, _ = module._initialize_output(recipe, 'translation_only', 'b' * 40)
+            self.assertNotEqual(other, checkpoints)
+            self.assertEqual(checkpoints.parent.name, 'translation_only-20000101000000-' + 'a' * 40)
+            self.assertEqual(json.loads((checkpoints.parent / 'run.json').read_text())['git_commit'], 'a' * 40)
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 module._initialize_output(recipe | {'changed': True}, 'translation_only', 'b' * 40)
 
@@ -400,7 +409,7 @@ class TrainingRecipeTests(unittest.TestCase):
                 training_path = root / 'stimuli' / 'training'
                 state = json.loads((training_path / module.DATASET_STATE).read_text())
                 self.assertEqual(state['spec']['seed'], 4001)
-                checkpoints = root / 'output' / 'smoke' / 'checkpoints'
+                checkpoints = root / 'output' / TEST_RUN_NAME / 'checkpoints'
                 completed_candidate = checkpoints / 'candidates' / 'epoch-000003.pt'
                 saved_time = completed_candidate.stat().st_mtime_ns
                 original_train = module.train_recipe_set
@@ -418,11 +427,11 @@ class TrainingRecipeTests(unittest.TestCase):
                     self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
                                      ['test'])
                 latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
-                log = (root / 'output' / 'training_log.jsonl').read_text()
+                log = (root / 'output' / TEST_RUN_NAME / 'training_log.jsonl').read_text()
                 self.assertEqual(log.count('Starting/resuming training recipe:'), 2)
                 self.assertIn('RuntimeError: Simulated interruption', log)
                 self.assertIn('Training recipe complete.', log)
-                records = module.EventLog(root / 'output' / 'training_log.jsonl', str(checkpoints))
+                records = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(checkpoints))
                 self.assertEqual([e['result']['global_epoch'] for e in records.events('validation_result')],
                                  [1, 2, 3, 4])
                 recovered = [e for e in records.events('epoch_completed') if e['global_epoch'] == 3]
@@ -456,8 +465,8 @@ x_supersampling = 4''')
             text += '\n[parallel_generation]\nenabled = true\nmin_threads = 1\nmax_threads = 2\n'
             path.write_text(text)
             module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
-            network = root / 'output' / 'smoke'
-            log = (root / 'output' / 'training_log.jsonl').read_text()
+            network = root / 'output' / TEST_RUN_NAME
+            log = (root / 'output' / TEST_RUN_NAME / 'training_log.jsonl').read_text()
             for event in ('global epoch 2', 'Validation performance:', 'Test performance:',
                           'normalized_rmse', 'Training precision:', 'Healthy checkpoint saved:',
                           'Background generation complete', 'Training recipe complete.'):
@@ -466,10 +475,13 @@ x_supersampling = 4''')
             self.assertEqual(len(list(root.rglob('source.tar.gz'))), 1)
             self.assertEqual(len(list((network / 'checkpoints' / 'candidates').glob('*.pt'))), 2)
             self.assertTrue((network / 'final' / 'model.pt').is_file())
-            events = module.EventLog(root / 'output' / 'training_log.jsonl',
+            events = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl',
                                      str(network / 'checkpoints'))
             self.assertTrue(events.events('validation_completed'))
             self.assertTrue(events.events('test_result'))
+            self.assertFalse((root / 'output' / 'training_log.jsonl').exists())
+            self.assertEqual({event['run_id'] for event in events.read()},
+                             {str(network / 'checkpoints')})
             self.assertEqual(events.events('training_stopped')[-1]['reason'], 'training_limit')
             for epoch in events.events('epoch_completed'):
                 self.assertGreater(epoch['training_duration_s'], 0)
@@ -493,7 +505,7 @@ x_supersampling = 4''')
             self.assertTrue((root / 'stimuli' / 'validation').exists())
             self.assertTrue((root / 'stimuli' / 'test' / module.DATASET_STATE).is_file())
             progress_spec = importlib.util.spec_from_file_location(
-                'evaluate_progress', module.ROOT / 'scripts' / 'evaluate_progress.py')
+                'evaluate_progress', module.ROOT / 'scripts' / 'archive' / 'evaluate_progress.py')
             progress = importlib.util.module_from_spec(progress_spec)
             progress_spec.loader.exec_module(progress)
             test_path = root / 'stimuli' / 'test'
@@ -514,7 +526,7 @@ x_supersampling = 4''')
             self.assertIn('breakdowns', measurements[0])
             self.assertFalse(list(report_path.rglob('*.json')))
             report_spec = importlib.util.spec_from_file_location(
-                'report_training_log', module.ROOT / 'scripts/report_training_log.py')
+                'report_training_log', module.ROOT / 'scripts/mission_control/report_training_log.py')
             report_module = importlib.util.module_from_spec(report_spec)
             report_spec.loader.exec_module(report_module)
             # No data/checkpoints needed: the report consumes only event records.

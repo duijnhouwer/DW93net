@@ -81,8 +81,8 @@ class Prefetch:
         self.request.write_text(json.dumps(dict(
             path=str(self.stage), section=section, stimuli=self.recipe['stimuli'],
             log_run_id=self.log_run_id,
-            log_path=(str(Path(self.recipe['network']['output_path']) / 'training_log.jsonl')
-                      if 'network' in self.recipe else None),
+            log_path=(str(Path(self.log_run_id).parent / 'training_log.jsonl')
+                      if self.log_run_id else None),
             cpus=self.cpus, control=str(self.control), parent_pid=os.getpid())))
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = ''
@@ -175,7 +175,7 @@ class Prefetch:
 def worker(request_path):
     request = json.loads(Path(request_path).read_text())
     from contextlib import nullcontext
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
     from training_log import training_log
     with (training_log(request['log_path'], request.get('log_run_id'))
           if request.get('log_path') else nullcontext()):
@@ -197,7 +197,8 @@ def _worker(request):
         print('Generator I/O priority unavailable; CPU priority remains lowered', flush=True)
     import torch
     torch.set_num_interop_threads(1)
-    from run_training_recipe import _prepare_dataset
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.mission_control.run_training_recipe import _prepare_dataset
     current = None
 
     def progress(count):

@@ -59,8 +59,8 @@ local sockets outside the desktop sandbox.
 Both one-batch GPU preflights passed on the 12 GB RTX 3080 Ti at width 21,600,
 241 channels, batch size 64: AMP and float32 fallback each peaked at 9,242 MiB
 allocated / 9,274 MiB reserved. Free VRAM before each run was about 9,500 MiB,
-so headroom is narrow. See `benchmarks/panorama-20260929/REPORT.md` and the
-repeatable `scripts/preflight_panorama.py`. Reduce batch size explicitly if a
+so headroom is narrow. See `benchmarks/panorama-20260929/REPORT.md` for the
+recorded results. Reduce batch size explicitly if a
 longer run is memory-bound; do not reduce scientific resolution.
 
 ## Known limitation

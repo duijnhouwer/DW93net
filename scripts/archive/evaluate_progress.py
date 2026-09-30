@@ -9,14 +9,14 @@ from datetime import datetime, timezone
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 from stimuli.load_flow_xt_data import DoGDataset
 from checkpoints import load_checkpoint
 from run_revision import committed_revision
 from evaluation import metrics, binned_metrics, inference_batches, METRIC_DEFINITIONS
 from training_log import EventLog
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 
@@ -205,7 +205,7 @@ def main():
     out = (args.output / args.checkpoints.parent.name / commit[:12] /
            datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     out.mkdir(parents=True, exist_ok=True)
-    log = EventLog(args.log or args.checkpoints.parent.parent / 'training_log.jsonl',
+    log = EventLog(args.log or args.checkpoints.parent / 'training_log.jsonl',
                    str(args.checkpoints))
     evaluation_id = out.name
     log.append('progress_evaluation_started', evaluation_id=evaluation_id,

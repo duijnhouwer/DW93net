@@ -7,10 +7,15 @@ from unittest.mock import patch
 
 import torch
 
-from test_training_recipe import module, recipe_text
+from test_training_recipe import module, recipe_text, TEST_RUN_NAME
 
 
 class ValidationWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        timestamp = patch('run_revision.commit_timestamp', return_value='20000101000000')
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
+
     def test_validation_first_early_stop_best_checkpoint_test_last_and_resume(self):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
@@ -55,7 +60,7 @@ class ValidationWorkflowTests(unittest.TestCase):
             self.assertEqual(generation_threads, [('validate', 2), ('duffy_wurtz_1993', 2), ('train', 2), ('test', 2)])
             self.assertEqual(torch.get_num_threads(), previous_threads)
             self.assertEqual(evaluation_order, [('validate', 1), ('validate', 2), ('test', 1), ('duffy_wurtz_1993', 1)])
-            network = root / 'output' / 'smoke'
+            network = root / 'output' / TEST_RUN_NAME
             checkpoints = network / 'checkpoints'
             latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
             self.assertEqual(latest['global_epoch'], 2)
@@ -70,7 +75,7 @@ class ValidationWorkflowTests(unittest.TestCase):
                     patch.object(torch.cuda, 'is_available', return_value=False):
                 module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(validation_files, {p: p.read_bytes() for p in validation_files})
-            events = module.EventLog(root / 'output' / 'training_log.jsonl', str(checkpoints))
+            events = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(checkpoints))
             self.assertEqual(len(events.events('validation_result')), 2)
             self.assertEqual(events.events('training_stopped')[-1]['reason'], 'learning_rate_minimum')
 
