@@ -40,7 +40,7 @@ class MissionControlTests(unittest.TestCase):
         return child
 
     def register(self, pid, **changes):
-        record = dict(protocol='dw93net-mission-v1', pid=pid, uid=os.getuid(),
+        record = dict(protocol='dw93net-mission-v2', pid=pid, uid=os.getuid(),
                       ready=True, phase='training', checkpoint=str(self.registry / 'latest.pt'),
                       identity=control._process_identity(pid)) | changes
         (self.registry / 'latest.pt').touch()
@@ -60,7 +60,7 @@ from scripts.mission_control import mission_control as control
 control._registry = lambda: Path(sys.argv[1])
 checkpoint = Path(sys.argv[1]) / 'latest.pt'
 checkpoint.touch()
-with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
+with control.RunnerControl(None, 'mission_plan.toml', checkpoint) as finish:
     print('READY', flush=True)
     sys.stdin.readline()
     print('REQUESTED=' + str(finish.pending), flush=True)
@@ -101,7 +101,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
             control.request_finish_training()
 
     def test_menu_active_stop_evaluate_refresh_and_exit(self):
-        record = dict(recipe='/repo/recipe/test.toml', phase='duffy_wurtz_1993',
+        record = dict(mission_plan='/repo/scripts/mission_control/mission_plan/test.toml', phase='duffy_wurtz_1993',
                       pid=123, identity={'start_ticks': '123'}, global_epoch=12)
         output = []
         with patch.object(control, 'active_runner', return_value=record) as active, \
@@ -118,8 +118,8 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
 
     def test_menu_start_resume_and_idle_evaluation(self):
         root = self.registry
-        (root / 'recipe').mkdir()
-        (root / 'recipe/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
+        (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
+        (root / 'scripts/mission_control/mission_plan/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
         for existed, choice, mode, label in [(False, '2', 'train', 'Start'),
                                               (True, '2', 'train', 'Resume training'),
                                               (True, '3', 'evaluate', 'Resume training')]:
@@ -138,7 +138,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
             self.assertTrue(any('2: ' + label in line for line in output))
 
     def test_action_failure_refreshes_the_full_menu(self):
-        record = dict(recipe='test.toml', phase='training', pid=123, identity={})
+        record = dict(mission_plan='test.toml', phase='training', pid=123, identity={})
         output = []
         choices = iter(['3', 'Q'])
         with patch.object(control, 'active_runner', return_value=record), \
@@ -149,10 +149,10 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
 
     def test_menu_reports_selected_run_without_launching_or_signaling(self):
         root = self.registry
-        (root / 'recipe').mkdir()
-        (root / 'recipe/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
+        (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
+        (root / 'scripts/mission_control/mission_plan/test.toml').write_text('[network]\noutput_path = "' + str(root) + '"\n')
         network = root / ('test-20000101000000-' + 'c' * 40)
-        record = dict(recipe=str(root / 'recipe/test.toml'), phase='training', pid=123,
+        record = dict(mission_plan=str(root / 'scripts/mission_control/mission_plan/test.toml'), phase='training', pid=123,
                       identity={}, checkpoint=str(network / 'checkpoints/latest.pt'))
         events = [dict(version=1, event='epoch_completed', run_id=str(path / 'checkpoints'),
                        global_epoch=epoch, training_duration_s=120, epoch_wall_duration_s=150)
@@ -187,40 +187,40 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         self.assertFalse((self.registry / 'test' / 'training_log.jsonl').exists())
 
     def test_menu_ctrl_c_never_stops_worker(self):
-        record = dict(recipe='test.toml', phase='training', pid=123, identity={})
+        record = dict(mission_plan='test.toml', phase='training', pid=123, identity={})
         with patch.object(control, 'active_runner', return_value=record), \
                 patch.object(control, '_send_command') as send:
             control.mission_control(input_fn=Mock(side_effect=KeyboardInterrupt), output=lambda _: None)
         send.assert_not_called()
 
     def test_launch_detaches_logs_and_registers_startup(self):
-        from recipe_helpers import recipe_text, module
+        from mission_plan_helpers import mission_plan_text, module
         root = self.registry
-        (root / 'recipe').mkdir()
+        (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
         (root / 'output').mkdir()
-        recipe_path = root / 'recipe/test.toml'
-        recipe_path.write_text(recipe_text(str(root)))
+        mission_plan_path = root / 'scripts/mission_control/mission_plan/test.toml'
+        mission_plan_path.write_text(mission_plan_text(str(root)))
         child = Mock(pid=os.getpid())
         with patch('run_revision.committed_revision', return_value='c' * 40), \
                 patch.object(control, 'repository_git_status', return_value={'branch': 'test'}), \
                 patch('subprocess.Popen', return_value=child) as launch:
             self.assertIs(control.launch_runner(root=root), child)
         args, kwargs = launch.call_args
-        self.assertEqual(args[0][-1], str(root / 'scripts/mission_control/backend/run_training_recipe.py'))
+        self.assertEqual(args[0][-1], str(root / 'scripts/mission_control/backend/run_mission_plan.py'))
         self.assertTrue(kwargs['start_new_session'])
         self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
         self.assertEqual(kwargs['stderr'], subprocess.STDOUT)
         record = control.active_runner()
         self.assertFalse(record['ready'])
         self.assertEqual(record['phase'], 'starting')
-        self.assertEqual(record['recipe'], str(recipe_path))
+        self.assertEqual(record['mission_plan'], str(mission_plan_path))
         network = Path(record['checkpoint']).parent.parent
         self.assertEqual(record['log_path'], str(network / 'mission-control.log'))
         self.assertTrue((network / 'mission-control.log').is_file())
         self.assertEqual(kwargs['stdout'].name, str(network / 'mission-control.log'))
         self.assertEqual(json.loads((network / 'run.json').read_text())['git_commit'], 'c' * 40)
         # The runner must accept the directory pre-created by mission control.
-        checkpoints, _ = module._initialize_output(module.load_recipe(recipe_path), 'test',
+        checkpoints, _ = module._initialize_output(module.load_mission_plan(mission_plan_path), 'test',
                                                     'c' * 40, root=root)
         self.assertEqual(checkpoints, network / 'checkpoints')
         self.assertFalse(list((root / 'output').glob('*-mission-control.log')))
@@ -271,15 +271,15 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         self.assertEqual(control.repository_git_status(root)['branch'], 'detached HEAD')
 
     def test_new_run_records_original_branch_without_changing_resume_identity(self):
-        from recipe_helpers import module, recipe_text
+        from mission_plan_helpers import module, mission_plan_text
         root = self.registry
         (root / 'output').mkdir()
-        path = root / 'recipe.toml'
-        path.write_text(recipe_text(str(root)))
-        recipe = module.load_recipe(path)
-        checkpoints, _ = module._initialize_output(recipe, 'test', 'c' * 40,
+        path = root / 'mission_plan.toml'
+        path.write_text(mission_plan_text(str(root)))
+        mission_plan = module.load_mission_plan(path)
+        checkpoints, _ = module._initialize_output(mission_plan, 'test', 'c' * 40,
                                                    git_branch='original-branch')
-        module._initialize_output(recipe, 'test', 'c' * 40, git_branch='another-branch')
+        module._initialize_output(mission_plan, 'test', 'c' * 40, git_branch='another-branch')
         saved = json.loads((checkpoints.parent / 'run.json').read_text())
         self.assertEqual(saved['git_branch'], 'original-branch')
         self.assertEqual(saved['git_commit'], 'c' * 40)

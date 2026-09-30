@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import torch
 
-from recipe_helpers import module, recipe_text
+from mission_plan_helpers import module, mission_plan_text
 import train.train_flow_xt_net as engine
-from training_helpers import train_recipe_set
+from training_helpers import train_mission_plan_set
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
 
 
@@ -22,7 +22,7 @@ METRICS = dict(n_samples=2, normalized_rmse=.1, translation_speed_mae=.1,
 class NonfiniteTests(unittest.TestCase):
     def test_checkpoint_loading_rejects_nonfinite_nested_tensors(self):
         from checkpoints import load_checkpoint
-        from recipe_helpers import candidate_checkpoint
+        from mission_plan_helpers import candidate_checkpoint
         commit = 'a' * 40
         candidate = candidate_checkpoint(commit) | {'model_state_dict': {'weight': torch.ones(2)}}
         resume = candidate | dict(kind='resume', optimizer_state_dict={'state': {0: {
@@ -65,12 +65,12 @@ class NonfiniteTests(unittest.TestCase):
                 speed_range=(.001, .002), heading_deg_range=(0, 90), rot_deg_range=(0, 0),
                 role='train', dog_bundle_size=2,
                 config=StimConfig(stim_wid_px=49, n_world_dots=10, x_supersampling=1))
-            cfg = engine.RecipeTrainingSettings(root_folder=cache, checkpoint_dir=str(root / 'checkpoints'),
+            cfg = engine.MissionPlanTrainingSettings(root_folder=cache, checkpoint_dir=str(root / 'checkpoints'),
                 git_commit='a' * 40, training_set_index=0, training_seed=4, epochs_per_set=1,
                 shuffle_seed=99, batch_size=2, num_workers=0, allow_amp=False,
                 mirror_train_stimuli=False, dx_values=(-1, 0, 1))
-            train_recipe_set(cfg)
-            train_recipe_set(replace(cfg, epochs_per_set=2))
+            train_mission_plan_set(cfg)
+            train_mission_plan_set(replace(cfg, epochs_per_set=2))
             before = {p.relative_to(root): p.read_bytes() for p in (root / 'checkpoints').rglob('*.pt')}
             original_step = torch.optim.Adam.step
             for field in ('model_state_dict', 'optimizer_state_dict'):
@@ -87,19 +87,19 @@ class NonfiniteTests(unittest.TestCase):
                             patch.object(torch.optim.Adam, 'step', corrupt), \
                             patch.object(torch.optim.lr_scheduler.ReduceLROnPlateau, 'step') as scheduler:
                         with self.assertRaisesRegex(RuntimeError, f'Nonfinite tensor.*{field}.*global epoch 3'):
-                            train_recipe_set(replace(cfg, epochs_per_set=3))
+                            train_mission_plan_set(replace(cfg, epochs_per_set=3))
                         scheduler.assert_not_called()
                     after = {p.relative_to(root): p.read_bytes() for p in (root / 'checkpoints').rglob('*.pt')}
                     self.assertEqual(before, after)
 
-    def test_recipe_rejects_nonfinite_scalars(self):
+    def test_mission_plan_rejects_nonfinite_scalars(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
+            path = Path(directory) / 'mission_plan.toml'
             for value in ('nan', 'inf', '-inf'):
                 with self.subTest(value=value):
-                    path.write_text(recipe_text(directory).replace('initial = 0.001', f'initial = {value}'))
+                    path.write_text(mission_plan_text(directory).replace('initial = 0.001', f'initial = {value}'))
                     with self.assertRaisesRegex(ValueError, 'learning_rate.initial must be finite'):
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
 
     def test_all_numeric_metrics_must_be_finite_but_heading_can_be_undefined(self):
         module._validate_metrics(METRICS | {'heading_mae_deg': None}, 'test')
@@ -120,7 +120,7 @@ class NonfiniteTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), original)
 
     def test_final_selection_rejects_nonfinite_saved_validation_loss(self):
-        recipe = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
+        mission_plan = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
         commit = 'a' * 40
         for value in BAD_VALUES:
                 with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
@@ -130,13 +130,13 @@ class NonfiniteTests(unittest.TestCase):
                     candidates.mkdir(parents=True)
                     final.mkdir()
                     candidate = candidates / 'epoch-000001.pt'
-                    from recipe_helpers import candidate_checkpoint
+                    from mission_plan_helpers import candidate_checkpoint
                     torch.save(candidate_checkpoint(commit) | {'validation_loss': value}, candidate)
                     latest = candidate_checkpoint(commit) | dict(kind='resume', optimizer_state_dict={},
                         scaler_state_dict={}, scheduler_state_dict={}, settings={})
                     torch.save(latest, root / 'checkpoints' / 'latest.pt')
                     with self.assertRaisesRegex(ValueError, 'best validation loss must be finite'):
-                        module._select_final(root / 'checkpoints', final, recipe, commit)
+                        module._select_final(root / 'checkpoints', final, mission_plan, commit)
                     self.assertFalse((final / 'model.pt').exists())
                     self.assertFalse((final / 'validation-results.json').exists())
 
@@ -150,12 +150,12 @@ class NonfiniteTests(unittest.TestCase):
                 speed_range=(.001, .002), heading_deg_range=(0, 90),
                 rot_deg_range=(0, 0), role='train', dog_bundle_size=2,
                 config=StimConfig(stim_wid_px=49, n_world_dots=10, x_supersampling=1))
-            cfg = engine.RecipeTrainingSettings(
+            cfg = engine.MissionPlanTrainingSettings(
                 root_folder=cache, checkpoint_dir=str(root / 'checkpoints'),
                 git_commit='a' * 40, training_set_index=0, training_seed=4,
                 epochs_per_set=1, shuffle_seed=99, batch_size=2, num_workers=0,
                 allow_amp=False, mirror_train_stimuli=False, dx_values=(-1, 0, 1))
-            latest = train_recipe_set(cfg)
+            latest = train_mission_plan_set(cfg)
             original = latest.read_bytes()
             loss = engine._normalized_motion_loss
             for value in BAD_VALUES:
@@ -164,7 +164,7 @@ class NonfiniteTests(unittest.TestCase):
                                       side_effect=lambda *args: loss(*args) * value):
                         with patch.object(torch.optim.lr_scheduler.ReduceLROnPlateau, 'step') as step:
                             with self.assertRaisesRegex(RuntimeError, 'set 1, seed 4, epoch 2, global epoch 2'):
-                                train_recipe_set(replace(cfg, epochs_per_set=2))
+                                train_mission_plan_set(replace(cfg, epochs_per_set=2))
                             step.assert_not_called()
                     self.assertEqual(latest.read_bytes(), original)
                     self.assertFalse((root / 'checkpoints' / 'candidates' / 'epoch-000002.pt').exists())

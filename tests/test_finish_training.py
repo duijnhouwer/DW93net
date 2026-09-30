@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from recipe_helpers import module, recipe_text, TEST_RUN_NAME
+from mission_plan_helpers import module, mission_plan_text, TEST_RUN_NAME
 from evaluation import duffy_wurtz_summary, validate_inference_contract
 
 
@@ -21,12 +21,12 @@ class FinishTrainingTests(unittest.TestCase):
         timestamp.start()
         self.addCleanup(timestamp.stop)
 
-    def tiny_recipe(self, directory):
+    def tiny_mission_plan(self, directory):
         root = Path(directory)
         (root / 'output').mkdir()
-        (root / 'recipe').mkdir()
-        path = root / 'recipe' / 'smoke.toml'
-        text = recipe_text(directory).replace('samples_per_set = 5000', 'samples_per_set = 2')
+        (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
+        path = root / 'scripts/mission_control/mission_plan' / 'smoke.toml'
+        text = mission_plan_text(directory).replace('samples_per_set = 5000', 'samples_per_set = 2')
         text = text.replace('n_samples = 1000', 'n_samples = 2')
         text = text.replace('dog_bundle_size = 64',
             'dog_bundle_size = 2\nfov_deg = 3\nn_world_dots = 20\nx_supersampling = 2')
@@ -41,7 +41,7 @@ class FinishTrainingTests(unittest.TestCase):
         original_handlers = {n: signal.getsignal(n) for n in (signal.SIGUSR1, signal.SIGUSR2)}
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
-            root, path = self.tiny_recipe(directory)
+            root, path = self.tiny_mission_plan(directory)
             real_evaluate = module.evaluate_checkpoint
             real_save = engine._save_latest
             order = []
@@ -58,7 +58,7 @@ class FinishTrainingTests(unittest.TestCase):
 
             with patch.object(engine, '_save_latest', side_effect=save), \
                     patch.object(module, 'evaluate_checkpoint', side_effect=evaluate):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             network = root / 'output' / TEST_RUN_NAME
             latest_path = network / 'checkpoints/latest.pt'
             self.assertEqual(torch.load(latest_path, weights_only=True)['global_epoch'], 1)
@@ -70,15 +70,15 @@ class FinishTrainingTests(unittest.TestCase):
             order.clear()
             with patch.object(engine, '_save_latest', side_effect=save), \
                     patch.object(module, 'evaluate_checkpoint', side_effect=evaluate):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(order[0], ('validate', 2))
             latest = torch.load(latest_path, weights_only=True)
             self.assertEqual(latest['global_epoch'], 2)
             self.assertTrue(all(state['step'].item() == 2
                                 for state in latest['optimizer_state_dict']['state'].values()))
             # Explicit evaluation never advances training.
-            with patch.object(module, 'train_recipe_set', side_effect=AssertionError('no training')):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False, mode='evaluate')
+            with patch.object(module, 'train_mission_plan_set', side_effect=AssertionError('no training')):
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False, mode='evaluate')
             self.assertEqual(torch.load(latest_path, weights_only=True)['global_epoch'], 2)
             self.assertTrue((network / 'final/duffy_wurtz_1993-results.json').is_file())
 
@@ -87,7 +87,7 @@ class FinishTrainingTests(unittest.TestCase):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
-            root, path = self.tiny_recipe(directory)
+            root, path = self.tiny_mission_plan(directory)
             original = module.generate_dog_dataset
             generated = []
 
@@ -98,7 +98,7 @@ class FinishTrainingTests(unittest.TestCase):
                 return original(**kwargs)
 
             with patch.object(module, 'generate_dog_dataset', side_effect=generate):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(generated, [('validate', False), ('duffy_wurtz_1993', True),
                                          ('train', False), ('test', False)])
             checkpoint = torch.load(root / 'output' / TEST_RUN_NAME / 'checkpoints/latest.pt', weights_only=True)
@@ -110,7 +110,7 @@ class FinishTrainingTests(unittest.TestCase):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
-            root, path = self.tiny_recipe(directory)
+            root, path = self.tiny_mission_plan(directory)
             real_save = engine._save_latest
 
             def save(checkpoint, *args):
@@ -119,10 +119,10 @@ class FinishTrainingTests(unittest.TestCase):
 
             with patch.object(engine, '_save_latest', side_effect=save), \
                     patch.object(module, 'evaluate_model', side_effect=AssertionError('no final evaluation')):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             latest_path = root / 'output' / TEST_RUN_NAME / 'checkpoints/latest.pt'
             before = latest_path.read_bytes()
-            real_train = module.train_recipe_set
+            real_train = module.train_mission_plan_set
 
             def train(settings, **kwargs):
                 def epoch_started(epoch):
@@ -131,9 +131,9 @@ class FinishTrainingTests(unittest.TestCase):
                 kwargs['epoch_callback'] = epoch_started
                 return real_train(settings, **kwargs)
 
-            with patch.object(module, 'train_recipe_set', side_effect=train), \
+            with patch.object(module, 'train_mission_plan_set', side_effect=train), \
                     patch.object(module, 'evaluate_checkpoint', side_effect=AssertionError('no evaluation')):
-                module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
             self.assertEqual(latest_path.read_bytes(), before)
             events = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(latest_path.parent))
             self.assertEqual(len(events.events('run_stopped')), 2)
@@ -141,7 +141,7 @@ class FinishTrainingTests(unittest.TestCase):
 
     def test_new_fixed_set_validation(self):
         with tempfile.TemporaryDirectory() as directory:
-            root, path = self.tiny_recipe(directory)
+            root, path = self.tiny_mission_plan(directory)
             text = path.read_text()
             for changed in (text.replace('seed = 1000', 'seed = 2000'),
                             text.replace('seed = 1000', 'seed = 5000'),
@@ -149,7 +149,7 @@ class FinishTrainingTests(unittest.TestCase):
                             text.replace('[duffy_wurtz_1993_set]', '[duffy_wurtz_set]')):
                 path.write_text(changed)
                 with self.assertRaises(ValueError):
-                    module.load_recipe(path)
+                    module.load_mission_plan(path)
 
     def test_repeated_pause_resumes_latest_and_advances_sets(self):
         """Resume a partial set, then cross a set boundary, never rewind to best."""
@@ -158,7 +158,7 @@ class FinishTrainingTests(unittest.TestCase):
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
-            root, path = self.tiny_recipe(directory)
+            root, path = self.tiny_mission_plan(directory)
             path.write_text(path.read_text().replace('epochs_per_set = 10', 'epochs_per_set = 2'))
             original = module.evaluate_checkpoint
 
@@ -182,7 +182,7 @@ class FinishTrainingTests(unittest.TestCase):
                     patch.object(engine, '_save_latest', side_effect=save):
                 for epoch in (1, 2, 3):
                     with patch.object(module, 'generate_dog_dataset', wraps=module.generate_dog_dataset) as generate:
-                        module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                        module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
                     generation_roles.append([c.kwargs['role'] for c in generate.call_args_list])
                     latest = torch.load(network / 'checkpoints/latest.pt', weights_only=True)
                     self.assertEqual(latest['global_epoch'], epoch)

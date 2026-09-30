@@ -1,4 +1,4 @@
-"""Training engine called by the recipe orchestrator for one seeded set."""
+"""Training engine called by the mission plan orchestrator for one seeded set."""
 
 import os
 import copy
@@ -27,7 +27,7 @@ class NumericalTrainingError(RuntimeError):
 
 
 @dataclass
-class RecipeTrainingSettings:
+class MissionPlanTrainingSettings:
     root_folder: str
     checkpoint_dir: str
     git_commit: str
@@ -92,7 +92,7 @@ def record_completed_epoch(log, checkpoint, *, recover=False, timing=None):
                    recovered_from_checkpoint=recover)
 
 
-def train_recipe_set(cfg, *, validate_epoch, progress_callback=None, should_finish=None,
+def train_mission_plan_set(cfg, *, validate_epoch, progress_callback=None, should_finish=None,
                      control_callback=None, epoch_callback=None):
     """Train one seeded dataset, resuming only at completed epoch boundaries."""
     if type(cfg.training_set_index) is not int or cfg.training_set_index < 0:
@@ -161,13 +161,13 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None, should_fini
         previous_epoch = checkpoint['epoch_within_set']
         if previous_index == cfg.training_set_index:
             if checkpoint['training_seed'] != cfg.training_seed:
-                raise ValueError('Checkpoint training seed does not match the recipe')
+                raise ValueError('Checkpoint training seed does not match the mission plan')
             start_epoch = previous_epoch
         elif previous_index == cfg.training_set_index - 1:
             if previous_epoch != cfg.epochs_per_set:
                 raise ValueError('Previous training set checkpoint is incomplete')
         else:
-            raise ValueError('Checkpoint training-set position does not match the recipe')
+            raise ValueError('Checkpoint training-set position does not match the mission plan')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         allow_amp = allow_amp and checkpoint['allow_amp']

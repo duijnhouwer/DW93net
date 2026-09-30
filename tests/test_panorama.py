@@ -19,10 +19,10 @@ from stimuli.generate_flow_xt_data import StimConfig, generate_flow_xt_stim, gen
 from stimuli.load_flow_xt_data import DoGDataset
 from stimuli.metadata import motion_scales
 from stimuli.dataset_identity import dataset_spec, storage_manifest
-from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
+from train.train_flow_xt_net import MissionPlanTrainingSettings, train_mission_plan_set
 from checkpoints import load_checkpoint, validate_checkpoint
 from evaluation import inference_batches, summary_metrics
-from recipe_helpers import module, recipe_text, DETECTOR
+from mission_plan_helpers import module, mission_plan_text, DETECTOR
 
 
 class PanoramaTests(unittest.TestCase):
@@ -43,11 +43,11 @@ class PanoramaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'after downsampling'):
             SupersampledDoG(DoGFilter(boundary='circular'), 64, 2)
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            path.write_text(recipe_text(directory).replace('[stimuli]',
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace('[stimuli]',
                 '[stimuli]\nfov_deg = 360\napply_dog_filter_after_downsample = false'))
             with self.assertRaisesRegex(ValueError, 'after_downsample'):
-                module.load_recipe(path)
+                module.load_mission_plan(path)
 
     def render_dot(self, angle, rotation=0, factor=1):
         theta = np.deg2rad(angle)
@@ -156,14 +156,14 @@ class PanoramaTests(unittest.TestCase):
         torch.testing.assert_close(valid.center(x), F.avg_pool1d(x, 15, 1, 7, count_include_pad=False))
         torch.testing.assert_close(valid.surround(x), F.avg_pool1d(x, 61, 1, 30, count_include_pad=False))
 
-    def test_panoramic_recipe_geometry(self):
+    def test_panoramic_mission_plan_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'panorama.toml'
-            text = recipe_text(directory).replace('dog_bundle_size = 64',
+            text = mission_plan_text(directory).replace('dog_bundle_size = 64',
                                                   'dog_bundle_size = 64\nfov_deg = 360')
             path.write_text(text)
-            recipe = module.load_recipe(path)
-        config = StimConfig(fov_deg=recipe['stimuli']['fov_deg'])
+            mission_plan = module.load_mission_plan(path)
+        config = StimConfig(fov_deg=mission_plan['stimuli']['fov_deg'])
         self.assertEqual(config.stim_wid_px, 21600)
         self.assertEqual(config.boundary, 'circular')
 
@@ -182,12 +182,12 @@ class PanoramaTests(unittest.TestCase):
             def validate(checkpoint):
                 return summary_metrics(inference_batches(checkpoint, validation, device='cpu', batch_size=2),
                                        motion_scales(caches['validate']))
-            cfg = RecipeTrainingSettings(root_folder=str(caches['train']), checkpoint_dir=str(root / 'checkpoints'),
+            cfg = MissionPlanTrainingSettings(root_folder=str(caches['train']), checkpoint_dir=str(root / 'checkpoints'),
                 git_commit=commit, training_set_index=0, training_seed=42, epochs_per_set=1, shuffle_seed=7,
                 batch_size=2, num_workers=0, allow_amp=False, allow_tp32=False, dx_values=(-2, 0, 2))
             with patch.object(torch.cuda, 'is_available', return_value=False):
-                train_recipe_set(cfg, validate_epoch=validate)
-                train_recipe_set(replace(cfg, epochs_per_set=2), validate_epoch=validate)
+                train_mission_plan_set(cfg, validate_epoch=validate)
+                train_mission_plan_set(replace(cfg, epochs_per_set=2), validate_epoch=validate)
             checkpoint = load_checkpoint(root / 'checkpoints/latest.pt', expected_commit=commit, resume=True)
             self.assertEqual(checkpoint['global_epoch'], 2)
             self.assertEqual(checkpoint['data_contract']['boundary'], 'circular')
@@ -200,7 +200,7 @@ class PanoramaTests(unittest.TestCase):
             mismatched['data_contract']['boundary'] = 'valid'
             torch.save(mismatched, root / 'checkpoints/latest.pt')
             with patch.object(torch.cuda, 'is_available', return_value=False), self.assertRaisesRegex(ValueError, 'geometry'):
-                train_recipe_set(replace(cfg, epochs_per_set=3), validate_epoch=validate)
+                train_mission_plan_set(replace(cfg, epochs_per_set=3), validate_epoch=validate)
             torch.save(checkpoint, root / 'checkpoints/latest.pt')
             dataset = DoGDataset(caches['test'] / 'test')
             self.assertEqual(dataset[0][0].shape, (2, 128))

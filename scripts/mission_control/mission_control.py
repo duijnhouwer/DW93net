@@ -37,7 +37,7 @@ def _read_active(path):
     try:
         record = json.loads(path.read_text())
         pid = record['pid']
-        if (record.get('protocol') != 'dw93net-mission-v1' or type(pid) is not int
+        if (record.get('protocol') != 'dw93net-mission-v2' or type(pid) is not int
                 or pid <= 0 or record.get('uid') != os.getuid()):
             raise RuntimeError('Unsupported runner control record; no command sent')
         if _process_identity(pid) != record.get('identity'):
@@ -119,15 +119,15 @@ class EvaluationRequested(Exception):
 
 
 class RunnerControl:
-    def __init__(self, log, recipe_path, checkpoint, mode='train'):
+    def __init__(self, log, mission_plan_path, checkpoint, mode='train'):
         self.log = log
         self.pending = mode == 'evaluate'
         self.stop_requested = False
         self.announced = False
         self.checkpoint = Path(checkpoint)
-        self.record = dict(protocol='dw93net-mission-v1', pid=os.getpid(), uid=os.getuid(),
+        self.record = dict(protocol='dw93net-mission-v2', pid=os.getpid(), uid=os.getuid(),
                            identity=_process_identity(os.getpid()), ready=True,
-                           recipe=str(Path(recipe_path).resolve()),
+                           mission_plan=str(Path(mission_plan_path).resolve()),
                            checkpoint=str(self.checkpoint), phase='starting', mode=mode)
 
     def __enter__(self):
@@ -142,7 +142,7 @@ class RunnerControl:
                 for signum, handler in self.previous.items():
                     signal.signal(signum, handler)
                 raise
-        print(f'Mission control ready for {Path(self.record["recipe"]).stem}; PID {os.getpid()}', flush=True)
+        print(f'Mission control ready for {Path(self.record["mission_plan"]).stem}; PID {os.getpid()}', flush=True)
         return self
 
     def __exit__(self, *exc):
@@ -197,15 +197,15 @@ def _lock_busy():
         return False
 
 
-def _recipe_info(root, commit=None):
+def _mission_plan_info(root, commit=None):
     import tomllib
-    paths = sorted((root / 'recipe').glob('*.toml'))
+    paths = sorted((root / 'scripts/mission_control/mission_plan').glob('*.toml'))
     if len(paths) != 1:
-        raise RuntimeError('Expected exactly one recipe/*.toml file')
-    recipe_path = paths[0]
-    recipe = tomllib.loads(recipe_path.read_text())
-    network = Path(recipe['network']['output_path']) / run_directory_name(recipe_path.stem, commit, root=root)
-    return recipe_path, recipe, network
+        raise RuntimeError('Expected exactly one scripts/mission_control/mission_plan/*.toml file')
+    mission_plan_path = paths[0]
+    mission_plan = tomllib.loads(mission_plan_path.read_text())
+    network = Path(mission_plan['network']['output_path']) / run_directory_name(mission_plan_path.stem, commit, root=root)
+    return mission_plan_path, mission_plan, network
 
 
 def repository_git_status(root):
@@ -264,20 +264,20 @@ def launch_runner(mode='train', *, root=None):
         raise ValueError('mode must be train or evaluate')
     # Import only for a launch: refreshing the menu does not load Torch.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from scripts.mission_control.backend.run_training_recipe import load_recipe, _initialize_output
+    from scripts.mission_control.backend.run_mission_plan import load_mission_plan, _initialize_output
     from run_revision import committed_revision
     commit = committed_revision(root)
-    recipe_path, _, network = _recipe_info(root, commit)
-    recipe = load_recipe(recipe_path)
+    mission_plan_path, _, network = _mission_plan_info(root, commit)
+    mission_plan = load_mission_plan(mission_plan_path)
     if network.exists():
         manifest = json.loads((network / 'run.json').read_text())
         if any(manifest.get(key) != value for key, value in
-               {'recipe': recipe, 'git_commit': commit}.items()):
-            raise RuntimeError('Existing run recipe/revision differs; its artifacts are preserved')
+               {'mission_plan': mission_plan, 'git_commit': commit}.items()):
+            raise RuntimeError('Existing run mission plan/revision differs; its artifacts are preserved')
     checkpoint = network / 'checkpoints/latest.pt'
     if mode == 'evaluate' and not checkpoint.is_file():
         raise RuntimeError('No completed checkpoint to evaluate; start training first')
-    output_root = Path(recipe['network']['output_path'])
+    output_root = Path(mission_plan['network']['output_path'])
     if not output_root.is_dir():
         raise RuntimeError('Configured output directory must already exist')
     log_path = network / 'mission-control.log'
@@ -286,18 +286,18 @@ def launch_runner(mode='train', *, root=None):
             raise RuntimeError('A runner or its generator is already active; refresh')
         # Publish the manifest before opening the transcript inside the run directory,
         # so the child can validate and reuse the directory at startup.
-        _initialize_output(recipe, recipe_path.stem, commit, root=root,
+        _initialize_output(mission_plan, mission_plan_path.stem, commit, root=root,
                            git_branch=repository_git_status(root)['branch'])
-        command = [sys.executable, '-u', str(root / 'scripts/mission_control/backend/run_training_recipe.py')]
+        command = [sys.executable, '-u', str(root / 'scripts/mission_control/backend/run_mission_plan.py')]
         if mode == 'evaluate':
             command.append('--evaluate')
         with log_path.open('a') as output:
             child = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL,
                                      stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            _write_json(path, dict(protocol='dw93net-mission-v1', pid=child.pid, uid=os.getuid(),
+            _write_json(path, dict(protocol='dw93net-mission-v2', pid=child.pid, uid=os.getuid(),
                                   identity=_process_identity(child.pid), ready=False,
-                                  recipe=str(recipe_path), checkpoint=str(checkpoint),
+                                  mission_plan=str(mission_plan_path), checkpoint=str(checkpoint),
                                   phase='starting', mode=mode, log_path=str(log_path)))
         except BaseException:
             child.terminate()
@@ -339,22 +339,22 @@ def mission_control(*, root=None, input_fn=input, output=print):
             try:
                 current = active_runner()
                 if current:
-                    name = Path(current['recipe']).stem
+                    name = Path(current['mission_plan']).stem
                     phase = current['phase']
                     request = current.get('requested_action')
                     suffix = f' ({request} requested)' if request else ''
                     epoch = f'; epoch {current["global_epoch"]}' if current.get('global_epoch') else ''
-                    output(f'\nRecipe: {name}\nStatus: {phase}{epoch}{suffix}; PID {current["pid"]}')
+                    output(f'\nMission plan: {name}\nStatus: {phase}{epoch}{suffix}; PID {current["pid"]}')
                     option = 'Stop'
                     checkpoint = current.get('checkpoint')
                     network = Path(checkpoint).parent.parent if checkpoint else None
                 else:
-                    recipe_path, recipe, network = _recipe_info(root)
+                    mission_plan_path, mission_plan, network = _mission_plan_info(root)
                     busy = _lock_busy()
                     option = 'Resume training' if (network / 'run.json').exists() else 'Start'
                     status = ('Runner/generator is active but not controllable; wait for cleanup or use its original tools'
                               if busy else 'Stopped / idle' if option == 'Resume training' else 'Not started')
-                    output(f'\nRecipe: {recipe_path.stem}\nStatus: {status}')
+                    output(f'\nMission plan: {mission_plan_path.stem}\nStatus: {status}')
                     output(f'Run directory: {network}')
                 show_git_status(root, network, output)
                 output(f'1: Report training log\n2: {option}\n3: Evaluate now\n4: Refresh\nQ: Exit mission control')

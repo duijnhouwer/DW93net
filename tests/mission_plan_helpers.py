@@ -1,5 +1,5 @@
-"""Shared recipe fixtures; independent of test discovery and test modules."""
-from scripts.mission_control.backend import run_training_recipe as module
+"""Shared mission plan fixtures; independent of test discovery and test modules."""
+from scripts.mission_control.backend import run_mission_plan as module
 
 TEST_RUN_NAME = 'smoke-20000101000000-' + 'c' * 40
 
@@ -8,7 +8,7 @@ DETECTOR = {'displacement_min_px': -60, 'displacement_max_px': 60,
             'dog_sigma_surround_px': 3.0}
 
 
-def recipe_text(root):
+def mission_plan_text(root):
     return f'''
 version = 1
 require_cuda = false

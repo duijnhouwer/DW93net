@@ -7,18 +7,18 @@ from unittest.mock import patch
 
 import numpy as np
 
-from recipe_helpers import module, recipe_text, DETECTOR
+from mission_plan_helpers import module, mission_plan_text, DETECTOR
 from scripts.mission_control.backend.parallel_stimuli import Prefetch, Throttle
 
 
 class ParallelStimuliTests(unittest.TestCase):
     def test_foreground_generation_obeys_shared_bounds_and_restores(self):
         for enabled in (True, False):
-            recipe = dict(training_sets={'path': '/tmp/thread-policy-test/train'},
+            mission_plan = dict(training_sets={'path': '/tmp/thread-policy-test/train'},
                           optimization={'num_workers': 0},
                           parallel_generation={'enabled': enabled, 'min_threads': 1, 'max_threads': 8})
             with patch('scripts.mission_control.backend.parallel_stimuli.os.sched_getaffinity', return_value=set(range(28))):
-                prefetch = Prefetch(recipe)
+                prefetch = Prefetch(mission_plan)
             self.assertEqual(prefetch.throttle.minimum, 1)
             self.assertEqual(prefetch.throttle.maximum, 8)
             with (patch('torch.get_num_threads', return_value=20),
@@ -34,17 +34,17 @@ class ParallelStimuliTests(unittest.TestCase):
                         raise RuntimeError('generation failed')
                 self.assertEqual([call.args[0] for call in set_threads.call_args_list], [8, 20])
             with patch('scripts.mission_control.backend.parallel_stimuli.os.sched_getaffinity', return_value={0}):
-                limited = Prefetch(recipe)
+                limited = Prefetch(mission_plan)
             self.assertEqual(limited.throttle.maximum, 1)
             self.assertEqual(limited.throttle.minimum, 1)
 
     def test_interrupt_stops_real_worker_and_removes_partial_set(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / 'output').mkdir()
-            path = Path(directory) / 'recipe.toml'
-            path.write_text(recipe_text(directory) + '\n[parallel_generation]\nenabled = true\n')
-            recipe = module.load_recipe(path)
-            prefetch = Prefetch(recipe)
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory) + '\n[parallel_generation]\nenabled = true\n')
+            mission_plan = module.load_mission_plan(path)
+            prefetch = Prefetch(mission_plan)
             try:
                 prefetch.start(dict(seed=1001, n_samples=1000000, _detector=DETECTOR))
                 process = prefetch.process
@@ -83,29 +83,29 @@ class ParallelStimuliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'output').mkdir()
-            path = root / 'recipe.toml'
-            path.write_text(recipe_text(directory) + '''
+            path = root / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory) + '''
 [parallel_generation]
 enabled = true
 min_threads = 1
 max_threads = 2
 ''')
-            recipe = module.load_recipe(path)
-            recipe['stimuli'].update(fov_deg=3, n_world_dots=20, x_supersampling=4,
+            mission_plan = module.load_mission_plan(path)
+            mission_plan['stimuli'].update(fov_deg=3, n_world_dots=20, x_supersampling=4,
                                     apply_dog_filter_after_downsample=post)
             section = dict(seed=1001, n_samples=4, _detector=DETECTOR)
-            prefetch = Prefetch(recipe)
+            prefetch = Prefetch(mission_plan)
             try:
                 prefetch.start(section)
                 self.assertEqual(prefetch.process.wait(timeout=30), 0)
                 prefetch.close()
                 self.assertTrue((prefetch.stage / module.DATASET_STATE).is_file())
-                recovered = Prefetch(recipe)
+                recovered = Prefetch(mission_plan)
                 destination = root / 'stimuli' / 'training'
                 self.assertTrue(recovered.acquire(destination, section))
                 state = json.loads((destination / module.DATASET_STATE).read_text())
                 serial = module._prepare_dataset(root / 'serial', 'train', section,
-                                                  recipe['stimuli'], persistent=False)
+                                                  mission_plan['stimuli'], persistent=False)
                 staged = destination / state['cache']
                 left = sorted((staged / 'train').glob('*.npy'))
                 right = sorted((serial / 'train').glob('*.npy'))
@@ -119,9 +119,9 @@ max_threads = 2
     def test_failed_child_is_not_promoted_and_partial_data_is_cleaned(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as directory:
-            recipe = dict(training_sets={'path': str(Path(directory) / 'train')},
+            mission_plan = dict(training_sets={'path': str(Path(directory) / 'train')},
                           optimization={'num_workers': 0}, parallel_generation={'enabled': True})
-            prefetch = Prefetch(recipe)
+            prefetch = Prefetch(mission_plan)
             prefetch.stage.mkdir()
             (prefetch.stage / module.MANAGED_MARKER).touch()
             prefetch.owns_stage = True

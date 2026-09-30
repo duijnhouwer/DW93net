@@ -1,4 +1,4 @@
-"""Run the repository's single committed training recipe."""
+"""Run the repository's single committed training mission plan."""
 
 import hashlib
 import json
@@ -32,7 +32,7 @@ from stimuli.generate_flow_xt_data import StimConfig, generate_dog_dataset, vali
 from stimuli.dataset_identity import dataset_spec, storage_manifest
 from stimuli.load_flow_xt_data import DoGDataset
 from train.train_flow_xt_net import (
-    RecipeTrainingSettings, committed_revision, train_recipe_set, record_completed_epoch,
+    MissionPlanTrainingSettings, committed_revision, train_mission_plan_set, record_completed_epoch,
 )
 
 TOP_LEVEL_KEYS = {'version', 'require_cuda', 'network', 'stimuli', 'detector', 'training_sets',
@@ -61,8 +61,8 @@ def _reject_unknown(mapping, allowed, where):
         raise ValueError(f"Unknown {where} field(s): {', '.join(sorted(unknown))}")
 
 
-def _section(recipe, key, allowed):
-    value = recipe.get(key)
+def _section(mission_plan, key, allowed):
+    value = mission_plan.get(key)
     if not isinstance(value, dict):
         raise ValueError(f'[{key}] is required')
     _reject_unknown(value, allowed, key)
@@ -112,18 +112,18 @@ def _validate_fixed_set(section, name):
     return _absolute_path(section.get('path'), f'{name}.path')
 
 
-def load_recipe(path):
-    """Parse and strictly validate a recipe without changing the filesystem."""
-    recipe = tomllib.loads(Path(path).read_text())
-    _reject_unknown(recipe, TOP_LEVEL_KEYS, 'top-level')
-    if recipe.get('version') != 1:
-        raise ValueError('Recipe version must be 1')
-    if type(recipe.get('require_cuda', True)) is not bool:
+def load_mission_plan(path):
+    """Parse and strictly validate a mission plan without changing the filesystem."""
+    mission_plan = tomllib.loads(Path(path).read_text())
+    _reject_unknown(mission_plan, TOP_LEVEL_KEYS, 'top-level')
+    if mission_plan.get('version') != 1:
+        raise ValueError('Mission plan version must be 1')
+    if type(mission_plan.get('require_cuda', True)) is not bool:
         raise ValueError('require_cuda must be true or false')
-    network = _section(recipe, 'network', {'output_path'})
+    network = _section(mission_plan, 'network', {'output_path'})
     output = _absolute_path(network.get('output_path'), 'network.output_path')
 
-    stimuli = _section(recipe, 'stimuli', STIMULI_KEYS)
+    stimuli = _section(mission_plan, 'stimuli', STIMULI_KEYS)
     for key in ('speed_range', 'heading_deg_range', 'rot_deg_range'):
         if key not in stimuli:
             raise ValueError(f'stimuli.{key} is required')
@@ -151,7 +151,7 @@ def load_recipe(path):
     StimConfig(**{key: value for key, value in stimuli.items()
                   if key in StimConfig.__dataclass_fields__})
 
-    detector = _section(recipe, 'detector', DETECTOR_KEYS)
+    detector = _section(mission_plan, 'detector', DETECTOR_KEYS)
     for key in ('displacement_min_px', 'displacement_max_px'):
         if type(detector.get(key)) is not int:
             raise ValueError(f'detector.{key} must be an integer')
@@ -170,13 +170,13 @@ def load_recipe(path):
     if detector['dog_sigma_center_px'] >= detector['dog_sigma_surround_px']:
         raise ValueError('detector DoG requires center sigma smaller than surround sigma')
 
-    training = _section(recipe, 'training_sets', TRAINING_KEYS)
+    training = _section(mission_plan, 'training_sets', TRAINING_KEYS)
     for key in ('number_of_sets', 'samples_per_set', 'epochs_per_set', 'seed_increment'):
         _positive_int(training.get(key), f'training_sets.{key}')
     for key in ('start_seed', 'shuffle_seed'):
         _nonnegative_int(training.get(key), f'training_sets.{key}')
     training_path = _absolute_path(training.get('path'), 'training_sets.path')
-    parallel = recipe.get('parallel_generation', {})
+    parallel = mission_plan.get('parallel_generation', {})
     if not isinstance(parallel, dict):
         raise ValueError('parallel_generation must be a table')
     _reject_unknown(parallel, {'enabled', 'min_threads', 'max_threads'}, 'parallel_generation')
@@ -188,14 +188,14 @@ def load_recipe(path):
     if parallel.get('min_threads', 1) > parallel.get('max_threads', 8):
         raise ValueError('parallel_generation.min_threads must not exceed max_threads')
 
-    validation = _section(recipe, 'validation_set', FIXED_SET_KEYS | {'selection_metric'})
+    validation = _section(mission_plan, 'validation_set', FIXED_SET_KEYS | {'selection_metric'})
     validation_path = _validate_fixed_set(validation, 'validation_set')
     if validation.get('selection_metric') != 'validation_loss':
         raise ValueError('validation_set.selection_metric must be "validation_loss"')
 
-    test = _section(recipe, 'test_set', FIXED_SET_KEYS)
+    test = _section(mission_plan, 'test_set', FIXED_SET_KEYS)
     test_path = _validate_fixed_set(test, 'test_set')
-    duffy = _section(recipe, 'duffy_wurtz_1993_set', FIXED_SET_KEYS)
+    duffy = _section(mission_plan, 'duffy_wurtz_1993_set', FIXED_SET_KEYS)
     duffy_path = _validate_fixed_set(duffy, 'duffy_wurtz_1993_set')
     seeds = [validation['seed'], test['seed'], duffy['seed']]
     if len(set(seeds)) != 3:
@@ -206,7 +206,7 @@ def load_recipe(path):
         raise ValueError('training_sets.start_seed must be greater than all '
                          'validation_set.seed, test_set.seed, and duffy_wurtz_1993_set.seed')
 
-    optimization = _section(recipe, 'optimization', OPTIMIZATION_KEYS)
+    optimization = _section(mission_plan, 'optimization', OPTIMIZATION_KEYS)
     _positive_int(optimization.get('batch_size'), 'optimization.batch_size')
     for key in ('profile_batches', 'num_workers'):
         _nonnegative_int(optimization.get(key), f'optimization.{key}')
@@ -214,7 +214,7 @@ def load_recipe(path):
         if type(optimization.get(key)) is not bool:
             raise ValueError(f'optimization.{key} must be true or false')
 
-    lr = _section(recipe, 'learning_rate', LEARNING_RATE_KEYS)
+    lr = _section(mission_plan, 'learning_rate', LEARNING_RATE_KEYS)
     if lr.get('scheduler') != 'reduce_on_plateau' or lr.get('monitor') != 'validation_loss':
         raise ValueError('learning_rate must use reduce_on_plateau with validation_loss')
     for key in ('initial', 'factor', 'minimum'):
@@ -229,14 +229,14 @@ def load_recipe(path):
     if lr.get('reset_on_new_training_set') is not False:
         raise ValueError('learning_rate.reset_on_new_training_set must be false')
 
-    checkpoints = _section(recipe, 'checkpoints',
+    checkpoints = _section(mission_plan, 'checkpoints',
                            {'candidate_interval_epochs', 'keep_previous_resumable'})
     _positive_int(checkpoints.get('candidate_interval_epochs'),
                   'checkpoints.candidate_interval_epochs')
     if type(checkpoints.get('keep_previous_resumable')) is not bool:
         raise ValueError('checkpoints.keep_previous_resumable must be true or false')
 
-    evaluation = _section(recipe, 'evaluation', {'batch_size', 'num_workers', 'shuffle'})
+    evaluation = _section(mission_plan, 'evaluation', {'batch_size', 'num_workers', 'shuffle'})
     _positive_int(evaluation.get('batch_size'), 'evaluation.batch_size')
     _nonnegative_int(evaluation.get('num_workers'), 'evaluation.num_workers')
     if evaluation.get('shuffle') is not False:
@@ -252,39 +252,39 @@ def load_recipe(path):
         for right_name, right in entries[i + 1:]:
             if left == right or left in right.parents or right in left.parents:
                 raise ValueError(f'{left_name} and {right_name} must be separate, non-nested paths')
-    return recipe
+    return mission_plan
 
 
-def discover_recipe(root=ROOT):
-    """Find the sole directly-contained TOML recipe tracked in this commit."""
+def discover_mission_plan(root=ROOT):
+    """Find the sole directly-contained TOML mission plan tracked in this commit."""
     root = Path(root).resolve()
-    paths = sorted((root / 'recipe').glob('*.toml')) if (root / 'recipe').is_dir() else []
+    paths = sorted((root / 'scripts/mission_control/mission_plan').glob('*.toml')) if (root / 'scripts/mission_control/mission_plan').is_dir() else []
     if len(paths) != 1:
-        raise ValueError(f'Expected exactly one recipe/*.toml file; found {len(paths)}')
+        raise ValueError(f'Expected exactly one scripts/mission_control/mission_plan/*.toml file; found {len(paths)}')
     path = paths[0]
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', path.stem):
-        raise ValueError('Recipe filename must be a filesystem-safe network name')
+        raise ValueError('Mission plan filename must be a filesystem-safe network name')
     try:
         subprocess.check_output(['git', '-C', str(root), 'ls-files', '--error-unmatch',
                                  '--', str(path.relative_to(root))], stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as error:
-        raise ValueError(f'Recipe must be tracked by Git: {path.relative_to(root)}') from error
+        raise ValueError(f'Mission plan must be tracked by Git: {path.relative_to(root)}') from error
     return path
 
 
-def _initialize_output(recipe, network_name, commit, *, git_branch=None, root=ROOT):
-    output_root = Path(recipe['network']['output_path']).resolve()
+def _initialize_output(mission_plan, network_name, commit, *, git_branch=None, root=ROOT):
+    output_root = Path(mission_plan['network']['output_path']).resolve()
     if not output_root.is_dir() or not os.access(output_root, os.W_OK):
         raise ValueError(f'output_path must already exist and be writable: {output_root}')
     network_dir = output_root / run_directory_name(network_name, commit, root=root)
-    expected = {'recipe': recipe, 'git_commit': commit}
+    expected = {'mission_plan': mission_plan, 'git_commit': commit}
     manifest = network_dir / 'run.json'
     if network_dir.exists():
         if not manifest.is_file():
             raise ValueError(f'Output has no current run manifest: {network_dir}')
         saved = json.loads(manifest.read_text())
         if any(saved.get(key) != value for key, value in expected.items()):
-            raise ValueError(f'Output recipe or Git commit does not match: {network_dir}')
+            raise ValueError(f'Output mission plan or Git commit does not match: {network_dir}')
     else:
         network_dir.mkdir()
         _atomic_json(manifest, expected | {'git_branch': git_branch})
@@ -381,7 +381,7 @@ def _prepare_dataset(path, role, section, stimuli, *, persistent, progress_callb
             print(f'Reusing {role} set: {path}', flush=True)
             return cache
         if persistent:
-            raise ValueError(f'Persistent {role} set differs from the recipe or has invalid storage: {path}')
+            raise ValueError(f'Persistent {role} set differs from the mission plan or has invalid storage: {path}')
         _safe_delete_managed(path)
     elif path.exists() and any(path.iterdir()):
         # A managed directory with no published state is an interrupted
@@ -453,7 +453,7 @@ def evaluate_checkpoint(checkpoint, cache_root, role, evaluation, commit, *, con
                                   'selection': 'all'}, 'metric_definitions': METRIC_DEFINITIONS}
 
 
-def _select_final(checkpoint_dir, final_dir, recipe, commit):
+def _select_final(checkpoint_dir, final_dir, mission_plan, commit):
     """Promote only the best candidate committed by a healthy completed epoch."""
     log = EventLog(checkpoint_dir.parent / 'training_log.jsonl', str(checkpoint_dir.resolve()))
     latest = load_checkpoint(checkpoint_dir / 'latest.pt', resume=True, expected_commit=commit)
@@ -472,35 +472,35 @@ def _select_final(checkpoint_dir, final_dir, recipe, commit):
     return True
 
 
-def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, mode='train'):
+def run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require_clean=True, mode='train'):
     if mode not in ('train', 'evaluate'):
         raise ValueError('mode must be train or evaluate')
-    recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
-    recipe = load_recipe(recipe_path)
+    mission_plan_path = discover_mission_plan(root) if mission_plan_path is None else Path(mission_plan_path).resolve()
+    mission_plan = load_mission_plan(mission_plan_path)
     with run_lock() as lock_fds:
-        output_root = Path(recipe['network']['output_path'])
+        output_root = Path(mission_plan['network']['output_path'])
         if not output_root.is_dir() or not os.access(output_root, os.W_OK):
             raise ValueError(f'output_path must already exist and be writable: {output_root}')
         if require_clean:
             commit = committed_revision(root, commit)
-            if load_recipe(recipe_path) != recipe:
-                raise RuntimeError('Recipe changed while starting training')
+            if load_mission_plan(mission_plan_path) != mission_plan:
+                raise RuntimeError('Mission plan changed while starting training')
         elif commit is None:
             commit = revision(root)
         checkpoint_dir, final_dir = _initialize_output(
-            recipe, recipe_path.stem, commit,
+            mission_plan, mission_plan_path.stem, commit,
             git_branch=repository_git_status(root)['branch'], root=root)
         run_id = str(checkpoint_dir.resolve())
         with training_log(checkpoint_dir.parent / 'training_log.jsonl', run_id) as log:
-            print(f'Starting/resuming training recipe: {recipe_path}', flush=True)
-            prefetch = Prefetch(recipe, lock_fds=lock_fds)
+            print(f'Starting/resuming training mission plan: {mission_plan_path}', flush=True)
+            prefetch = Prefetch(mission_plan, lock_fds=lock_fds)
             prefetch.log_run_id = run_id
-            log.append('run_started', recipe_path=str(recipe_path), git_commit=commit)
-            with RunnerControl(log, recipe_path, Path(run_id) / 'latest.pt', mode) as finish:
+            log.append('run_started', mission_plan_path=str(mission_plan_path), git_commit=commit)
+            with RunnerControl(log, mission_plan_path, Path(run_id) / 'latest.pt', mode) as finish:
                 try:
-                    result = _run_recipe(recipe_path, root=root, commit=commit,
+                    result = _run_mission_plan(mission_plan_path, root=root, commit=commit,
                                          require_clean=require_clean, prefetch=prefetch,
-                                         recipe=recipe, finish=finish,
+                                         mission_plan=mission_plan, finish=finish,
                                          checkpoint_dir=checkpoint_dir, final_dir=final_dir)
                 except RunnerStopped as error:
                     finish.set_phase('stopping')
@@ -515,17 +515,17 @@ def run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, 
 
 
 
-def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, recipe, finish,
+def _run_mission_plan(mission_plan_path=None, *, root=ROOT, commit=None, require_clean=True, prefetch, mission_plan, finish,
                 checkpoint_dir, final_dir):
-    """Execute or resume the one committed recipe in ``root/recipe``."""
+    """Execute or resume the one committed mission plan in ``scripts/mission_control/mission_plan/``."""
     root = Path(root).resolve()
-    recipe_path = discover_recipe(root) if recipe_path is None else Path(recipe_path).resolve()
-    if recipe_path.parent != root / 'recipe':
-        raise ValueError('Recipe must be directly inside the repository recipe/ directory')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', recipe_path.stem):
-        raise ValueError('Recipe filename must be a filesystem-safe network name')
-    if recipe.get('require_cuda', True) and not torch.cuda.is_available():
-        raise RuntimeError('Recipe requires CUDA, but torch.cuda.is_available() is false')
+    mission_plan_path = discover_mission_plan(root) if mission_plan_path is None else Path(mission_plan_path).resolve()
+    if mission_plan_path.parent != root / 'scripts/mission_control/mission_plan':
+        raise ValueError('Mission plan must be directly inside the repository scripts/mission_control/mission_plan/ directory')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', mission_plan_path.stem):
+        raise ValueError('Mission plan filename must be a filesystem-safe network name')
+    if mission_plan.get('require_cuda', True) and not torch.cuda.is_available():
+        raise RuntimeError('Mission plan requires CUDA, but torch.cuda.is_available() is false')
     if commit is None:
         commit = committed_revision(root) if require_clean else subprocess.check_output(
             ['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
@@ -540,7 +540,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     run_fields = {'_git_commit': commit}
     if require_clean:
         run_fields['_repo_root'] = str(root)
-    network_name = recipe_path.stem
+    network_name = mission_plan_path.stem
     log = EventLog(checkpoint_dir.parent / 'training_log.jsonl',
                    str(checkpoint_dir.resolve()))
     finish.check_stop()
@@ -548,11 +548,11 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         raise ValueError('No completed checkpoint to evaluate; start training first')
     provenance = capture_provenance(checkpoint_dir.parent, ROOT)
     prefetch.provenance = provenance
-    print(f'Network: {network_name}\nRecipe: {recipe_path}\nGit commit: {commit}', flush=True)
+    print(f'Network: {network_name}\nMission plan: {mission_plan_path}\nGit commit: {commit}', flush=True)
 
-    stimuli, training = recipe['stimuli'], recipe['training_sets']
-    validation = recipe['validation_set'] | run_fields
-    validation = validation | {'_detector': recipe['detector'], '_provenance': provenance}
+    stimuli, training = mission_plan['stimuli'], mission_plan['training_sets']
+    validation = mission_plan['validation_set'] | run_fields
+    validation = validation | {'_detector': mission_plan['detector'], '_provenance': provenance}
     validation_path = Path(validation['path'])
     finish.set_phase('preparing_validation')
     with prefetch.foreground_generation():
@@ -561,8 +561,8 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     log.append('validation_set_ready', path=str(validation_cache), seed=validation['seed'],
                n_samples=validation['n_samples'])
 
-    duffy = recipe['duffy_wurtz_1993_set'] | run_fields
-    duffy = duffy | {'_detector': recipe['detector'], '_provenance': provenance}
+    duffy = mission_plan['duffy_wurtz_1993_set'] | run_fields
+    duffy = duffy | {'_detector': mission_plan['detector'], '_provenance': provenance}
     finish.set_phase('preparing_duffy_wurtz_1993')
     with prefetch.foreground_generation():
         duffy_cache = _prepare_dataset(Path(duffy['path']), 'duffy_wurtz_1993', duffy,
@@ -574,7 +574,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     def validate_epoch(checkpoint):
         check_repository()
         finish.set_phase('validation', global_epoch=checkpoint['global_epoch'])
-        metrics = evaluate_checkpoint(checkpoint, validation_cache, 'validate', recipe['evaluation'], commit,
+        metrics = evaluate_checkpoint(checkpoint, validation_cache, 'validate', mission_plan['evaluation'], commit,
                                       control_callback=finish.check_training)
         check_repository()
         print(f'Validation performance: {json.dumps(metrics, sort_keys=True)}', flush=True)
@@ -595,7 +595,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             expected_seed = (training['start_seed']
                              + latest_index * training['seed_increment'])
             if latest.get('training_seed') != expected_seed:
-                raise ValueError('Latest checkpoint training seed does not match the recipe')
+                raise ValueError('Latest checkpoint training seed does not match the mission plan')
             if not 0 <= latest['epoch_within_set'] <= training['epochs_per_set']:
                 raise ValueError('Latest checkpoint has an invalid epoch position')
             if latest['stop_reason'] == 'learning_rate_minimum' or finish():
@@ -614,7 +614,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             # is checked by _prepare_dataset when that set is reached.
             continue
         section = {'seed': seed, 'n_samples': training['samples_per_set'],
-                   '_detector': recipe['detector'], '_provenance': provenance, **run_fields}
+                   '_detector': mission_plan['detector'], '_provenance': provenance, **run_fields}
         print(f'Preparing training set {set_index + 1}/{training["number_of_sets"]}, seed {seed}',
               flush=True)
         log.append('training_set_preparing', training_set_index=set_index, training_seed=seed,
@@ -628,14 +628,14 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             check_repository()
             if set_index + 1 < training['number_of_sets'] and not finish():
                 prefetch.start(section | {'seed': seed + training['seed_increment']})
-            optimization, lr, checkpoints = (recipe['optimization'], recipe['learning_rate'],
-                                             recipe['checkpoints'])
+            optimization, lr, checkpoints = (mission_plan['optimization'], mission_plan['learning_rate'],
+                                             mission_plan['checkpoints'])
             def training_progress(loader_wait):
                 finish()
                 if prefetch.enabled:
                     prefetch.observe(loader_wait)
 
-            train_recipe_set(RecipeTrainingSettings(
+            train_mission_plan_set(MissionPlanTrainingSettings(
                 root_folder=str(cache), checkpoint_dir=str(checkpoint_dir), git_commit=commit,
                 log_path=str(checkpoint_dir.parent / 'training_log.jsonl'),
                 training_set_index=set_index, training_seed=seed,
@@ -650,9 +650,9 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
                 learning_rate_patience=lr['patience_epochs'], learning_rate_minimum=lr['minimum'],
                 learning_rate_threshold=lr['relative_improvement_threshold'],
                 mirror_train_stimuli=optimization['mirror_train_stimuli'],
-                dx_values=tuple(range(recipe['detector']['displacement_min_px'],
-                                      recipe['detector']['displacement_max_px'] + 1,
-                                      recipe['detector']['displacement_step_px']))),
+                dx_values=tuple(range(mission_plan['detector']['displacement_min_px'],
+                                      mission_plan['detector']['displacement_max_px'] + 1,
+                                      mission_plan['detector']['displacement_step_px']))),
                 validate_epoch=validate_epoch, should_finish=finish,
                 control_callback=finish.check_training,
                 epoch_callback=lambda epoch: finish.set_phase('training', global_epoch=epoch),
@@ -688,11 +688,11 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     check_repository()
     finish.set_phase('selecting_best_checkpoint')
     finish.check_stop()
-    _select_final(checkpoint_dir, final_dir, recipe, commit)
+    _select_final(checkpoint_dir, final_dir, mission_plan, commit)
 
     check_repository()
-    test = recipe['test_set'] | run_fields
-    test = test | {'_detector': recipe['detector'], '_provenance': provenance}
+    test = mission_plan['test_set'] | run_fields
+    test = test | {'_detector': mission_plan['detector'], '_provenance': provenance}
     test_path = Path(test['path'])
     finish.set_phase('preparing_final_test')
     with prefetch.foreground_generation():
@@ -706,7 +706,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
         results_path = final_dir / f'{role}-results.json'
         identity = {'model_sha256': _sha256_file(model_path, finish.check_stop),
                     'dataset_sha256': _dataset_sha256(cache, role, finish.check_stop),
-                    'evaluation': recipe['evaluation'], 'evaluator_git_commit': commit,
+                    'evaluation': mission_plan['evaluation'], 'evaluator_git_commit': commit,
                     'split': role}
         check_repository()
         metrics = _cached_test_result(results_path, identity)
@@ -715,7 +715,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
             print(f'Reusing final {role} result', flush=True)
         else:
             print(f'Evaluating final model: {role}', flush=True)
-            metrics = evaluate_model(model_path, cache, role, recipe['evaluation'], commit,
+            metrics = evaluate_model(model_path, cache, role, mission_plan['evaluation'], commit,
                                      control_callback=finish.check_stop)
             check_repository()
             _atomic_json(results_path, {'version': 1, 'identity': identity, 'metrics': metrics})
@@ -728,7 +728,7 @@ def _run_recipe(recipe_path=None, *, root=ROOT, commit=None, require_clean=True,
     check_repository()
     finish.check_stop()
     finish.set_phase('completed')
-    print('Training recipe complete.', flush=True)
+    print('Training mission plan complete.', flush=True)
 
 
 def main():
@@ -736,7 +736,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evaluate', action='store_true', help='Evaluate the best saved checkpoint without training')
     args = parser.parse_args()
-    run_recipe(mode='evaluate' if args.evaluate else 'train')
+    run_mission_plan(mode='evaluate' if args.evaluate else 'train')
 
 
 if __name__ == '__main__':

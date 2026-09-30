@@ -1,4 +1,4 @@
-"""One unchanged, clean Git commit for the lifetime of a recipe run."""
+"""One unchanged, clean Git commit for the lifetime of a mission plan run."""
 from pathlib import Path
 from datetime import datetime, timezone
 import re
@@ -23,14 +23,14 @@ def commit_timestamp(root, commit):
         raise ValueError(f'Cannot read timestamp for Git commit {commit}') from error
 
 
-def run_directory_name(recipe_name, commit=None, *, root=ROOT):
-    """Stable output identity for one recipe and exact source revision."""
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', recipe_name):
-        raise ValueError('Recipe filename must be a filesystem-safe network name')
+def run_directory_name(mission_plan_name, commit=None, *, root=ROOT):
+    """Stable output identity for one mission plan and exact source revision."""
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', mission_plan_name):
+        raise ValueError('Mission plan filename must be a filesystem-safe network name')
     commit = revision(root) if commit is None else commit
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('Git commit must be the full 40-character lowercase ID')
-    return f'{recipe_name}-{commit_timestamp(root, commit)}-{commit}'
+    return f'{mission_plan_name}-{commit_timestamp(root, commit)}-{commit}'
 
 
 def committed_revision(root=ROOT, expected=None):

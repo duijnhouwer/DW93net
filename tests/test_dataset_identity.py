@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from recipe_helpers import module, DETECTOR
+from mission_plan_helpers import module, DETECTOR
 from stimuli.dataset_identity import storage_manifest
 
 

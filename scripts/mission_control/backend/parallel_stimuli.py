@@ -31,20 +31,20 @@ class Throttle:
 
 
 class Prefetch:
-    def __init__(self, recipe, *, lock_fds=()):
-        self.recipe = recipe
+    def __init__(self, mission_plan, *, lock_fds=()):
+        self.mission_plan = mission_plan
         self.lock_fds = lock_fds
         self.provenance = None
         self.log_run_id = None
-        self.settings = recipe.get('parallel_generation', {})
+        self.settings = mission_plan.get('parallel_generation', {})
         self.enabled = self.settings.get('enabled', False)
-        self.stage = Path(recipe['training_sets']['path']).with_name(
-            Path(recipe['training_sets']['path']).name + '.next')
+        self.stage = Path(mission_plan['training_sets']['path']).with_name(
+            Path(mission_plan['training_sets']['path']).name + '.next')
         self.process = self.temporary = None
         self.owns_stage = False
         cpus = (sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
                 else list(range(os.cpu_count() or 1)))
-        reserve = min(max(1, recipe['optimization']['num_workers']), max(1, len(cpus) // 2))
+        reserve = min(max(1, mission_plan['optimization']['num_workers']), max(1, len(cpus) // 2))
         self.cpus = cpus[reserve:] or cpus
         maximum = min(self.settings.get('max_threads', 8), len(self.cpus) or 1)
         self.throttle = Throttle(min(self.settings.get('min_threads', 1), maximum), maximum)
@@ -79,7 +79,7 @@ class Prefetch:
         self.request = Path(self.temporary.name) / 'request.json'
         self._write_control(self.throttle.threads)
         self.request.write_text(json.dumps(dict(
-            path=str(self.stage), section=section, stimuli=self.recipe['stimuli'],
+            path=str(self.stage), section=section, stimuli=self.mission_plan['stimuli'],
             log_run_id=self.log_run_id,
             log_path=(str(Path(self.log_run_id).parent / 'training_log.jsonl')
                       if self.log_run_id else None),
@@ -122,7 +122,7 @@ class Prefetch:
             if not self.enabled or not state_path.is_file() or Path(destination).exists():
                 return False
             state = json.loads(state_path.read_text())
-            desired = dataset_spec('train', section, self.recipe['stimuli'])
+            desired = dataset_spec('train', section, self.mission_plan['stimuli'])
             if state.get('spec') != desired:
                 return False
             self.stage.rename(destination)
@@ -198,7 +198,7 @@ def _worker(request):
     import torch
     torch.set_num_interop_threads(1)
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from scripts.mission_control.backend.run_training_recipe import _prepare_dataset
+    from scripts.mission_control.backend.run_mission_plan import _prepare_dataset
     current = None
 
     def progress(count):
