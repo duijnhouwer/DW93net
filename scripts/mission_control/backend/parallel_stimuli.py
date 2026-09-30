@@ -31,23 +31,26 @@ class Throttle:
 
 
 class Prefetch:
-    def __init__(self, recipe, *, lock_fds=()):
-        self.recipe = recipe
+    def __init__(self, mission_plan, *, lock_fds=()):
+        self.mission_plan = mission_plan
         self.lock_fds = lock_fds
         self.provenance = None
         self.log_run_id = None
-        self.settings = recipe.get('parallel_generation', {})
+        self.settings = mission_plan.get('parallel_generation', {})
         self.enabled = self.settings.get('enabled', False)
-        self.stage = Path(recipe['training_sets']['path']).with_name(
-            Path(recipe['training_sets']['path']).name + '.next')
+        self.stage = Path(mission_plan['training_sets']['path']).with_name(
+            Path(mission_plan['training_sets']['path']).name + '.next')
         self.process = self.temporary = None
         self.owns_stage = False
         cpus = (sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
                 else list(range(os.cpu_count() or 1)))
-        reserve = min(max(1, recipe['optimization']['num_workers']), max(1, len(cpus) // 2))
+        reserve = min(max(1, mission_plan['optimization']['num_workers']), max(1, len(cpus) // 2))
         self.cpus = cpus[reserve:] or cpus
         maximum = min(self.settings.get('max_threads', 8), len(self.cpus) or 1)
         self.throttle = Throttle(min(self.settings.get('min_threads', 1), maximum), maximum)
+
+    def _ordinary_stimuli(self):
+        return self.mission_plan['stimuli'] | {'duffy_wurtz_superimposition_enable': False}
 
     @contextmanager
     def foreground_generation(self):
@@ -79,10 +82,10 @@ class Prefetch:
         self.request = Path(self.temporary.name) / 'request.json'
         self._write_control(self.throttle.threads)
         self.request.write_text(json.dumps(dict(
-            path=str(self.stage), section=section, stimuli=self.recipe['stimuli'],
+            path=str(self.stage), section=section, stimuli=self._ordinary_stimuli(),
             log_run_id=self.log_run_id,
-            log_path=(str(Path(self.recipe['network']['output_path']) / 'training_log.jsonl')
-                      if 'network' in self.recipe else None),
+            log_path=(str(Path(self.log_run_id).parent / 'training_log.jsonl')
+                      if self.log_run_id else None),
             cpus=self.cpus, control=str(self.control), parent_pid=os.getpid())))
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = ''
@@ -114,7 +117,7 @@ class Prefetch:
             print(f'Generator allocation: {threads} threads; '
                   f'loader wait {wait_fraction:.1%}', flush=True)
 
-    def acquire(self, destination, section):
+    def acquire(self, destination, section, control_callback=None):
         from stimuli.dataset_identity import dataset_spec
 
         if self.process is None:
@@ -122,7 +125,7 @@ class Prefetch:
             if not self.enabled or not state_path.is_file() or Path(destination).exists():
                 return False
             state = json.loads(state_path.read_text())
-            desired = dataset_spec('train', section, self.recipe['stimuli'])
+            desired = dataset_spec('train', section, self._ordinary_stimuli())
             if state.get('spec') != desired:
                 return False
             self.stage.rename(destination)
@@ -131,7 +134,14 @@ class Prefetch:
         start = time.perf_counter()
         if self.process.poll() is None:
             self._write_control(self.throttle.maximum)
-        status = self.process.wait()
+        while True:
+            if control_callback is not None:
+                control_callback()
+            try:
+                status = self.process.wait(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                pass
         if status:
             raise RuntimeError(f'Background stimulus generation failed: exit {status}')
         # The child publishes dataset state last; never promote partial output.
@@ -168,7 +178,7 @@ class Prefetch:
 def worker(request_path):
     request = json.loads(Path(request_path).read_text())
     from contextlib import nullcontext
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src'))
     from training_log import training_log
     with (training_log(request['log_path'], request.get('log_run_id'))
           if request.get('log_path') else nullcontext()):
@@ -190,7 +200,8 @@ def _worker(request):
         print('Generator I/O priority unavailable; CPU priority remains lowered', flush=True)
     import torch
     torch.set_num_interop_threads(1)
-    from run_training_recipe import _prepare_dataset
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from scripts.mission_control.backend.run_mission_plan import _prepare_dataset
     current = None
 
     def progress(count):

@@ -7,8 +7,8 @@ import torch
 from features.reichardt import ReichardtBank
 from stimuli.load_flow_xt_data import MirroredDoGDataset, make_flow_loader
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
-from train.train_flow_xt_net import RecipeTrainingSettings
-from training_helpers import train_recipe_set
+from train.train_flow_xt_net import MissionPlanTrainingSettings
+from training_helpers import train_mission_plan_set
 
 
 class ReichardtTests(unittest.TestCase):
@@ -138,7 +138,8 @@ class ReichardtTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bank(xt)
 
-    def test_recipe_training_continues_optimizer_across_seeded_sets(self):
+    def test_mission_plan_training_continues_optimizer_across_seeded_sets(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -154,9 +155,9 @@ class ReichardtTests(unittest.TestCase):
                 git_commit='a' * 40, epochs_per_set=1, shuffle_seed=99,
                 batch_size=2, num_workers=0, profile_batches=0,
                 mirror_train_stimuli=False, dx_values=(-1, 1))
-            train_recipe_set(RecipeTrainingSettings(
+            train_mission_plan_set(MissionPlanTrainingSettings(
                 training_set_index=0, training_seed=1000, **common))
-            train_recipe_set(RecipeTrainingSettings(
+            train_mission_plan_set(MissionPlanTrainingSettings(
                 training_set_index=1, training_seed=1001, **common))
             latest = torch.load(checkpoints / 'latest.pt', map_location='cpu',
                                 weights_only=True)

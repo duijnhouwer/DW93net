@@ -4,16 +4,16 @@
 
 Generated signed DoG contrast bundles are local experiment
 data and are ignored by Git. Their absolute locations are configured by the
-committed recipe.
+committed mission plan.
 `src/stimuli/` contains the code that generates, preprocesses, loads, and
-displays those inputs. A committed `recipe/<network-name>.toml` generates the
+displays those inputs. A committed `scripts/mission_control/mission_plan/<network-name>.toml` generates the
 datasets, trains one network, selects its final weights, and evaluates them.
 
 Each managed dataset contains the compact detector stage used by training:
 
 ```text
 <dataset-path>/
-  dog/          # dog.json and one train/validate/test role
+  dog/          # dog.json and one train/validate/test/duffy_wurtz_1993 role
 ```
 
 The orchestrator renders Flow-XT stimuli and applies the DoG filter in memory,
@@ -21,25 +21,131 @@ then writes only float32 signed DoG bundles. Training and evaluation calculate
 the requested shifted correlations on the model device. Evaluation `--data`
 points to `<dataset-path>/dog/`. Directory names have no scientific meaning.
 
-## Unattended training recipes
+## Unattended mission plans
 
-Exactly one TOML file may exist directly under `recipe/` in a commit. Its
-filename stem is the network name. The recipe gives the common stimulus ranges,
-absolute training/validation/test paths, a sequence of training seeds, epoch
+Exactly one TOML file may exist directly under `scripts/mission_control/mission_plan/` in a commit. Its
+filename stem is the network name. The mission plan gives the common stimulus ranges,
+absolute training/validation/test/Duffy-Wurtz paths, a sequence of training seeds, epoch
 counts, dynamic learning-rate settings, and an absolute output root. The runner
-takes no arguments and discovers that one file.
+discovers that one file; mission control chooses training or evaluation mode.
 
 The shared topology outputs `[dx, dz, rot]`. `rot_deg_range` controls yaw in
 degrees per frame step; `[0, 0]` trains a translation-only dataset, while a
 nonzero range trains translation and yaw estimation together.
 
-Edit the recipe, commit the recipe and all code changes, then run:
+The required `[duffy_wurtz_1993_set]` section specifies a separate persistent
+transparent-motion dataset:
 
-```bash
-PYTHONPATH=src /home/jacob/venvs/nvidia/bin/python scripts/run_training_recipe.py
+```toml
+[duffy_wurtz_1993_set]
+path = "/home/jacob/Documents/dw93net_stimuli/duffy_wurtz_1993_set"
+seed = 1000
+n_samples = 100000
+duffy_wurtz_superimposition_enable = true
 ```
 
-Only one recipe run per user may be active on this machine, regardless of
+It is generated immediately after the validation set, before training begins.
+It inherits every omitted setting from `[stimuli]`; any `[stimuli]` setting may
+be repeated here to override it only for this dataset. Its
+`duffy_wurtz_superimposition_enable` setting enables separate translation-only and
+yaw-only layers, while `duffy_wurtz_rotation_pct` selects the percentage of world
+dots in the yaw-only layer (0 through 100, inclusive). The nearest whole-dot split
+uses every configured dot. Neither this dataset nor the test dataset is
+used for training, learning-rate scheduling, or checkpoint selection. All three
+held-out seeds must differ, and training seeds must start above all three.
+
+### Mission control
+
+From the repository root, use the training environment:
+
+```bash
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/mission_control.py
+```
+
+The menu shows the active mission plan and phase (preparing datasets, training,
+validation, final_test, or duffy_wurtz_1993). It also shows the saved run’s branch
+and commit, the current checkout’s branch and commit, and clean/dirty status.
+Dirty includes staged, unstaged, and nonignored untracked files and blocks
+starting/resuming. A saved-run commit mismatch is flagged separately. Older runs
+without recorded branch metadata show “not recorded”; branch names are saved
+when new runs are created.
+
+
+- **1 — Report training log:** run `report_training_log.py` for the displayed run,
+  with `--dashboard-gui` to open a dedicated dashboard window. Closing the window
+  deletes its temporary files and returns to the menu.
+- **2 — Start training / Stop / Resume training:** start a new mission plan, stop the active worker, or
+  resume training from the latest completed checkpoint.
+- **3 — Test best validated model:** interrupt training and evaluate the candidate named by
+  `latest.pt` on the final test set. The set is generated if absent.
+- **4 — Present Duffy & Wurtz 1993:** interrupt training and evaluate that same candidate
+  on the Duffy-Wurtz set. The set is generated if absent.
+- **5 — Refresh:** reread worker status and display the menu again.
+- **Q — Exit mission control:** exit the menu; the background worker continues.
+  Ctrl+C has the same effect in the menu.
+
+Each action returns to the menu. Stop takes effect at the next safe poll (normally
+one training/evaluation batch or dataset-generation bundle), followed by worker
+cleanup. An unfinished epoch is discarded. Once stopped, **Resume training** continues
+training immediately, even if an evaluation was interrupted. Optimizer, scheduler,
+and precision state come from `checkpoints/latest.pt`; training does not rewind to
+the best checkpoint selected for evaluation. An unfinished training set is reused.
+The configured set limit and minimum-learning-rate stop remain terminal.
+
+The detached worker writes console output to
+`<output_path>/<run-directory-name>/mission-control.log`. The menu itself does not need
+Torch to refresh status. Launching requires the training environment and the same
+clean, committed mission plan/source identity as the runner. Existing run artifacts are
+never replaced to bypass a revision mismatch.
+
+For Python callers, `scripts.mission_control.mission_control.request_test()` requests final-test
+evaluation, `request_duffy_wurtz_1993()` requests Duffy-Wurtz evaluation, and `request_stop()`
+requests a stop. The helper discovers the active
+runner, validates its process identity and signal handlers, and uses a Linux PID
+file descriptor to prevent signaling a reused PID. Commands return after delivery;
+refresh to check progress. The menu controls one runner per user on this machine.
+It cannot retrofit old, already-running Python processes without these handlers.
+
+The updated runner uses SIGUSR1 for the requested evaluation and SIGUSR2 for stopping; its signal
+handlers only set flags. Requests are not persisted across restarts: starting the
+runner normally resumes training; `--test` and `--duffy_wurtz_1993` explicitly select evaluation.
+
+The final aggregate results are cached separately as `final/test-results.json` and
+`final/duffy_wurtz_1993-results.json`, identified by exact model/dataset hashes,
+evaluation settings, and revision. Per-stimulus report streams live beside them:
+`final/final_test_log.jsonl` and `final/duffy_wurtz_log.jsonl`. Each evaluation begins
+with `evaluation_started`, including the selected model path, epoch, commit, validation
+loss, and evaluation identity; it then records one `stimulus_result` per item with
+`dx`, `dz`, `yaw`, `output_dx`, `output_dz`, and `output_yaw`, followed by
+`evaluation_completed` with aggregate metrics. The final event must be that matching
+completion record and must end in a newline. Otherwise mission control deletes the
+interrupted or stale report and recreates it for the best candidate in `latest.pt`.
+A cached aggregate is reused only with that complete report. Both aggregate results are
+also recorded in `training_log.jsonl`.
+Duffy-Wurtz results include circular signed heading bias grouped by overlay retinal
+direction (positive `rot_deg` moves toward increasing columns in this renderer). Positive aligned bias
+means toward the overlay motion. These are deviations from the separate component
+labels, not errors against a single rigid-camera motion. They are not a paired
+baseline subtraction and by themselves do not establish the perceptual illusion.
+
+Ordinary evaluation still requires an exact dataset contract. Only the named
+Duffy-Wurtz protocol permits the intended superimposition difference; all other
+geometry, DoG, detector, and revision checks remain in force.
+
+This adds a required mission plan section and does not retrofit already-running Python
+processes. Existing runs retain their strict mission plan/revision identity: changing
+the mission plan or committing this code does not authorize resuming old checkpoints
+under the new revision. Preserve existing run artifacts and use matching source
+for them; historical archived mission plans must be updated explicitly before use with
+the new runner.
+
+Edit the mission plan, commit the mission plan and all code changes, then run:
+
+```bash
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/mission_control.py
+```
+
+Only one mission plan run per user may be active on this machine, regardless of
 checkout or dataset paths. A second run fails immediately. The lock covers
 background generation and cleanup, and releases automatically when all owning
 processes exit, including after crashes. The file
@@ -47,10 +153,25 @@ processes exit, including after crashes. The file
 to unlock a run. This advisory lock does not coordinate different hosts or
 users, or standalone tools that do not acquire it.
 
-The runner requires a clean commit and CUDA by default. For a recipe named
+The runner requires a clean commit and CUDA by default. For a mission plan named
 `translation_only.toml`, it creates
-`<output_path>/translation_only/{checkpoints,final,provenance}` plus `run.json`.
-The manifest records the exact Git commit and recipe. Resume requires that same
+`<output_path>/translation_only-<YYYYmmDDHHMMSS>-<full-commit-id>/`, containing
+`checkpoints/`, `final/`, `provenance/`, `run.json`, and `training_log.jsonl`. The timestamp is the Git
+commit's **committer time in UTC**, not the training start time. The commit ID is
+all 40 lowercase hexadecimal characters. For example:
+`trans_rot-20260930131523-0123456789abcdef0123456789abcdef01234567`.
+The same mission plan and commit resolve to the same run directory; a new commit gets
+a separate directory. Mission control uses this identity for start/resume,
+evaluation, reports, and console-log naming. Each run owns its `training_log.jsonl`, inside that commit-specific directory.
+Training, background generation, and evaluation all write to this file; its run ID
+is the absolute checkpoint-directory path.
+
+Existing mission plan-only directories are preserved but are not automatically resumed
+or migrated by this naming scheme. The standalone log reporter can still report
+their recorded measurements by their original run IDs. Existing shared logs at
+the output root are preserved; new runs do not append to them.
+
+The manifest records the exact Git commit and mission plan. Resume requires that same
 commit and a clean working tree. Do not edit the repository while a run is active.
 Before each dataset generation (including background generation), training-set
 boundary, validation, and final testing, the runner checks for staged, unstaged,
@@ -70,10 +191,10 @@ Loading checks nested tensor state too,
 including optimizer, gradient-scaler, and scheduler tensors when present.
 
 The fallback stays active for all later epochs, datasets, and restarts, even if
-the recipe permits AMP/TF32. Actual precision flags are saved in checkpoints;
-`<output_path>/training_log.jsonl` records each numerical failure and the precision
+the mission plan permits AMP/TF32. Actual precision flags are saved in checkpoints;
+`<output_path>/<run-directory-name>/training_log.jsonl` records each numerical failure and the precision
 switch before retrying. On restart it supplies the persistent fallback policy;
-keep this file alongside the checkpoints. The recipe and learning-rate policy
+keep this file alongside the checkpoints. The mission plan and learning-rate policy
 are not changed by recovery.
 
 This is the single training event history, stored as JSON Lines: one complete
@@ -95,7 +216,7 @@ No separate failure, fallback, validation-progress/results or test-results logs
 are produced. Dataset indexes/metadata, `run.json` identity, and source/environment
 provenance remain separate because they describe artifacts rather than events.
 Standalone analysis and historical benchmark reports are not modified.
-Recipe parsing errors before the output path is known, and abrupt process kills
+Mission plan parsing errors before the output path is known, and abrupt process kills
 or power loss, cannot produce a final failure entry.
 
 The log is also the central progress/evaluation record. `epoch_started` identifies
@@ -119,15 +240,35 @@ Besides absolute errors and RMSE, they include:
 - Counts excluded from direction or relative metrics because the relevant vector
   length is effectively zero (`<= 1e-12`); undefined aggregates are JSON `null`.
 
-Inspect recorded progress without loading checkpoints or rerunning inference:
+Print a readable terminal report without loading checkpoints or rerunning inference:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/report_training_log.py \
-  /home/jacob/Documents/dw93net_output/training_log.jsonl
+/home/jacob/venvs/nvidia/bin/python scripts/mission_control/backend/report_training_log.py \
+  /home/jacob/Documents/dw93net_output/RUN_DIRECTORY/training_log.jsonl
 ```
 
-This prints a Markdown report with separate runs, epoch timings, failures/fallbacks,
-and evaluation tables. `--run-id /absolute/path/to/checkpoints` selects one run.
+Text is the default and creates no files or windows. The report includes completed
+and latest epochs, duration in seconds, the best checkpoint and its validation
+errors for each dataset, epoch timings/losses, failures/fallbacks, and evaluation
+tables. `--run-id /absolute/path/to/checkpoints` selects one run.
+
+Add `--dashboard-gui` to open the graphical dashboard in a dedicated window. Its
+`dw92net_trainging_dashboard.html` file lives in a unique system temporary directory,
+which is deleted when the window closes, on viewer failure, or on Ctrl+C. The
+command waits for the window to close; nothing is saved beside training artifacts.
+The GUI requires Linux GJS, GTK 3, and WebKit2 4.1 (available on this machine);
+terminal reporting needs only Python's standard library. No network connection is
+needed. The old `--text`, `--output`, and `--no-open` options are removed.
+
+The dashboard shows training and validation loss, validation heading/speed/yaw/
+translation-vector errors, and epoch durations in seconds. Choose epoch or elapsed
+hours, linear or logarithmic loss, absolute or relative speed/vector errors, and
+an epoch range. Hover for exact values. Best validation-loss checkpoints are marked.
+Separate validation datasets have separate selections; test and sampled progress
+evaluations are not mixed into these curves. Only loss is recorded for training;
+the error charts show validation measurements. The report is a snapshot: rerun it
+to refresh.
+
 Compare measurements only on matching datasets/splits and sample selections.
 Validation runs after every epoch; final testing evaluates only the selected model.
 Use validation, rather than repeated test-set feedback, when making model-selection decisions.
@@ -149,7 +290,7 @@ set/epoch limit or immediately when the scheduler reaches its minimum learning
 rate, whichever comes first. No additional epoch runs at the minimum rate.
 The best-validation checkpoint is promoted to `final/model.pt`. Only then is
 the persistent test set generated or
-reused at `test_set.path` and evaluates only the final model. A recipe mismatch
+reused at `test_set.path` and evaluates only the final model. A mission plan mismatch
 never silently overwrites that test set.
 
 Validation results are logged after every successfully completed epoch in
@@ -161,25 +302,26 @@ published just before a logging interruption restores its missing log records;
 unrecorded checkpoint-save/wall timings remain explicitly unavailable rather than
 being invented. Completed candidates belong to this run and must not be manually
 replaced. `validation_completed` records candidate selection and
-`test_result` records the final test measurement. Rerunning restarts
+`test_result` and `duffy_wurtz_1993_result` record the final measurements. Rerunning restarts
 only an interrupted epoch and otherwise resumes from the recorded training-set
-index and seed. Final testing is recomputed each time selection finishes.
+index and seed unless finalization was requested. Final evaluations reuse results
+only when the complete cache identity matches; otherwise they are recomputed.
 
 ## Training behavior
 
-The committed recipe enables `[parallel_generation]`. While training runs on
+The committed mission plan enables `[parallel_generation]`. While training runs on
 one set, a CPU-only subprocess generates the next in a sibling `training.next`
 directory. A successful worker exit and published dataset state are required
 before an atomic directory rename makes that set current. Set
 `enabled = false` for sequential generation. Omitted settings default to
-sequential operation for older recipes.
+sequential operation for older mission plans.
 
 `min_threads` (default 1) and `max_threads` (default 8) apply to every
 stimulus-generation phase. Foreground validation, training-set, and test-set
 generation use the maximum while training is idle, restoring the previous
 PyTorch thread count afterward. This also applies when `enabled = false`;
 that switch controls lookahead, not the thread limits. The obsolete
-`full_force_first_set` option is rejected and must be removed from recipes.
+`full_force_first_set` option is rejected and must be removed from mission plans.
 
 The background generator starts at the minimum and adjusts within the same
 bounds. Both limits are capped by the available generation CPU pool. The
@@ -198,14 +340,14 @@ Allocation changes and boundary wait time are logged. Loader wait is a host
 timing proxy, not a measurement of GPU idle time; throughput should be compared
 against sequential operation on the target machine before tuning these limits.
 
-Completed staged data can be reused on restart when its recipe specification
+Completed staged data can be reused on restart when its mission plan specification
 matches. Incomplete managed staging is removed on orderly failure or rebuilt
 on restart; a worker also stops if its training parent disappears. Existing
 unmanaged staging directories are never overwritten. As with the sequential
 runner, run only one orchestrator per output/dataset path. Allow disk space for
 two training sets during overlap.
 
-Adam and the plateau scheduler are configured in the recipe's `[learning_rate]`
+Adam and the plateau scheduler are configured in the mission plan's `[learning_rate]`
 section. `monitor = "validation_loss"` is required; training loss does not control
 the learning rate. Scheduler history continues across training sets and restarts.
 The initial learning rate must exceed the minimum. Validation and final testing
@@ -249,20 +391,20 @@ publishing `dog.json`, and the loader validates shape and dtype.
 From the repository root, evaluate saved checkpoints with:
 
 ```bash
-/home/jacob/venvs/nvidia/bin/python scripts/evaluate_progress.py \
-  --checkpoints /absolute/output/translation_only/checkpoints \
+/home/jacob/venvs/nvidia/bin/python scripts/archive/evaluate_progress.py \
+  --checkpoints /absolute/output/translation_only-YYYYmmDDHHMMSS-FULL_COMMIT_ID/checkpoints \
   --data /absolute/validation/cache/parameter-set/dog
 ```
 
 The current experiment recovers translation vectors from one-step flow fields
-with recipe-defined heading and speed ranges. Heading angular error is the primary
+with mission plan-defined heading and speed ranges. Heading angular error is the primary
 metric; speed and vector errors are tracked as well. Fixed-speed accuracy does
 not demonstrate recovery across different speeds. Rotation is deferred until
 simple translation recovery works.
 
 The command uses 256 seeded validation examples, CPU inference, and no worker
 processes by default. It appends a sample manifest and per-checkpoint metrics,
-timings, and bin breakdowns to the central `training_log.jsonl` in the run's output
+timings, and bin breakdowns to the run’s `training_log.jsonl` in its commit-specific output
 folder (`--log` overrides the path). Each evaluation has a unique session ID, so
 different subsets or splits are not silently mixed. Reports and plots are derived
 from those logged results; no separate metric JSON files are written.
@@ -403,7 +545,7 @@ angular sampling: a 120° FOV uses 7,200 pixels. An explicit `stim_wid_px`
 overrides this default, for example in small tests. `fov_deg` may be greater
 than 180° and at most 360°; visibility is selected from the full-circle
 `atan2(x, z)` angle, so rear-hemisphere dots are represented correctly.
-The recipe pipeline renders each `[2,X]` Flow-XT stimulus in memory. Default
+The mission plan pipeline renders each `[2,X]` Flow-XT stimulus in memory. Default
 X supersampling is **255**. Patterns remain float32 after antialiasing and after
 summing and clipping any superimposed layers, and are passed directly to DoG
 filtering without byte quantization. Higher supersampling factors retain their
@@ -418,10 +560,10 @@ also wrap. Adaptive pooling and the decoder are unchanged. Smaller FOVs keep
 nonperiodic behavior, including 359°; subsequent nonpanoramic experiments should
 use FOVs below 350° because motion across an omitted angular gap is not modeled.
 
-The sole active recipe is `recipe/trans_plus_rot_panoramic.toml`: 360° at 60
+The sole active mission plan is `scripts/mission_control/mission_plan/trans_plus_rot_panoramic.toml`: 360° at 60
 pixels/degree (21,600 columns), speed `[0.001, 0.006]`, heading `[-180, 180]`,
-and rotation `[-0.5, 0.5]`. Previous recipes live in `recipe/archive/`, which the
-single-recipe runner ignores.
+and rotation `[-0.5, 0.5]`. Previous mission plans live in `scripts/mission_control/mission_plan/archive/`, which the
+runner ignores when discovering the active mission plan.
 
 `stimuli.apply_dog_filter_after_downsample = true` keeps the usual order:
 downsample, then DoG. Set it to `false` to apply DoG at supersampled resolution
@@ -484,7 +626,7 @@ reject older formats; regenerate data and checkpoints rather than migrating.
 
 Training uses range-normalized MSE on each example's motion prediction.
 
-The recipe configures training and evaluation workers separately (eight by default).
+The mission plan configures training and evaluation workers separately (eight by default).
 Training workers persist across epochs; CUDA batches use pinned RAM and
 non-blocking transfers. Training loads and transfers float32 DoG contrast, then
 computes correlations on the device. Set `optimization.num_workers = 0` for in-process
@@ -499,6 +641,18 @@ Run the correctness and pipeline tests with the project's Python environment:
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+Each `test_*.py` file is independent and may be removed without breaking the
+application or remaining tests. Shared mission plan fixtures live in
+`tests/mission_plan_helpers.py`; training-engine helpers live in `tests/training_helpers.py`.
+Test files must not import each other or leave global settings changed for later
+tests. These requirements are recorded in `AGENTS.md`.
+
+Run an individual file using discovery, for example:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p test_evaluation.py -v
 ```
 
 ## Motion-estimation model baseline
@@ -565,7 +719,7 @@ and [Duffy & Wurtz (1991)](https://doi.org/10.1152/jn.1991.65.6.1329).
 Every new cache root contains `dog.json`, recording DoG sigmas/support,
 normalization and boundary rules, input/output shapes and dtypes, sample count,
 UTC start/end times, generation settings, Git commit, and a reference to
-the run's source snapshot. A recipe run captures source and environment once in
+the run's source snapshot. A mission plan run captures source and environment once in
 `<output_path>/<network>/provenance/`; all datasets, including background-generated
 sets, reference it. Standalone generation captures once at its output root.
 Preserve that provenance directory when archiving datasets separately.
@@ -585,7 +739,7 @@ The archive contains tracked and nonignored untracked files, excluding the
 current output directory; Git-ignored datasets/environments and Git history
 are not bundled. Dependencies are recorded, not packaged. Artifact metadata is
 stored in `dog.json`. Git must be available with an existing HEAD commit.
-Recipe runs check Git at set boundaries and before generation, training, validation,
+Mission plan runs check Git at set boundaries and before generation, training, validation,
 and testing. Keep the repository untouched throughout the run. Dataset reuse
 requires the same commit, seed, role, sample count, stimulus and DoG settings.
 Structural manifest validation checks every bundle
@@ -596,3 +750,9 @@ normalization. Filtering uses batches of at most 16, independent of bundle size.
 The kernel radius is always `ceil(3*sigma_surround)`.
 
 Runtime dependencies are declared only in `requirements.txt`; `setup.py` reads it.
+
+The active configuration now lives in `scripts/mission_control/mission_plan/`;
+the former top-level `recipe/` location is no longer supported. The backend entry
+point is `scripts/mission_control/backend/run_mission_plan.py`. Python APIs and
+new run/control metadata use `mission_plan` names and keys. Existing run artifacts
+are preserved; use their matching source revision to operate them.

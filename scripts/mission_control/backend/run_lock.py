@@ -1,4 +1,4 @@
-"""Allow only one recipe run per user on this machine."""
+"""Allow only one mission plan run per user on this machine."""
 
 from contextlib import contextmanager
 import fcntl
@@ -8,7 +8,7 @@ from pathlib import Path
 
 @contextmanager
 def run_lock():
-    # Independent of checkout, recipe paths, and per-run TMPDIR settings.
+    # Independent of checkout, mission plan paths, and per-run TMPDIR settings.
     registry = Path('/tmp') / f'dw93net-run-locks-{os.getuid()}'
     registry.mkdir(mode=0o700, exist_ok=True)
     descriptor = os.open(registry / 'run.lock', os.O_RDWR | os.O_CREAT, 0o600)
@@ -16,7 +16,7 @@ def run_lock():
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise RuntimeError('Another recipe run is already active for this user on this machine') from error
+            raise RuntimeError('Another mission plan run is already active for this user on this machine') from error
         yield (descriptor,)
     finally:
         # Close rather than LOCK_UN: inherited descriptors keep background

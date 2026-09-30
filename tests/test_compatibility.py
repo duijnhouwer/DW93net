@@ -17,9 +17,9 @@ from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
 from stimuli.load_flow_xt_data import DoGDataset
 from stimuli.metadata import motion_scales
 from stimuli.preprocessing_provenance import capture_provenance
-from train.train_flow_xt_net import RecipeTrainingSettings
-from training_helpers import train_recipe_set
-from test_training_recipe import module, DETECTOR
+from train.train_flow_xt_net import MissionPlanTrainingSettings
+from training_helpers import train_mission_plan_set
+from mission_plan_helpers import module, DETECTOR
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -61,14 +61,14 @@ class CompatibilityTests(unittest.TestCase):
             renamed = cache.with_name('anything_at_all')
             cache.rename(renamed)
             self.assertEqual(motion_scales(renamed), scales)
-            cfg = RecipeTrainingSettings(root_folder=str(renamed), checkpoint_dir=str(root / 'checkpoints'),
+            cfg = MissionPlanTrainingSettings(root_folder=str(renamed), checkpoint_dir=str(root / 'checkpoints'),
                 git_commit='a' * 40, training_set_index=0, training_seed=4, epochs_per_set=1,
                 shuffle_seed=9, num_workers=0, batch_size=2, allow_amp=False,
                 mirror_train_stimuli=False, dx_values=(-1, 0, 1))
-            latest = train_recipe_set(cfg)
+            latest = train_mission_plan_set(cfg)
             checkpoint = load_checkpoint(latest, resume=True, expected_commit='a' * 40)
             with self.assertRaisesRegex(ValueError, 'Git commit'):
-                train_recipe_set(replace(cfg, git_commit='b' * 40))
+                train_mission_plan_set(replace(cfg, git_commit='b' * 40))
             with self.assertRaisesRegex(ValueError, 'Git commit'):
                 module.evaluate_model(latest, renamed, 'train',
                                       dict(batch_size=2, num_workers=0), 'b' * 40)

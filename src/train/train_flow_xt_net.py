@@ -1,4 +1,4 @@
-"""Training engine called by the recipe orchestrator for one seeded set."""
+"""Training engine called by the mission plan orchestrator for one seeded set."""
 
 import os
 import copy
@@ -27,7 +27,7 @@ class NumericalTrainingError(RuntimeError):
 
 
 @dataclass
-class RecipeTrainingSettings:
+class MissionPlanTrainingSettings:
     root_folder: str
     checkpoint_dir: str
     git_commit: str
@@ -92,7 +92,8 @@ def record_completed_epoch(log, checkpoint, *, recover=False, timing=None):
                    recovered_from_checkpoint=recover)
 
 
-def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
+def train_mission_plan_set(cfg, *, validate_epoch, progress_callback=None, should_finish=None,
+                     control_callback=None, epoch_callback=None):
     """Train one seeded dataset, resuming only at completed epoch boundaries."""
     if type(cfg.training_set_index) is not int or cfg.training_set_index < 0:
         raise ValueError('training_set_index must be a nonnegative integer')
@@ -160,13 +161,13 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
         previous_epoch = checkpoint['epoch_within_set']
         if previous_index == cfg.training_set_index:
             if checkpoint['training_seed'] != cfg.training_seed:
-                raise ValueError('Checkpoint training seed does not match the recipe')
+                raise ValueError('Checkpoint training seed does not match the mission plan')
             start_epoch = previous_epoch
         elif previous_index == cfg.training_set_index - 1:
             if previous_epoch != cfg.epochs_per_set:
                 raise ValueError('Previous training set checkpoint is incomplete')
         else:
-            raise ValueError('Checkpoint training-set position does not match the recipe')
+            raise ValueError('Checkpoint training-set position does not match the mission plan')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         allow_amp = allow_amp and checkpoint['allow_amp']
@@ -198,7 +199,11 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
         })
 
     for epoch_index in range(start_epoch, cfg.epochs_per_set):
+        if should_finish is not None and should_finish() and latest_path.exists():
+            break
         global_epoch = cfg.training_set_index * cfg.epochs_per_set + epoch_index + 1
+        if epoch_callback is not None:
+            epoch_callback(global_epoch)
         cpu_rng = torch.get_rng_state()
         cuda_rng = torch.cuda.get_rng_state_all() if device == 'cuda' else None
         worker_rng = worker_generator.get_state()
@@ -220,6 +225,8 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
                 window_start = time.perf_counter()
                 window_wait = 0.0
                 for batch_index in range(len(train_loader)):
+                    if control_callback is not None:
+                        control_callback()
                     wait_start = time.perf_counter()
                     x, y = next(iterator)
                     batch_wait = time.perf_counter() - wait_start
@@ -320,7 +327,9 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
                 next_rate = optimizer.param_groups[0]['lr']
                 improved = validation_loss < best_validation_loss
                 candidate_name = f'epoch-{global_epoch:06d}.pt'
-                stop_reason = 'learning_rate_minimum' if next_rate <= cfg.learning_rate_minimum else None
+                finish_requested = should_finish is not None and should_finish()
+                stop_reason = ('learning_rate_minimum' if next_rate <= cfg.learning_rate_minimum
+                               else 'user_requested' if finish_requested else None)
                 common.update(validation=validation, validation_loss=validation_loss, learning_rate=next_rate)
                 print(f'Validation loss {validation_loss:.6g}; next learning rate {next_rate:.6g}', flush=True)
                 if next_rate < previous_rate:
@@ -381,6 +390,8 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
                 # The next attempt reseeds the sampler to the same epoch/order.
         # Retain every new validation best, periodic snapshots, and the terminal
         # epoch. The latest checkpoint commits which candidate is actually best.
+        if control_callback is not None:
+            control_callback()
         checkpoint_start = time.perf_counter()
         checkpoint['epoch_record'] = dict(git_commit=cfg.git_commit,
             training_set_index=cfg.training_set_index, training_seed=cfg.training_seed,
@@ -404,7 +415,7 @@ def train_recipe_set(cfg, *, validate_epoch, progress_callback=None):
             'epoch_wall_duration_s': time.perf_counter() - epoch_wall_start,
             'checkpoint_duration_s': time.perf_counter() - checkpoint_start})
         print(f'Healthy checkpoint saved: {latest_path}; global epoch {global_epoch}', flush=True)
-        if stop_reason:
+        if stop_reason or (should_finish is not None and should_finish()):
             break
 
     return latest_path

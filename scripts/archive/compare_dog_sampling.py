@@ -73,12 +73,12 @@ def main():
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     verification = self_check()
-    recipe = tomllib.loads((ROOT / 'recipe/translation_only.toml').read_text())
-    stim, detector = recipe['stimuli'], recipe['detector']
+    mission_plan = tomllib.loads((ROOT / 'scripts/mission_control/mission_plan/translation_only.toml').read_text())
+    stim, detector = mission_plan['stimuli'], mission_plan['detector']
     cfg = StimConfig(**{k: v for k, v in stim.items() if k not in
         ('speed_range', 'heading_deg_range', 'rot_deg_range', 'dog_bundle_size')})
     cfg.x_supersampling = args.supersampling
-    if cfg.superimpose:
+    if cfg.duffy_wurtz_superimposition_enable:
         raise ValueError('This experiment requires non-superimposed stimuli')
     s, width = args.supersampling, cfg.stim_wid_px
     center, surround = detector['dog_sigma_center_px'], detector['dog_sigma_surround_px']

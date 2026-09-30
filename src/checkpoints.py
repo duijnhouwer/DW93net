@@ -50,7 +50,7 @@ def validate_checkpoint(checkpoint, *, resume=False, expected_commit=None):
             value = checkpoint[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError(f'Checkpoint {key} must be finite and nonnegative')
-        if checkpoint['stop_reason'] not in (None, 'learning_rate_minimum'):
+        if checkpoint['stop_reason'] not in (None, 'learning_rate_minimum', 'user_requested'):
             raise ValueError('Invalid checkpoint stop reason')
     if resume and checkpoint['kind'] != 'resume':
         raise ValueError('A model-only candidate cannot resume training')

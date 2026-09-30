@@ -40,7 +40,8 @@ def read_metadata(cache):
         raise ValueError('Invalid polar motion bounds')
     config = generation['stimulus_config']
     for key in ('stim_wid_px', 'fov_deg', 'near_exclusion_radius',
-                'n_world_dots', 'superimpose', 'x_supersampling'):
+                'n_world_dots', 'duffy_wurtz_superimposition_enable',
+                'duffy_wurtz_rotation_pct', 'x_supersampling'):
         if key not in config:
             raise ValueError(f'Missing stimulus geometry: {key}')
     boundary = resolve_boundary(config['fov_deg'])

@@ -1,5 +1,5 @@
 """Deterministic held-out metrics for isolated training-engine unit tests."""
-from train.train_flow_xt_net import train_recipe_set as train_engine
+from train.train_flow_xt_net import train_mission_plan_set as train_engine
 
 
 def fixed_validation(checkpoint):
@@ -8,6 +8,6 @@ def fixed_validation(checkpoint):
                 translation_vector_tip_mae=0., rotation_mae_deg=0.)
 
 
-def train_recipe_set(cfg, **kwargs):
+def train_mission_plan_set(cfg, **kwargs):
     kwargs.setdefault('validate_epoch', fixed_validation)
     return train_engine(cfg, **kwargs)

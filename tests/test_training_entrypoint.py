@@ -34,20 +34,20 @@ class TrainingEntrypointTests(unittest.TestCase):
 
     def test_generation_and_prefetch_refuse_changed_repository_before_writing(self):
         from unittest.mock import patch
-        from test_training_recipe import module, recipe_text, DETECTOR
-        from parallel_stimuli import Prefetch
+        from mission_plan_helpers import module, mission_plan_text, DETECTOR
+        from scripts.mission_control.backend.parallel_stimuli import Prefetch
         with tempfile.TemporaryDirectory() as directory:
-            recipe_path = Path(directory) / 'recipe.toml'
-            recipe_path.write_text(recipe_text(directory) + '\n[parallel_generation]\nenabled = true\n')
-            recipe = module.load_recipe(recipe_path)
+            mission_plan_path = Path(directory) / 'mission_plan.toml'
+            mission_plan_path.write_text(mission_plan_text(directory) + '\n[parallel_generation]\nenabled = true\n')
+            mission_plan = module.load_mission_plan(mission_plan_path)
             section = dict(seed=4000, n_samples=2, _detector=DETECTOR,
                            _repo_root=directory, _git_commit='a' * 40)
             destination = Path(directory) / 'data'
             with patch.object(module, 'committed_revision', side_effect=SystemExit('ERROR')):
                 with self.assertRaises(SystemExit):
-                    module._prepare_dataset(destination, 'train', section, recipe['stimuli'], persistent=False)
+                    module._prepare_dataset(destination, 'train', section, mission_plan['stimuli'], persistent=False)
             self.assertFalse(destination.exists())
-            prefetch = Prefetch(recipe)
+            prefetch = Prefetch(mission_plan)
             with patch('run_revision.committed_revision', side_effect=SystemExit('ERROR')):
                 with self.assertRaises(SystemExit):
                     prefetch.start(section)
@@ -56,13 +56,13 @@ class TrainingEntrypointTests(unittest.TestCase):
 
     def test_edit_during_training_stops_before_next_set_and_preserves_checkpoint(self):
         from unittest.mock import patch
-        from test_training_recipe import module, recipe_text
+        from mission_plan_helpers import module, mission_plan_text
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'repo'
-            (root / 'recipe').mkdir(parents=True)
+            (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
             (Path(directory) / 'output').mkdir()
-            recipe_path = root / 'recipe' / 'smoke.toml'
-            recipe_path.write_text(recipe_text(directory))
+            mission_plan_path = root / 'scripts/mission_control/mission_plan' / 'smoke.toml'
+            mission_plan_path.write_text(mission_plan_text(directory))
             readme = root / 'README.md'
             readme.write_text('original')
             def git(*args):
@@ -71,16 +71,16 @@ class TrainingEntrypointTests(unittest.TestCase):
             git('add', '.')
             git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial')
             commit = git('rev-parse', 'HEAD')
-            latest = Path(directory) / 'output' / 'smoke' / 'checkpoints' / 'latest.pt'
+            latest = Path(directory) / 'output' / module.run_directory_name('smoke', commit, root=root) / 'checkpoints' / 'latest.pt'
             def train(cfg, **kwargs):
                 latest.write_bytes(b'last completed checkpoint')
                 readme.write_text('edited during training')
             with patch.object(module, 'capture_provenance', return_value={'git_commit': commit}), \
                     patch.object(module, '_prepare_dataset', return_value=Path(directory) / 'cache') as generate, \
-                    patch.object(module, 'train_recipe_set', side_effect=train), \
+                    patch.object(module, 'train_mission_plan_set', side_effect=train), \
                     patch.object(module, '_select_final') as select:
                 with self.assertRaisesRegex(SystemExit, 'ERROR: Repository changed'):
-                    module.run_recipe(recipe_path, root=root)
+                    module.run_mission_plan(mission_plan_path, root=root)
             self.assertEqual(generate.call_count, 2)
             select.assert_not_called()
             self.assertEqual(latest.read_bytes(), b'last completed checkpoint')

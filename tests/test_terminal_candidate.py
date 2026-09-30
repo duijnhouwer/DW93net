@@ -7,8 +7,8 @@ from unittest.mock import patch
 import torch
 
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
-from train.train_flow_xt_net import RecipeTrainingSettings
-from training_helpers import train_recipe_set
+from train.train_flow_xt_net import MissionPlanTrainingSettings
+from training_helpers import train_mission_plan_set
 
 
 class TerminalCandidateTests(unittest.TestCase):
@@ -29,19 +29,19 @@ class TerminalCandidateTests(unittest.TestCase):
             for interval, expected in ((10, [1, 4]), (3, [1, 3, 4]), (2, [1, 2, 4])):
                 with self.subTest(interval=interval):
                     checkpoints = root / str(interval)
-                    cfg = RecipeTrainingSettings(
+                    cfg = MissionPlanTrainingSettings(
                         root_folder=cache, checkpoint_dir=str(checkpoints),
                         git_commit='a' * 40, training_set_index=0, training_seed=4,
                         epochs_per_set=2, shuffle_seed=99, batch_size=2, num_workers=0,
                         allow_amp=False, mirror_train_stimuli=False,
                         dx_values=(-1, 0, 1), candidate_interval_epochs=interval,
                         is_final_training_set=False)
-                    train_recipe_set(cfg)
+                    train_mission_plan_set(cfg)
                     candidates = checkpoints / 'candidates'
                     self.assertEqual(len(list(candidates.glob('*.pt'))), 1 + int(interval == 2))
                     final_cfg = replace(cfg, training_set_index=1, training_seed=5,
                                         is_final_training_set=True)
-                    latest = train_recipe_set(final_cfg)
+                    latest = train_mission_plan_set(final_cfg)
                     self.assertEqual(sorted(p.name for p in candidates.glob('*.pt')),
                                      [f'epoch-{epoch:06d}.pt' for epoch in expected])
                     terminal = candidates / 'epoch-000004.pt'
@@ -51,5 +51,5 @@ class TerminalCandidateTests(unittest.TestCase):
                     for key, tensor in candidate['model_state_dict'].items():
                         self.assertTrue(torch.equal(tensor, checkpoint['model_state_dict'][key]))
                     saved_time = terminal.stat().st_mtime_ns
-                    train_recipe_set(final_cfg)
+                    train_mission_plan_set(final_cfg)
                     self.assertEqual(terminal.stat().st_mtime_ns, saved_time)

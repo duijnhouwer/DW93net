@@ -9,14 +9,14 @@ from datetime import datetime, timezone
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 from stimuli.load_flow_xt_data import DoGDataset
 from checkpoints import load_checkpoint
 from run_revision import committed_revision
 from evaluation import metrics, binned_metrics, inference_batches, METRIC_DEFINITIONS
 from training_log import EventLog
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 
@@ -149,7 +149,7 @@ def save_plots(rows, output_dir, heading_counts, speed_counts, *, heading_percen
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoints', type=Path, required=True,
-                        help='Recipe checkpoint directory containing candidates/')
+                        help='Mission plan checkpoint directory containing candidates/')
     parser.add_argument('--data', type=Path, required=True,
                         help='Existing signed DoG cache root containing the selected split')
     parser.add_argument('--split', choices=['validate', 'test'], default='validate')
@@ -205,7 +205,7 @@ def main():
     out = (args.output / args.checkpoints.parent.name / commit[:12] /
            datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     out.mkdir(parents=True, exist_ok=True)
-    log = EventLog(args.log or args.checkpoints.parent.parent / 'training_log.jsonl',
+    log = EventLog(args.log or args.checkpoints.parent / 'training_log.jsonl',
                    str(args.checkpoints))
     evaluation_id = out.name
     log.append('progress_evaluation_started', evaluation_id=evaluation_id,
@@ -260,7 +260,7 @@ def main():
     report = ['# Translation progress', '',
               f'{len(indices)} fixed {args.split} examples; seed {args.seed}. Heading is primary.',
               'Speed and vector-tip errors are scene units per step. Vector-tip error is ||[dx,dz]-[dx_hat,dz_hat]||. Plot error bars are normal-approximation 95% confidence intervals of the mean. Fixed-speed results do not establish variable-speed recovery.',
-              'Ordered by global epoch within this recipe run.', '',
+              'Ordered by global epoch within this mission plan run.', '',
               '| Checkpoint | Epoch | Saved (UTC) | Heading MAE ° | Cosine similarity | Median ° | Within 15° % | Speed MAE % | Speed RMSE | Vector-tip MAE % | Vector-tip median |',
               '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for row in rows:

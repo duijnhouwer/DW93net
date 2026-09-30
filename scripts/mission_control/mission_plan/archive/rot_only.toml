@@ -1,4 +1,4 @@
-# The filename is the network name. The runner permits one active recipe directly in recipe/.
+# The filename is the network name. The runner permits one active mission plan directly in scripts/mission_control/mission_plan/.
 version = 1
 require_cuda = true
 
@@ -6,13 +6,14 @@ require_cuda = true
 output_path = "/home/jacob/Documents/dw93net_output"
 
 [stimuli]
-speed_range = [0.001, 0.006]
-heading_deg_range = [-180, 180]
-rot_deg_range = [-0.5, 0.5]
-fov_deg = 360
+speed_range = [0, 0] # [0.001, 0.006]
+heading_deg_range = [0, 0] # [-180, 180]
+rot_deg_range = [-1, 1]
+fov_deg = 120
 near_exclusion_radius = 0.04
 n_world_dots = 1000
-superimpose = false
+duffy_wurtz_superimposition_enable = true
+duffy_wurtz_rotation_pct = 50
 x_supersampling = 255
 dog_bundle_size = 64
 apply_dog_filter_after_downsample = true
@@ -46,7 +47,7 @@ seed = 3000
 n_samples = 100000
 
 [optimization]
-batch_size = 32
+batch_size = 64
 # Enable AMP for exploratory training; disable to compare without AMP.
 allow_amp = true
 allow_tp32 = true
@@ -57,7 +58,7 @@ mirror_train_stimuli = true
 [parallel_generation]
 enabled = true
 min_threads = 1
-max_threads = 4
+max_threads = 8
 
 [learning_rate]
 initial = 0.001
@@ -74,6 +75,6 @@ candidate_interval_epochs = 1
 keep_previous_resumable = true
 
 [evaluation]
-batch_size = 32
+batch_size = 64
 num_workers = 8
 shuffle = false

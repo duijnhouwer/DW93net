@@ -31,10 +31,26 @@ class NonfiniteEvaluationError(ValueError):
     """Numerical model failure during held-out inference."""
 
 
-def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0, indices=None):
-    configure_tf32(checkpoint['allow_tp32'])
-    if checkpoint['data_contract'] != data_contract(dataset.storage_metadata):
+def validate_inference_contract(checkpoint, metadata, protocol=None):
+    """Only the named transparent-flow experiment may change Duffy-Wurtz flow."""
+    expected = checkpoint['data_contract']
+    if protocol == 'duffy_wurtz_1993':
+        generation = metadata['stimulus_generation']
+        if (generation['role'] != protocol
+                or generation['stimulus_config'].get('duffy_wurtz_superimposition_enable') is not True):
+            raise ValueError('Duffy-Wurtz evaluation requires its named superimposed split')
+        expected = expected | {'geometry': expected['geometry'] | {
+            'duffy_wurtz_superimposition_enable': True}}
+    elif protocol is not None:
+        raise ValueError(f'Unknown evaluation protocol: {protocol}')
+    if expected != data_contract(metadata):
         raise ValueError('Checkpoint dataset geometry or generation implementation does not match')
+
+
+def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0, indices=None,
+                      protocol=None, control_callback=None):
+    configure_tf32(checkpoint['allow_tp32'])
+    validate_inference_contract(checkpoint, dataset.storage_metadata, protocol)
     detector = checkpoint['detector']
     if detector['dog'] != dataset.metadata:
         raise ValueError('Checkpoint DoG configuration does not match dataset')
@@ -47,6 +63,8 @@ def inference_batches(checkpoint, dataset, *, device, batch_size, num_workers=0,
     loader = make_flow_loader(subset, batch_size, device, num_workers=num_workers)
     with torch.inference_mode():
         for contrast, target in loader:
+            if control_callback is not None:
+                control_callback()
             prediction = model(bank(contrast.to(device, non_blocking=True).float()[:, None],
                                     validate=False)).float()
             if not torch.isfinite(target).all():
@@ -98,6 +116,55 @@ def summary_metrics(batches, scales):
     if any(value is not None and not math.isfinite(value) for value in result.values()):
         raise NonfiniteEvaluationError('Nonfinite evaluation metrics')
     return result
+
+
+def duffy_wurtz_summary(batches, scales):
+    """Component-reference errors plus signed heading responses by overlay direction.
+
+    These transparent layers do not define one rigid-camera ground truth. Positive
+    aligned bias means toward the overlay's retinal motion (same sign as this renderer's rot_deg parameter).
+    This is not a paired subtraction of a no-overlay baseline.
+    """
+    groups = {name: dict(n_samples=0, n_headings=0, sin=0., cos=0.,
+                         predicted_yaw=0., overlay_yaw=0.)
+              for name in ('leftward', 'stationary', 'rightward')}
+
+    def observed():
+        for prediction, target in batches:
+            errors = translation_errors(prediction[:, :2], target[:, :2])
+            signed = np.full(len(target), np.nan)
+            signed[errors['valid']] = np.radians(errors['angles'])
+            retinal_direction = np.sign(target[:, 2])
+            for direction, name in ((-1, 'leftward'), (0, 'stationary'), (1, 'rightward')):
+                selected = retinal_direction == direction
+                group = groups[name]
+                group['n_samples'] += int(selected.sum())
+                group['predicted_yaw'] += float(prediction[selected, 2].astype(float).sum())
+                group['overlay_yaw'] += float(target[selected, 2].astype(float).sum())
+                angles = signed[selected & errors['valid']]
+                group['n_headings'] += len(angles)
+                group['sin'] += float(np.sin(angles).sum())
+                group['cos'] += float(np.cos(angles).sum())
+            yield prediction, target
+
+    result = summary_metrics(observed(), scales)
+    responses = {}
+    for direction, name in ((-1, 'leftward'), (0, 'stationary'), (1, 'rightward')):
+        group = groups[name]
+        n, h = group['n_samples'], group['n_headings']
+        resultant = math.hypot(group['sin'], group['cos']) / h if h else None
+        bias = (math.degrees(math.atan2(group['sin'], group['cos']))
+                if resultant is not None and resultant > 1e-12 else None)
+        responses[name] = dict(n_samples=n, n_headings=h,
+            heading_bias_deg=bias, heading_resultant_length=resultant,
+            overlay_aligned_heading_bias_deg=bias * direction if bias is not None and direction else None,
+            predicted_yaw_mean_deg=group['predicted_yaw'] / n if n else None,
+            overlay_yaw_mean_deg=group['overlay_yaw'] / n if n else None)
+    return result | {'reference': 'translation-layer vector and rotation-layer yaw; not a single camera motion',
+                     'heading_response': responses,
+                     'heading_response_definition': 'Circular mean of predicted minus translation-layer heading; '
+                         'aligned positive means toward overlay retinal motion; positive rot_deg moves toward increasing columns. '
+                         'Not baseline-subtracted; not alone evidence for the perceptual illusion.'}
 
 
 def translation_errors(pred, target):

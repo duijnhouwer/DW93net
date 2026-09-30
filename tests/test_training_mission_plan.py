@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,89 +8,37 @@ from unittest.mock import patch
 
 import torch
 
-spec = importlib.util.spec_from_file_location(
-    'run_training_recipe',
-    Path(__file__).resolve().parents[1] / 'scripts/run_training_recipe.py')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-
-DETECTOR = {'displacement_min_px': -60, 'displacement_max_px': 60,
-            'displacement_step_px': 1, 'dog_sigma_center_px': 1.0,
-            'dog_sigma_surround_px': 3.0}
+from mission_plan_helpers import module, mission_plan_text, DETECTOR, TEST_RUN_NAME, candidate_checkpoint
 
 
-def recipe_text(root):
-    return f'''
-version = 1
-require_cuda = false
-[network]
-output_path = "{root}/output"
-[stimuli]
-speed_range = [0.001, 0.006]
-heading_deg_range = [-180, 180]
-rot_deg_range = [0, 0]
-dog_bundle_size = 64
-[detector]
-displacement_min_px = -60
-displacement_max_px = 60
-displacement_step_px = 1
-dog_sigma_center_px = 1.0
-dog_sigma_surround_px = 3.0
-[training_sets]
-path = "{root}/stimuli/training"
-number_of_sets = 3
-samples_per_set = 5000
-epochs_per_set = 10
-start_seed = 4000
-seed_increment = 1
-shuffle_seed = 7000
-[validation_set]
-path = "{root}/stimuli/validation"
-seed = 2000
-n_samples = 1000
-selection_metric = "validation_loss"
-[test_set]
-path = "{root}/stimuli/test"
-seed = 3000
-n_samples = 1000
-[optimization]
-batch_size = 64
-allow_amp = true
-allow_tp32 = true
-profile_batches = 20
-num_workers = 0
-mirror_train_stimuli = true
-[learning_rate]
-initial = 0.001
-scheduler = "reduce_on_plateau"
-monitor = "validation_loss"
-factor = 0.5
-patience_epochs = 10
-minimum = 0.000001
-relative_improvement_threshold = 0.0001
-reset_on_new_training_set = false
-[checkpoints]
-candidate_interval_epochs = 1
-keep_previous_resumable = true
-[evaluation]
-batch_size = 64
-num_workers = 0
-shuffle = false
-'''
+class TrainingMissionPlanTests(unittest.TestCase):
+    def test_discovery_requires_one_tracked_plan_in_new_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            legacy = root / 'recipe'
+            legacy.mkdir()
+            (legacy / 'old.toml').write_text('version = 1\n')
+            with self.assertRaisesRegex(ValueError, 'Expected exactly one'):
+                module.discover_mission_plan(root)
+            plans = root / 'scripts/mission_control/mission_plan'
+            (plans / 'archive').mkdir(parents=True)
+            (plans / 'archive/old.toml').write_text('version = 1\n')
+            active = plans / 'active.toml'
+            active.write_text('version = 1\n')
+            with self.assertRaisesRegex(ValueError, 'must be tracked by Git'):
+                module.discover_mission_plan(root)
+            subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
+            self.assertEqual(module.discover_mission_plan(root), active)
+            (plans / 'second.toml').write_text('version = 1\n')
+            with self.assertRaisesRegex(ValueError, 'Expected exactly one'):
+                module.discover_mission_plan(root)
 
+    def setUp(self):
+        timestamp = patch('run_revision.commit_timestamp', return_value='20000101000000')
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
 
-def candidate_checkpoint(commit, epoch=1):
-    from checkpoints import SCHEMA
-    return dict(schema=SCHEMA, kind='candidate', allow_amp=True, allow_tp32=True,
-                data_contract={}, git_commit=commit, global_epoch=epoch,
-                training_set_index=0, training_seed=1, epoch_within_set=epoch,
-                epochs_per_set=epoch, training_loss=.1, learning_rate=.001,
-                validation={}, validation_loss=1., best_validation_loss=1.,
-                best_candidate='epoch-000001.pt', stop_reason=None,
-                detector={}, n_input_channels=3, model_state_dict={})
-
-
-class TrainingRecipeTests(unittest.TestCase):
     def test_final_test_cache_requires_exact_model_and_dataset_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'test-results.json'
@@ -120,47 +69,98 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_removed_test_staging_option_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            path.write_text(recipe_text(directory).replace(
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace(
                 '[test_set]', f'[test_set]\nstaging_path = "{directory}/staged-test"'))
             with self.assertRaisesRegex(ValueError, 'Unknown test_set field.*staging_path'):
-                module.load_recipe(path)
+                module.load_mission_plan(path)
 
     def test_dog_order_option_is_boolean(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
+            path = Path(directory) / 'mission_plan.toml'
             for value in ('true', 'false', '1', '"false"'):
-                path.write_text(recipe_text(directory).replace('[stimuli]',
+                path.write_text(mission_plan_text(directory).replace('[stimuli]',
                     f'[stimuli]\napply_dog_filter_after_downsample = {value}'))
                 if value in ('true', 'false'):
-                    self.assertEqual(module.load_recipe(path)['stimuli']['apply_dog_filter_after_downsample'],
+                    self.assertEqual(module.load_mission_plan(path)['stimuli']['apply_dog_filter_after_downsample'],
                                      value == 'true')
                 else:
                     with self.assertRaisesRegex(ValueError, 'apply_dog_filter_after_downsample'):
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
+
+    def test_duffy_wurtz_overlay_options_require_valid_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
+            for value in ('true', 'false'):
+                path.write_text(original.replace(
+                    'duffy_wurtz_superimposition_enable = false',
+                    f'duffy_wurtz_superimposition_enable = {value}'))
+                self.assertEqual(module.load_mission_plan(path)['stimuli'][
+                    'duffy_wurtz_superimposition_enable'], value == 'true')
+            for value in ('1', '"true"'):
+                path.write_text(original.replace(
+                    'duffy_wurtz_superimposition_enable = false',
+                    f'duffy_wurtz_superimposition_enable = {value}'))
+                with self.assertRaisesRegex(ValueError, 'duffy_wurtz_superimposition_enable'):
+                    module.load_mission_plan(path)
+            for value in ('0', '50', '100', '12.5'):
+                path.write_text(original.replace('duffy_wurtz_rotation_pct = 50',
+                                                 f'duffy_wurtz_rotation_pct = {value}'))
+                self.assertEqual(module.load_mission_plan(path)['stimuli'][
+                    'duffy_wurtz_rotation_pct'], float(value))
+            for value in ('-0.1', '100.1', 'true', '"50"'):
+                path.write_text(original.replace('duffy_wurtz_rotation_pct = 50',
+                                                 f'duffy_wurtz_rotation_pct = {value}'))
+                with self.assertRaisesRegex(ValueError, 'duffy_wurtz_rotation_pct'):
+                    module.load_mission_plan(path)
+
+    def test_legacy_superimpose_option_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace(
+                'duffy_wurtz_superimposition_enable = false', 'superimpose = true', 1))
+            with self.assertRaisesRegex(ValueError, 'Unknown stimuli field.*superimpose'):
+                module.load_mission_plan(path)
+
+    def test_duffy_wurtz_set_overrides_any_stimulus_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'mission_plan.toml'
+            path.write_text(mission_plan_text(directory).replace(
+                'duffy_wurtz_superimposition_enable = true',
+                'duffy_wurtz_superimposition_enable = true\n'
+                'duffy_wurtz_rotation_pct = 25\n'
+                'fov_deg = 360\n'
+                'n_world_dots = 101'))
+            mission_plan = module.load_mission_plan(path)
+            stimuli = module.duffy_wurtz_stimuli(mission_plan)
+            self.assertEqual(stimuli['duffy_wurtz_rotation_pct'], 25)
+            self.assertEqual(stimuli['fov_deg'], 360)
+            self.assertEqual(stimuli['n_world_dots'], 101)
+            self.assertTrue(stimuli['duffy_wurtz_superimposition_enable'])
 
     def test_precision_options_are_required_booleans(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
+            path = Path(directory) / 'mission_plan.toml'
             for key in ('allow_amp', 'allow_tp32'):
                 for value in ('true', 'false', '1', '"true"'):
-                    path.write_text(recipe_text(directory).replace(f'{key} = true', f'{key} = {value}'))
+                    path.write_text(mission_plan_text(directory).replace(f'{key} = true', f'{key} = {value}'))
                     if value in ('true', 'false'):
-                        self.assertEqual(module.load_recipe(path)['optimization'][key], value == 'true')
+                        self.assertEqual(module.load_mission_plan(path)['optimization'][key], value == 'true')
                     else:
                         with self.assertRaisesRegex(ValueError, key):
-                            module.load_recipe(path)
+                            module.load_mission_plan(path)
 
     def test_removed_full_force_first_set_option_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            original = recipe_text(directory)
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
             for value in ('true', 'false', '1', '"true"'):
                 with self.subTest(value=value):
                     path.write_text(original + '\n[parallel_generation]\n'
                                     f'full_force_first_set = {value}\n')
                     with self.assertRaisesRegex(ValueError, 'Unknown parallel_generation field.*full_force_first_set'):
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
 
     def test_tf32_switch_controls_matmul_and_convolution(self):
         from precision import configure_tf32
@@ -177,67 +177,67 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_speed_bounds_must_be_representable_in_float32(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
+            path = Path(directory) / 'mission_plan.toml'
             for bounds in ('[1e-12, 2e-12]', '[1e-12, 1e-12]', '[1e-50, 1e-40]', '[1e38, 1e40]'):
-                path.write_text(recipe_text(directory).replace(
+                path.write_text(mission_plan_text(directory).replace(
                     'speed_range = [0.001, 0.006]', f'speed_range = {bounds}'))
                 with self.subTest(bounds=bounds):
                     if '1e-12' in bounds:
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
                     else:
                         with self.assertRaisesRegex(ValueError, 'float32'):
-                            module.load_recipe(path)
+                            module.load_mission_plan(path)
 
-    def test_zero_speed_recipe_is_valid_but_negative_speed_is_rejected(self):
+    def test_zero_speed_mission_plan_is_valid_but_negative_speed_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            original = recipe_text(directory)
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
             path.write_text(original.replace('speed_range = [0.001, 0.006]',
                                              'speed_range = [0, 0]'))
-            self.assertEqual(module.load_recipe(path)['stimuli']['speed_range'], [0, 0])
+            self.assertEqual(module.load_mission_plan(path)['stimuli']['speed_range'], [0, 0])
             path.write_text(original.replace('speed_range = [0.001, 0.006]',
                                              'speed_range = [-0.001, 0]'))
             with self.assertRaisesRegex(ValueError, 'nonnegative'):
-                module.load_recipe(path)
+                module.load_mission_plan(path)
 
     def test_near_exclusion_radius_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
+            path = Path(directory) / 'mission_plan.toml'
             for radius in ('0', '0.04', '0.999999', '-0.01', '1', '1.1', 'nan', 'inf', '-inf', 'true'):
                 with self.subTest(radius=radius):
-                    path.write_text(recipe_text(directory).replace(
+                    path.write_text(mission_plan_text(directory).replace(
                         '[stimuli]', f'[stimuli]\nnear_exclusion_radius = {radius}'))
                     if radius in ('0', '0.04', '0.999999'):
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
                     else:
                         with self.assertRaisesRegex(ValueError, 'near_exclusion_radius'):
-                            module.load_recipe(path)
+                            module.load_mission_plan(path)
 
     def test_fov_must_fit_full_circle(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            original = recipe_text(directory)
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
             for fov in ('0.001', '120', '240', '360', '0', '-1', '360.001', 'nan', 'inf', 'true'):
                 with self.subTest(fov=fov):
                     path.write_text(original.replace('[stimuli]', f'[stimuli]\nfov_deg = {fov}'))
                     if fov in ('0.001', '120', '240', '360'):
-                        module.load_recipe(path)
+                        module.load_mission_plan(path)
                     else:
                         with self.assertRaisesRegex(ValueError, 'fov_deg'):
-                            module.load_recipe(path)
+                            module.load_mission_plan(path)
 
     def test_training_seeds_must_start_above_distinct_held_out_seeds(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'recipe.toml'
-            original = recipe_text(directory)
+            path = Path(directory) / 'mission_plan.toml'
+            original = mission_plan_text(directory)
             for start in (0, 1999, 2000, 2500, 3000):
                 with self.subTest(start=start):
                     path.write_text(original.replace('start_seed = 4000', f'start_seed = {start}'))
-                    with self.assertRaisesRegex(ValueError, 'greater than both'):
-                        module.load_recipe(path)
+                    with self.assertRaisesRegex(ValueError, 'greater than all'):
+                        module.load_mission_plan(path)
             path.write_text(original.replace('seed = 3000', 'seed = 2000'))
             with self.assertRaisesRegex(ValueError, 'must differ'):
-                module.load_recipe(path)
+                module.load_mission_plan(path)
             # Both held-out seed orderings are valid, even with many training sets.
             for validation, test in ((2000, 3000), (3000, 2000)):
                 before_test, test_section = original.split('[test_set]', 1)
@@ -246,49 +246,51 @@ class TrainingRecipeTests(unittest.TestCase):
                 text = text.replace('start_seed = 4000', 'start_seed = 3001')
                 text = text.replace('number_of_sets = 3', 'number_of_sets = 1000000')
                 path.write_text(text)
-                module.load_recipe(path)
+                module.load_mission_plan(path)
             for increment in (0, -1):
                 path.write_text(original.replace('seed_increment = 1', f'seed_increment = {increment}'))
                 with self.assertRaisesRegex(ValueError, 'seed_increment must be a positive integer'):
-                    module.load_recipe(path)
+                    module.load_mission_plan(path)
 
     def test_loads_schema_and_rotation_range(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'translation_only.toml'
-            path.write_text(recipe_text(directory))
-            recipe = module.load_recipe(path)
-            self.assertEqual(recipe['training_sets']['number_of_sets'], 3)
-            self.assertEqual(recipe['stimuli']['dog_bundle_size'], 64)
-            path.write_text(recipe_text(directory).replace(
+            path.write_text(mission_plan_text(directory))
+            mission_plan = module.load_mission_plan(path)
+            self.assertEqual(mission_plan['training_sets']['number_of_sets'], 3)
+            self.assertEqual(mission_plan['stimuli']['dog_bundle_size'], 64)
+            path.write_text(mission_plan_text(directory).replace(
                 'rot_deg_range = [0, 0]', 'rot_deg_range = [-0.5, 0.5]'))
-            recipe = module.load_recipe(path)
-            self.assertEqual(recipe['stimuli']['rot_deg_range'], [-0.5, 0.5])
+            mission_plan = module.load_mission_plan(path)
+            self.assertEqual(mission_plan['stimuli']['rot_deg_range'], [-0.5, 0.5])
 
     def test_rejects_relative_or_nested_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'translation_only.toml'
-            path.write_text(recipe_text(directory).replace(
+            path.write_text(mission_plan_text(directory).replace(
                 f'{directory}/stimuli/test', f'{directory}/stimuli/training/test'))
             with self.assertRaisesRegex(ValueError, 'separate, non-nested'):
-                module.load_recipe(path)
-            path.write_text(recipe_text(directory).replace(f'{directory}/output', 'relative'))
+                module.load_mission_plan(path)
+            path.write_text(mission_plan_text(directory).replace(f'{directory}/output', 'relative'))
             with self.assertRaisesRegex(ValueError, 'absolute path'):
-                module.load_recipe(path)
+                module.load_mission_plan(path)
 
-    def test_output_requires_same_commit(self):
+    def test_output_isolated_by_commit_and_reused_only_for_matching_mission_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
             output.mkdir()
-            recipe = {'network': {'output_path': str(output)}}
-            checkpoints, final = module._initialize_output(recipe, 'translation_only', 'a' * 40)
-            self.assertEqual(module._initialize_output(recipe, 'translation_only', 'a' * 40),
+            mission_plan = {'network': {'output_path': str(output)}}
+            checkpoints, final = module._initialize_output(mission_plan, 'translation_only', 'a' * 40)
+            self.assertEqual(module._initialize_output(mission_plan, 'translation_only', 'a' * 40),
                              (checkpoints, final))
             manifest = json.loads((checkpoints.parent / 'run.json').read_text())
             self.assertEqual(manifest['git_commit'], 'a' * 40)
-            with self.assertRaisesRegex(ValueError, 'Git commit'):
-                module._initialize_output(recipe, 'translation_only', 'b' * 40)
+            other, _ = module._initialize_output(mission_plan, 'translation_only', 'b' * 40)
+            self.assertNotEqual(other, checkpoints)
+            self.assertEqual(checkpoints.parent.name, 'translation_only-20000101000000-' + 'a' * 40)
+            self.assertEqual(json.loads((checkpoints.parent / 'run.json').read_text())['git_commit'], 'a' * 40)
             with self.assertRaisesRegex(ValueError, 'does not match'):
-                module._initialize_output(recipe | {'changed': True}, 'translation_only', 'b' * 40)
+                module._initialize_output(mission_plan | {'changed': True}, 'translation_only', 'b' * 40)
 
     def test_generation_writes_only_dog_cache_and_reuses_exact_spec(self):
         stimuli = {'speed_range': [0.001, 0.006], 'heading_deg_range': [-180, 180],
@@ -327,7 +329,7 @@ class TrainingRecipeTests(unittest.TestCase):
             (path / module.MANAGED_MARKER).touch()
             (path / module.DATASET_STATE).write_text(json.dumps({
                 'spec': {'wrong': True}, 'cache': 'missing'}))
-            with self.assertRaisesRegex(ValueError, 'differs from the recipe'):
+            with self.assertRaisesRegex(ValueError, 'differs from the mission plan'):
                 module._prepare_dataset(path, 'test', {'seed': 1, 'n_samples': 10,
                                                        '_detector': DETECTOR},
                                         stimuli, persistent=True)
@@ -345,7 +347,7 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_final_selection_uses_committed_best_not_last_or_orphan_candidate(self):
         commit = 'a' * 40
-        recipe = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
+        mission_plan = {'evaluation': {'batch_size': 2, 'num_workers': 0, 'shuffle': False}}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidates = root / 'checkpoints' / 'candidates'
@@ -359,7 +361,7 @@ class TrainingRecipeTests(unittest.TestCase):
                 optimizer_state_dict={}, scaler_state_dict={}, scheduler_state_dict={}, settings={})
             torch.save(latest, root / 'checkpoints' / 'latest.pt')
             with patch.object(module, 'evaluate_model') as evaluate:
-                module._select_final(root / 'checkpoints', final, recipe, commit)
+                module._select_final(root / 'checkpoints', final, mission_plan, commit)
                 evaluate.assert_not_called()
             log = module.EventLog(root / 'training_log.jsonl', str(root / 'checkpoints'))
             progress = log.events('validation_completed')[-1]
@@ -368,13 +370,14 @@ class TrainingRecipeTests(unittest.TestCase):
 
     def test_resume_second_set_reuses_data_and_completed_epoch(self):
         import train.train_flow_xt_net as training_engine
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'output').mkdir()
-            (root / 'recipe').mkdir()
-            path = root / 'recipe' / 'smoke.toml'
-            text = recipe_text(directory)
+            (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
+            path = root / 'scripts/mission_control/mission_plan' / 'smoke.toml'
+            text = mission_plan_text(directory)
             text = text.replace('number_of_sets = 3', 'number_of_sets = 2')
             text = text.replace('samples_per_set = 5000', 'samples_per_set = 2')
             text = text.replace('epochs_per_set = 10', 'epochs_per_set = 2')
@@ -392,14 +395,14 @@ class TrainingRecipeTests(unittest.TestCase):
             with patch.object(torch.cuda, 'is_available', return_value=False):
                 with patch.object(training_engine, '_save_latest', side_effect=interrupt_after_checkpoint):
                     with self.assertRaisesRegex(RuntimeError, 'Simulated interruption'):
-                        module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                        module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
                 training_path = root / 'stimuli' / 'training'
                 state = json.loads((training_path / module.DATASET_STATE).read_text())
                 self.assertEqual(state['spec']['seed'], 4001)
-                checkpoints = root / 'output' / 'smoke' / 'checkpoints'
+                checkpoints = root / 'output' / TEST_RUN_NAME / 'checkpoints'
                 completed_candidate = checkpoints / 'candidates' / 'epoch-000003.pt'
                 saved_time = completed_candidate.stat().st_mtime_ns
-                original_train = module.train_recipe_set
+                original_train = module.train_mission_plan_set
 
                 def verify_reused_data(cfg, **kwargs):
                     self.assertEqual(cfg.training_set_index, 1)
@@ -408,17 +411,17 @@ class TrainingRecipeTests(unittest.TestCase):
                     return original_train(cfg, **kwargs)
 
                 with patch.object(module, 'generate_dog_dataset', wraps=module.generate_dog_dataset) as generate:
-                    with patch.object(module, 'train_recipe_set', side_effect=verify_reused_data) as train:
-                        module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
+                    with patch.object(module, 'train_mission_plan_set', side_effect=verify_reused_data) as train:
+                        module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
                     self.assertEqual(train.call_count, 1)
                     self.assertEqual([call.kwargs['role'] for call in generate.call_args_list],
-                                     ['test'])
+                                     ['test', 'duffy_wurtz_1993'])
                 latest = torch.load(checkpoints / 'latest.pt', weights_only=True)
-                log = (root / 'output' / 'training_log.jsonl').read_text()
-                self.assertEqual(log.count('Starting/resuming training recipe:'), 2)
+                log = (root / 'output' / TEST_RUN_NAME / 'training_log.jsonl').read_text()
+                self.assertEqual(log.count('Starting/resuming training mission plan:'), 2)
                 self.assertIn('RuntimeError: Simulated interruption', log)
-                self.assertIn('Training recipe complete.', log)
-                records = module.EventLog(root / 'output' / 'training_log.jsonl', str(checkpoints))
+                self.assertIn('Training mission plan complete.', log)
+                records = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl', str(checkpoints))
                 self.assertEqual([e['result']['global_epoch'] for e in records.events('validation_result')],
                                  [1, 2, 3, 4])
                 recovered = [e for e in records.events('epoch_completed') if e['global_epoch'] == 3]
@@ -429,13 +432,14 @@ class TrainingRecipeTests(unittest.TestCase):
                 self.assertFalse(training_path.exists())
 
     def test_tiny_end_to_end_run_replaces_training_sets_and_selects_final(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'output').mkdir()
-            (root / 'recipe').mkdir()
-            path = root / 'recipe' / 'smoke.toml'
-            text = recipe_text(directory)
+            (root / 'scripts/mission_control/mission_plan').mkdir(parents=True)
+            path = root / 'scripts/mission_control/mission_plan' / 'smoke.toml'
+            text = mission_plan_text(directory)
             text = text.replace('number_of_sets = 3', 'number_of_sets = 2')
             text = text.replace('samples_per_set = 5000', 'samples_per_set = 2')
             text = text.replace('epochs_per_set = 10', 'epochs_per_set = 1')
@@ -451,21 +455,24 @@ x_supersampling = 4''')
                                 'mirror_train_stimuli = false')
             text += '\n[parallel_generation]\nenabled = true\nmin_threads = 1\nmax_threads = 2\n'
             path.write_text(text)
-            module.run_recipe(path, root=root, commit='c' * 40, require_clean=False)
-            network = root / 'output' / 'smoke'
-            log = (root / 'output' / 'training_log.jsonl').read_text()
+            module.run_mission_plan(path, root=root, commit='c' * 40, require_clean=False)
+            network = root / 'output' / TEST_RUN_NAME
+            log = (root / 'output' / TEST_RUN_NAME / 'training_log.jsonl').read_text()
             for event in ('global epoch 2', 'Validation performance:', 'Test performance:',
                           'normalized_rmse', 'Training precision:', 'Healthy checkpoint saved:',
-                          'Background generation complete', 'Training recipe complete.'):
+                          'Background generation complete', 'Training mission plan complete.'):
                 self.assertIn(event, log)
             self.assertTrue((network / 'run.json').is_file())
             self.assertEqual(len(list(root.rglob('source.tar.gz'))), 1)
             self.assertEqual(len(list((network / 'checkpoints' / 'candidates').glob('*.pt'))), 2)
             self.assertTrue((network / 'final' / 'model.pt').is_file())
-            events = module.EventLog(root / 'output' / 'training_log.jsonl',
+            events = module.EventLog(root / 'output' / TEST_RUN_NAME / 'training_log.jsonl',
                                      str(network / 'checkpoints'))
             self.assertTrue(events.events('validation_completed'))
             self.assertTrue(events.events('test_result'))
+            self.assertFalse((root / 'output' / 'training_log.jsonl').exists())
+            self.assertEqual({event['run_id'] for event in events.read()},
+                             {str(network / 'checkpoints')})
             self.assertEqual(events.events('training_stopped')[-1]['reason'], 'training_limit')
             for epoch in events.events('epoch_completed'):
                 self.assertGreater(epoch['training_duration_s'], 0)
@@ -489,7 +496,7 @@ x_supersampling = 4''')
             self.assertTrue((root / 'stimuli' / 'validation').exists())
             self.assertTrue((root / 'stimuli' / 'test' / module.DATASET_STATE).is_file())
             progress_spec = importlib.util.spec_from_file_location(
-                'evaluate_progress', module.ROOT / 'scripts' / 'evaluate_progress.py')
+                'evaluate_progress', module.ROOT / 'scripts' / 'archive' / 'evaluate_progress.py')
             progress = importlib.util.module_from_spec(progress_spec)
             progress_spec.loader.exec_module(progress)
             test_path = root / 'stimuli' / 'test'
@@ -510,7 +517,7 @@ x_supersampling = 4''')
             self.assertIn('breakdowns', measurements[0])
             self.assertFalse(list(report_path.rglob('*.json')))
             report_spec = importlib.util.spec_from_file_location(
-                'report_training_log', module.ROOT / 'scripts/report_training_log.py')
+                'report_training_log', module.ROOT / 'scripts/mission_control/backend/report_training_log.py')
             report_module = importlib.util.module_from_spec(report_spec)
             report_spec.loader.exec_module(report_module)
             # No data/checkpoints needed: the report consumes only event records.
