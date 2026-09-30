@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from test_training_recipe import module, recipe_text, TEST_RUN_NAME
+from recipe_helpers import module, recipe_text, TEST_RUN_NAME
 from evaluation import duffy_wurtz_summary, validate_inference_contract
 
 
@@ -36,6 +36,7 @@ class FinishTrainingTests(unittest.TestCase):
 
     def test_stop_evaluation_then_resume_training_immediately(self):
         import train.train_flow_xt_net as engine
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         original_handlers = {n: signal.getsignal(n) for n in (signal.SIGUSR1, signal.SIGUSR2)}
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -82,6 +83,7 @@ class FinishTrainingTests(unittest.TestCase):
             self.assertTrue((network / 'final/duffy_wurtz_1993-results.json').is_file())
 
     def test_signal_before_first_epoch_still_produces_one_healthy_checkpoint(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
@@ -104,6 +106,7 @@ class FinishTrainingTests(unittest.TestCase):
 
     def test_stop_mid_training_discards_epoch_and_skips_evaluation(self):
         import train.train_flow_xt_net as engine
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):
@@ -151,6 +154,7 @@ class FinishTrainingTests(unittest.TestCase):
     def test_repeated_pause_resumes_latest_and_advances_sets(self):
         """Resume a partial set, then cross a set boundary, never rewind to best."""
         import train.train_flow_xt_net as engine
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(
                 torch.cuda, 'is_available', return_value=False):

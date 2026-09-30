@@ -194,7 +194,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         send.assert_not_called()
 
     def test_launch_detaches_logs_and_registers_startup(self):
-        from test_training_recipe import recipe_text, module
+        from recipe_helpers import recipe_text, module
         root = self.registry
         (root / 'recipe').mkdir()
         (root / 'output').mkdir()
@@ -271,7 +271,7 @@ with control.RunnerControl(None, 'recipe.toml', checkpoint) as finish:
         self.assertEqual(control.repository_git_status(root)['branch'], 'detached HEAD')
 
     def test_new_run_records_original_branch_without_changing_resume_identity(self):
-        from test_training_recipe import module, recipe_text
+        from recipe_helpers import module, recipe_text
         root = self.registry
         (root / 'output').mkdir()
         path = root / 'recipe.toml'

@@ -19,7 +19,7 @@ from stimuli.metadata import motion_scales
 from stimuli.preprocessing_provenance import capture_provenance
 from train.train_flow_xt_net import RecipeTrainingSettings
 from training_helpers import train_recipe_set
-from test_training_recipe import module, DETECTOR
+from recipe_helpers import module, DETECTOR
 
 
 class CompatibilityTests(unittest.TestCase):

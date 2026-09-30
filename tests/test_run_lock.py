@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_training_recipe import module, recipe_text
+from recipe_helpers import module, recipe_text
 from scripts.mission_control.backend.run_lock import run_lock
 
 

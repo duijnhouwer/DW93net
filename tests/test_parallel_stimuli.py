@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from test_training_recipe import module, recipe_text, DETECTOR
+from recipe_helpers import module, recipe_text, DETECTOR
 from scripts.mission_control.backend.parallel_stimuli import Prefetch, Throttle
 
 

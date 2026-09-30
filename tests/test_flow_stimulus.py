@@ -19,6 +19,7 @@ class OneStepStimulusTests(unittest.TestCase):
         from dataclasses import replace
         from stimuli.load_flow_xt_data import DoGDataset
         from stimuli.metadata import data_contract
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         config = StimConfig(stim_wid_px=49, n_world_dots=20, x_supersampling=7)
         with tempfile.TemporaryDirectory() as directory:

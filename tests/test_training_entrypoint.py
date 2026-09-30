@@ -34,7 +34,7 @@ class TrainingEntrypointTests(unittest.TestCase):
 
     def test_generation_and_prefetch_refuse_changed_repository_before_writing(self):
         from unittest.mock import patch
-        from test_training_recipe import module, recipe_text, DETECTOR
+        from recipe_helpers import module, recipe_text, DETECTOR
         from scripts.mission_control.backend.parallel_stimuli import Prefetch
         with tempfile.TemporaryDirectory() as directory:
             recipe_path = Path(directory) / 'recipe.toml'
@@ -56,7 +56,7 @@ class TrainingEntrypointTests(unittest.TestCase):
 
     def test_edit_during_training_stops_before_next_set_and_preserves_checkpoint(self):
         from unittest.mock import patch
-        from test_training_recipe import module, recipe_text
+        from recipe_helpers import module, recipe_text
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'repo'
             (root / 'recipe').mkdir(parents=True)

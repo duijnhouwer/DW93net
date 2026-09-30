@@ -629,6 +629,18 @@ Run the correctness and pipeline tests with the project's Python environment:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
+Each `test_*.py` file is independent and may be removed without breaking the
+application or remaining tests. Shared recipe fixtures live in
+`tests/recipe_helpers.py`; training-engine helpers live in `tests/training_helpers.py`.
+Test files must not import each other or leave global settings changed for later
+tests. These requirements are recorded in `AGENTS.md`.
+
+Run an individual file using discovery, for example:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p test_evaluation.py -v
+```
+
 ## Motion-estimation model baseline
 
 `src/models/flatland_flow.py` defines `FlatlandFlowNet`, which consumes

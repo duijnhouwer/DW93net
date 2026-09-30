@@ -139,6 +139,7 @@ class ReichardtTests(unittest.TestCase):
                 bank(xt)
 
     def test_recipe_training_continues_optimizer_across_seeded_sets(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

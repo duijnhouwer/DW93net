@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import torch
 
-from test_training_recipe import module, recipe_text
+from recipe_helpers import module, recipe_text
 import train.train_flow_xt_net as engine
 from training_helpers import train_recipe_set
 from stimuli.generate_flow_xt_data import generate_dog_dataset, StimConfig
@@ -22,7 +22,7 @@ METRICS = dict(n_samples=2, normalized_rmse=.1, translation_speed_mae=.1,
 class NonfiniteTests(unittest.TestCase):
     def test_checkpoint_loading_rejects_nonfinite_nested_tensors(self):
         from checkpoints import load_checkpoint
-        from test_training_recipe import candidate_checkpoint
+        from recipe_helpers import candidate_checkpoint
         commit = 'a' * 40
         candidate = candidate_checkpoint(commit) | {'model_state_dict': {'weight': torch.ones(2)}}
         resume = candidate | dict(kind='resume', optimizer_state_dict={'state': {0: {
@@ -57,6 +57,7 @@ class NonfiniteTests(unittest.TestCase):
             validate_tensor_health(torch.tensor([complex(0, float('inf'))]))
 
     def test_finite_loss_with_corrupt_final_update_retains_all_checkpoints(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(torch.cuda, 'is_available', return_value=False):
             root = Path(directory)
@@ -129,7 +130,7 @@ class NonfiniteTests(unittest.TestCase):
                     candidates.mkdir(parents=True)
                     final.mkdir()
                     candidate = candidates / 'epoch-000001.pt'
-                    from test_training_recipe import candidate_checkpoint
+                    from recipe_helpers import candidate_checkpoint
                     torch.save(candidate_checkpoint(commit) | {'validation_loss': value}, candidate)
                     latest = candidate_checkpoint(commit) | dict(kind='resume', optimizer_state_dict={},
                         scaler_state_dict={}, scheduler_state_dict={}, settings={})
@@ -140,6 +141,7 @@ class NonfiniteTests(unittest.TestCase):
                     self.assertFalse((final / 'validation-results.json').exists())
 
     def test_nonfinite_epoch_preserves_checkpoint_and_scheduler(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory, patch.object(torch.cuda, 'is_available', return_value=False):
             root = Path(directory)

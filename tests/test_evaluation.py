@@ -1,10 +1,7 @@
-import importlib.util
-from pathlib import Path
 import unittest
 
-spec = importlib.util.spec_from_file_location('evaluate_progress', Path(__file__).resolve().parents[1] / 'scripts/archive/evaluate_progress.py')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+import numpy as np
+import evaluation as module
 
 
 class EvaluationMetricsTests(unittest.TestCase):
@@ -24,7 +21,6 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertEqual(m['vector_rmse'], 1)
 
     def test_wrap_boundary(self):
-        np = module.np
         angles = np.deg2rad([179, -179])
         vectors = np.column_stack([np.sin(angles), np.cos(angles)])
         m = module.metrics(vectors[:1], vectors[1:])
@@ -39,7 +35,6 @@ class EvaluationMetricsTests(unittest.TestCase):
 
     def test_streamed_percentages_and_cosines_match_detailed_metrics(self):
         from evaluation import summary_metrics
-        np = module.np
         target = np.array([[0., 1., 0.], [0., 2., 0.], [0., 3., 0.]])
         pred = np.array([[0., 1., 0.], [4., 0., 0.], [0., -3., 0.]])
         summary = summary_metrics([(pred[:1], target[:1]), (pred[1:], target[1:])], (1, 1, 1))
@@ -56,7 +51,6 @@ class EvaluationMetricsTests(unittest.TestCase):
     def test_zero_truth_is_counted_as_undefined_not_infinite_percentage(self):
         from evaluation import summary_metrics
         import json
-        np = module.np
         pred = np.array([[1., 0., 0.]])
         target = np.zeros((1, 3))
         summary = summary_metrics([(pred, target)], (1, 1, 1))
@@ -69,7 +63,6 @@ class EvaluationMetricsTests(unittest.TestCase):
             json.dumps(value, allow_nan=False)
 
     def test_heading_bins_are_centred_on_cardinal_directions(self):
-        np = module.np
         angles = np.deg2rad([0, 90, 180, -90])
         target = np.column_stack([np.sin(angles), np.cos(angles)])
         bins = module.binned_metrics(target, target, dimension='heading', bin_counts=[4])['4']

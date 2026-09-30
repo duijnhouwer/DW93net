@@ -17,6 +17,7 @@ from training_helpers import train_recipe_set
 
 class PrecisionRecoveryTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

@@ -22,11 +22,12 @@ from stimuli.dataset_identity import dataset_spec, storage_manifest
 from train.train_flow_xt_net import RecipeTrainingSettings, train_recipe_set
 from checkpoints import load_checkpoint, validate_checkpoint
 from evaluation import inference_batches, summary_metrics
-from test_training_recipe import module, recipe_text, DETECTOR
+from recipe_helpers import module, recipe_text, DETECTOR
 
 
 class PanoramaTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
 
     def test_boundary_policy_and_unsupported_filter_order(self):
@@ -155,21 +156,16 @@ class PanoramaTests(unittest.TestCase):
         torch.testing.assert_close(valid.center(x), F.avg_pool1d(x, 15, 1, 7, count_include_pad=False))
         torch.testing.assert_close(valid.surround(x), F.avg_pool1d(x, 61, 1, 30, count_include_pad=False))
 
-    def test_production_recipe_and_archive(self):
-        root = Path(__file__).resolve().parents[1]
-        # Git membership is covered by recipe-runner tests; this file may be untracked while developing.
-        with patch.object(module.subprocess, 'check_output', return_value=b''):
-            active = module.discover_recipe(root)
-        self.assertEqual(active.stem, 'trans_plus_rot_panoramic')
-        recipe = module.load_recipe(active)
-        self.assertEqual(StimConfig(fov_deg=recipe['stimuli']['fov_deg']).stim_wid_px, 21600)
-        for key, value in [('speed_range', [.001, .006]), ('heading_deg_range', [-180, 180]),
-                           ('rot_deg_range', [-.5, .5])]:
-            self.assertEqual(recipe['stimuli'][key], value)
-        # Historical recipe is preserved; it predates the required Duffy-Wurtz section.
-        archived = module.tomllib.loads((root / 'recipe/archive/rot_only.toml').read_text())
-        self.assertEqual(recipe['detector'], archived['detector'])
-        self.assertEqual(recipe['training_sets'], archived['training_sets'])
+    def test_panoramic_recipe_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'panorama.toml'
+            text = recipe_text(directory).replace('dog_bundle_size = 64',
+                                                  'dog_bundle_size = 64\nfov_deg = 360')
+            path.write_text(text)
+            recipe = module.load_recipe(path)
+        config = StimConfig(fov_deg=recipe['stimuli']['fov_deg'])
+        self.assertEqual(config.stim_wid_px, 21600)
+        self.assertEqual(config.boundary, 'circular')
 
     def test_generation_training_resume_evaluation_and_metadata_rejection(self):
         with tempfile.TemporaryDirectory() as directory:

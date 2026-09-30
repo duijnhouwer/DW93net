@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import torch
 
-from test_training_recipe import module, recipe_text, TEST_RUN_NAME
+from recipe_helpers import module, recipe_text, TEST_RUN_NAME
 
 
 class ValidationWorkflowTests(unittest.TestCase):
@@ -17,6 +17,7 @@ class ValidationWorkflowTests(unittest.TestCase):
         self.addCleanup(timestamp.stop)
 
     def test_validation_first_early_stop_best_checkpoint_test_last_and_resume(self):
+        self.addCleanup(torch.set_num_threads, torch.get_num_threads())
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
