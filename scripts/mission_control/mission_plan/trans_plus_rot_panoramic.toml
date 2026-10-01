@@ -53,7 +53,7 @@ n_samples = 100000
 duffy_wurtz_superimposition_enable = true
 
 [optimization]
-batch_size = 32
+batch_size = 16
 # Enable AMP for exploratory training; disable to compare without AMP.
 allow_amp = true
 allow_tp32 = true
@@ -81,6 +81,6 @@ candidate_interval_epochs = 1
 keep_previous_resumable = true
 
 [evaluation]
-batch_size = 32
+batch_size = 16
 num_workers = 8
 shuffle = false
