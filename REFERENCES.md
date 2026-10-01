@@ -7,3 +7,7 @@ Sunkara, A., DeAngelis, G. C., & Angelaki, D. E. (2015). Role of visual and non-
 Qian, N., Andersen, R. A., & Adelson, E. H. (1994). Transparent motion perception as detection of unbalanced motion signals. III. Modeling. *Journal of Neuroscience, 14*(12), 7381–7392. https://doi.org/10.1523/JNEUROSCI.14-12-07381.1994
 
 Duffy, C. J., & Wurtz, R. H. (1991). Sensitivity of MST neurons to optic flow stimuli. I. A continuum of response selectivity to large-field stimuli. *Journal of Neurophysiology, 65*(6), 1329–1345. https://doi.org/10.1152/jn.1991.65.6.1329
+
+Richert, M., Albright, T. D., & Krekelberg, B. (2013). The complex structure of receptive fields in the middle temporal area. *Frontiers in Systems Neuroscience, 7*, Article 2. https://doi.org/10.3389/fnsys.2013.00002
+
+Relevance: Macaque MT recordings revealed spatially varying direction preferences and multi-peaked receptive fields, motivating flexible learned spatial/motion-channel weights rather than requiring concentric Gaussian receptive-field profiles.
